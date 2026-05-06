@@ -37,6 +37,18 @@ Windsurf 三器: 切号 · 反代 · 部署. 各安其位, 不相干扰.
 LLM 实收 = You are Cascade.\n<user_rules>\n<MEMORY[dao-de-jing.md]>\n帛书上下篇\n</MEMORY>\n</user_rules>
 ```
 
+### 直取 (Releases)
+
+| 版本 | 形 | 下 |
+|---|---|---|
+| **v9.8.0 守一不离** | `dao-proxy-min-9.8.0.vsix` (84.7 KB) | [GitHub Release](https://github.com/zhouyoukang/windsurf-assistant/releases/tag/v9.8.0-dao-proxy-min) |
+| 历版 | — | [Releases 全](https://github.com/zhouyoukang/windsurf-assistant/releases?q=dao-proxy-min) |
+
+```powershell
+# 下 + 装一行
+windsurf --install-extension (Invoke-WebRequest 'https://github.com/zhouyoukang/windsurf-assistant/releases/download/v9.8.0-dao-proxy-min/dao-proxy-min-9.8.0.vsix' -OutFile dao-proxy-min-9.8.0.vsix; (Resolve-Path dao-proxy-min-9.8.0.vsix).Path)
+```
+
 ### v9.8.0 守一不离
 
 > **三十九章「佯王得一以为天下正」**
