@@ -1,8 +1,11 @@
 #!/usr/bin/env node
-// Monorepo deploy script · packages/wam → target extensions dir
+// Monorepo deploy script · packages/* → target extensions dir
 // Usage: node scripts/deploy.js [package] [target]
-//   package: wam | wam-proxy (default: wam)
+//   package: wam | dao-proxy-min (default: wam)
 //   target:  141 | 179 | both (default: 141)
+// 注: dao-proxy-min 之远端部署推荐使用其专属 PSSession 脚本:
+//   pwsh packages/dao-proxy-min/_审视/_deploy.ps1
+//   (走 Negotiate auth · 不依赖 SMB share · 凭证 ENV/DPAPI/prompt 三轨)
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");

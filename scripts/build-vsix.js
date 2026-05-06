@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Build VSIX for a package
 // Usage: node scripts/build-vsix.js [package]
-//   package: wam | wam-proxy (default: wam)
+//   package: wam | dao-proxy-min (default: wam)
 const { execSync } = require("child_process");
 const path = require("path");
 
