@@ -88,12 +88,9 @@ foreach ($t in $targets) {
 
     $dst    = $loc.path
     $oldExt = Join-Path $dst 'extension.js'
-    $oldVer = '?'
-    try {
-        $head = Get-Content $oldExt -TotalCount 200 -ErrorAction SilentlyContinue
-        $verLine = ($head | Select-String 'const VERSION\s*=\s*"' | Select-Object -First 1)
-        if ($verLine) { $oldVer = ($verLine.Line -replace '.*"([0-9.]+)".*', '$1') }
-    } catch {}
+    # v2.6.10 · 道法自然 · 复用 Get-WamSourceVersion (已 400 行 head 容长 changelog)
+    $oldVer = (Get-WamSourceVersion -ExtensionJs $oldExt)
+    if (-not $oldVer) { $oldVer = '?' }
     Write-Host ('   pre: v{0}' -f $oldVer) -ForegroundColor Gray
 
     if ($DryRun) {
@@ -141,11 +138,18 @@ foreach ($t in $targets) {
     Write-Host '         byte-equal OK' -ForegroundColor Green
 
     # 5. patch extensions.json (defensive: version + metadata.size)
+    # v2.6.13 道法自然·唯变所适: 兼容两形 extensions.json 结构
+    #   1. 裸数组:         [{ext1},{ext2},...]                 (老/local)
+    #   2. 包装对象:       {"value":[...], "Count":N}          (新 Windsurf · 如 179 机)
     if (Test-Path $loc.xj) {
         try {
-            $arr = Get-Content $loc.xj -Raw -Encoding utf8 | ConvertFrom-Json
+            $rawJson = Get-Content $loc.xj -Raw -Encoding utf8
+            $parsed  = $rawJson | ConvertFrom-Json
+            # 双形归一: 定位 items 集合 (原对象可能是 $parsed 本身 · 也可能是 $parsed.value)
+            $isWrapped = ($parsed -is [System.Management.Automation.PSCustomObject] -and $parsed.PSObject.Properties['value'])
+            $items = if ($isWrapped) { $parsed.value } else { $parsed }
             $hit = 0
-            foreach ($e in $arr) {
+            foreach ($e in $items) {
                 if ($e.identifier -and $e.identifier.id -eq $daoEnv.extensionId) {
                     if ($e.metadata) {
                         $e.metadata | Add-Member -NotePropertyName 'size' -NotePropertyValue $dstSz -Force
@@ -154,8 +158,14 @@ foreach ($t in $targets) {
                     $hit++
                 }
             }
-            $arr | ConvertTo-Json -Depth 99 | Set-Content $loc.xj -Encoding utf8
-            Write-Host ('   [4/5] extensions.json patched: {0} record(s)' -f $hit)
+            # 回写: 保持原形 (wrapped / 裸数组)
+            if ($isWrapped) {
+                $parsed | ConvertTo-Json -Depth 99 -Compress | Set-Content $loc.xj -Encoding utf8
+            } else {
+                ,$items | ConvertTo-Json -Depth 99 -Compress | Set-Content $loc.xj -Encoding utf8
+            }
+            $fmtHint = if ($isWrapped) { ' (wrapped)' } else { ' (array)' }
+            Write-Host ('   [4/5] extensions.json patched: {0} record(s){1}' -f $hit, $fmtHint)
         } catch {
             Write-Host ('   [4/5] extensions.json FAIL: {0}' -f $_.Exception.Message) -ForegroundColor Yellow
         }

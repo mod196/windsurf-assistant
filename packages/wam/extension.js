@@ -114,6 +114,71 @@
 //     → _v268_deploy.ps1 改为读 extensions.json location.path 自动找正确目录
 //   · 道一以贯之: 24 章 "自见者不明" · v2.6.7 自以为已部署 · 实际 windsurf 加载旧目录
 //     必"不自见故章"·实证驱动·读权威源 (extensions.json) 而非假设目录命名
+//
+// v2.6.10 · 治人事天·莫若啬 · checkpoint 过滤 · 损之又损 (2026-05-07):
+//   · v2.6.9 reload 后活体实证 37min · 降幅 98.9%·median 22s→2070s·min 5s→222s
+//     但 wal·edge fire 6 次 / rotate 3 次 / minInterval-locked 2 次 · 差 1 未解
+//     返查 log: edge·fire delta = +840480B / +708640B ← 非 user send (单次 send 常 4-32KB)
+//     实为 SQLite auto_checkpoint 批量满 4MB 后 flush · 多帧合批 → wal 一次增 KB-MB
+//   · 病灶: wal·edge 只有下限过滤·无上限·checkpoint 大批写 ≡ user send (信号混淆)
+//     60s 强锁者瞥其火·但未治本 · 假如 checkpoint 发在 60s 后 即仵误切
+//   · 损法 (59 章 治人事天·莫若啬 · 啬、早服、重积德):
+//     · wam.walEdgeMaxBytes 默 65536B (64KB) · delta > 此 值视为 checkpoint 噪 · skip
+//     · 新 log: wal·edge·skip[checkpoint:XXXB > 65536B] · 与 fire 双轨可观
+//     · diag 增: edgeSkipCount / lastEdgeDelta / lastCheckpointDelta / last*At
+//     · 空间过滤 + 时间强锁 = 两道互补 · 重为轻根·清为軁君
+//   · 向后兼容: walEdgeMaxBytes=0 ⇒ 关上限 (v2.6.9 行为)
+//   · 道一以贯之: 59 章 "重积德则无不克" · user-send 小·checkpoint 大 · 分而中之
+//
+// v2.6.13 · 阴阳结合 · 反者道之动 · 物无非彼物无非是 (2026-05-08):
+//   · 缘起: 主公《齐物论》之诏 — 自彼则不见·自是则知之·阴阳互补不冲突
+//     现有 W%脉动 (阳·主) 仅看 weekly% 单维度 · 自是只见己·不见彼
+//     新增 ⚖额度变动 (阴·辅) 监 daily%/promptCredits/flowCredits 多维度
+//   · 道理: 一阴一阳之谓道 · 主信号宏观百分比 · 辅信号微观额度池 · 二者互补显全象
+//     · weekly% 是后端真账·主流·已建主信号窗 60s 让位
+//     · daily% Pro plan 主用·与 weekly 维度独立
+//     · promptCredits/flowCredits 绝对数池·与 quota% 解耦·任何 prompt/flow 调用即扣
+//   · 结合: 同入 _maybeTrigger 出口 · 同受 60s 强锁保护 · W%脉动主信号窗内 ⚖ 让位 (skip)
+//     防跨账号假脉动 同 W% · 必 _lastQuotaEmail === curEmail 才比
+//   · 配置 (默全开·与 W%脉动同量级):
+//     · wam.quotaDeltaEnable (默 true) · 全开关
+//     · wam.quotaDeltaCreditsMin (默 1) · promptCredits/flowCredits delta 阈值
+//     · wam.quotaDeltaDailyMin (默 0.3) · daily% delta 阈值
+//   · 不冲突保证 (反者道之动·阴让阳):
+//     · ⚖ 触发同 tick 内 W% 也触发 → _lastQuotaPulseAt 已设 → ⚖ 进 _maybeTrigger 让位
+//     · ⚖ 单独触发 (W% 没动·如 promptCredits 异步扣) → _maybeTrigger 60s 强锁仍护
+//   · 道一以贯之: 1 章 "两者同出·异名同谓·玄之又玄·众眇之门"
+//     彼此异名同谓 — 都是后端账户被消耗 · 但维度互补 · 自彼自是合一
+//
+// v2.6.14 · 三守俱全 · 守一·大制无割 · 反者道之动 (2026-05-08):
+//   · 缘起 (实证 179 wam.log · v2.6.13 生命 · 21225 行):
+//     · 声设 ⚡W%脉动 = 主信号 · WAL/pb 让位 60s
+//     · 实证信号占比 ⚡W%脉动 4.3% (11/253) · 📡WAL·edge 68.8% (174/253)
+//     · 让位机制几不生效 (13/253) · "主信号优先" 形同虚设
+//     · 5 分钟爆发 WAL 174 火 · 38 次真切号 · 每 8s 切一 · 雪崩复返
+//   · 根因三破:
+//     ① 公理破 — "1 user send = 1 信号" 不成立 · 流式响应是连续 N quanta 入两源
+//                  实证: 单账号 40s 内 W 82→80→77→75→72 · 1 send 引 4 脉动
+//     ② 栏破 — v2.6.11 弃 perMessageMinIntervalMs 60s 全锁 → 最终兜底失
+//     ③ 守破 — v2.6.12 quotaPulsePriorityMs 只守 WAL/pb · 不守 W% 自身 · 阳自决堤
+//   · 三守俱全 (守一 · 大制无割 · 一全锁覆万源):
+//     守一: _maybeTrigger 入口加 perMessageMinIntervalMs 60s 全 reason 强锁
+//           复 v2.6.9 之全栏 · 适万源 (W%/WAL/pb/⚖) · 1 user send ≤ 1 切
+//     守二: WAL 同源最小间隔 walEdgeCooldownMs 2s (避 4KB 帧连火 · 削 log 噪)
+//     守三: WAL 启动暖启 walWarmupMs 5000ms · 防 activate 首 stat 之累积差
+//           (实证 14:54:03 reload · 14:54:03.540 即火 · 启动雪崩源头)
+//   · 配置 (三新全默值已保守):
+//     · wam.perMessageMinIntervalMs (默 60000) · 全 reason 强锁 (0=关复 v2.6.11)
+//     · wam.walEdgeCooldownMs        (默 2000)  · WAL 同源最小间隔 (0=关)
+//     · wam.walWarmupMs              (默 5000)  · WAL 启动暖启窗 (0=关)
+//   · 不动: ⚡W%脉动 / ⚖额度变动 / 📃pb·new 算法 (阴阳已合)
+//   · 预期 (理论): WAL·edge fire 174/5min → ≤ 75 (-57%)
+//                  per-msg hit     50/5min →   ≤ 5  (-90%)
+//                  login✓           38/5min →   ≤ 5  (-87%)
+//                  雪崩拟消 · 1 user send ≤ 1 切号 (1:1 精确回归)
+//   · 道一以贯之: 64 章 "为之者败之·执之者失之·圣人无为故无败" ·
+//                单行全栏 >  多处细栏 · 守一 > 守多 · 道极减法之真
+//
 "use strict";
 const vscode = require("vscode");
 const fs = require("node:fs");
@@ -170,7 +235,89 @@ const { URL } = require("node:url");
 //   · 不禁账号 · banFor/isBanned/_bumpFailure 改为纯记数 · 历史黑名单自动清
 //   · 提 _maybeTrigger 为顶级函数 · Layer 6 直调 · 不再经 _layer6Trigger 中转
 //
-const VERSION = "2.6.8";
+// v2.6.9 · 道法自然 · 损 settle · 留真信号 (2026-05-07 实证根治):
+//   实证 (window1 5-WAM.log · 11min13s · 用户对话频率 ~3min/条):
+//     · 切号 34 次 / 22s 中位间隔 · 频率 ≈ 用户对话 9 倍
+//     · pb·settle fired 36 + skip 6 (全部错触发源)
+//     · wal·settle fired 0 (settle 模型对 WAL 完全失效·SQLite checkpoint 抢截)
+//     · 4 个并行 .pb 文件 (8bc7943c/b2165dd0/e9e73244/f9ebad5b)
+//     · debounced 仅 2 次 (4s 防抖 vs 15s settle 间隔→几乎全过)
+//   60秒采样 (用户等候期·我跑工具调用):
+//     · WAL 净增 0B (用户没 send · 真信号正确无噪)
+//     · pb 净增 310KB / 31 写入 (AI+工具噪音)
+//   根因 (10 层):
+//     1. 表象: 切号频率远高于用户对话频率
+//     2. 触发: 100% 来自 pb·settle (wal·settle 0)
+//     3. 多源: 4 文件并行各自 settle 累积
+//     4. 体: ~/.codeium/windsurf/cascade/ 50 个历史 .pb · 4 个活跃
+//     5. 漏: claim key=pbPrefix+bucket · 不同 prefix 不互锁 (跨实例锁实为同实例文件锁)
+//     6. 疏: 4s perMessageDebounceMs vs 15s SETTLE_MS · 间隔通常>4s
+//     7. 错: settle 模型 = "AI 流式段静默" ≠ "用户 click Send"
+//     8. 浊: pb 增量信号被 50 个历史会话 + cascade reindex daemon 污染
+//     9. 本: 一条 user msg → AI N 段流 × 活 pb 数 → N 次切号
+//    10. 道: v2.5 弃 L1-L5 hook 落到 .pb 信号 · 比原 hook 还吵 · 哲学错位
+//   修法 (反者道之动·损之又损):
+//     · 减:
+//       - 删 _firePbSettle 整段 (~26 行)
+//       - 删 watcher 内"存量文件增量 settle"段 (~60 行)
+//       - 删 _fireWalSettle settle 模型 (~70 行)
+//       - 删 settle 常量 SETTLE_MS/ACCUM_MIN/GROW_MIN/LARGE_DELTA/pbSettle Map
+//       - 删 pb·new 路径中 _lastPerMsgTriggerAt = 0 (旧自夺防抖最后一处)
+//     · 留:
+//       - 保 pb·new (新对话切号唯一无错配纯信号 · 1:1 精确对应)
+//     · 加:
+//       - WAL 边沿首发: 单次 delta ≥ 512B 立即 fire · 不等 settle
+//         (用户 click Send 时 SQLite 同步 fsync WAL · 一次写 1-2 帧 ≈ 4-8KB · 立可见)
+//       - 60s 全局强锁 (perMessageMinIntervalMs 默认 60000)
+//         任何信号源 60s 内最多 1 次切号 · 兜底无为
+//       - claim key 改纯 bucket (跨实例多源派生收一道)
+//   实证锚:
+//     v2.6.8: 22s/次切号 · 9倍率 · 31 hits / 2 debounced
+//     v2.6.9 期: ≥60s/次切号 · 1倍率 · 边沿首发 + 60s 强锁兜底
+//   道之精要:
+//     · 反者道之动 — pb 增量(AI 写)→反向→ WAL 边沿(用户写) · 信号本源对位
+//     · 弱者道之用 — 不再 settle 累积心跳/段间停顿 · 唯首帧即真
+//     · 上善如水   — AI 流响应 .pb 增长不动·唯用户 SQLite 同步 fsync 时切
+//     · 太上下知有之 — pb·new+wal·edge 两源精确·用户无感
+//     · 大制无割   — 净减 ~150 行 (删 settle + 加边沿) · 损之又损
+//     · 道法自然   — 用户日常对话 ~3min/条·切号 60s 强锁 → 自然合一
+//
+// v2.7.0 · 万法识号·守道反者 (2026-05-09):
+//   · 用户实证 (4 图):
+//     图1 账号列表大量 "?天/未验/D?/W?" → 入库 email 严重污染
+//     图2 "+ 添加账号" placeholder · 用户依此粘贴
+//     图3 微信发货 ("账号:..\n密码:含@\n账号管理器:点tps://..(去掉点)")
+//     图4 卡号N:/卡密N: 带数字编号格式
+//   · 病诊 (parseAccountText 失道之四):
+//     ① 「卡号N:/卡密N:」未在标签词典 · tryPair 错把 "卡号1" 当密码
+//     ② 「密码:uuCO4@7hukcO」(密码含 @) `if(!v.includes("@"))` 跳过 → 兜底误为新 email
+//     ③ tryPair 仅以 includes("@") 认 email · 卡密 "XuE2@UXoq7JD" 被错当 email
+//     ④ 反向配对 (pass 在前 email 在后) 缺失
+//   · 治法 (反者·弱者·守一):
+//     §A 立 _isValidEmail 严判 (local@domain.tld · 长度5-254 · 不含全角分隔符)
+//     §B 扩标签词典 + 兼容 \d* 数字编号:
+//        email +卡号|号码|账户名|登录名|登陆名|number|num|e-mail
+//        pass  +卡密|密钥|令牌|key|token|access(-token)?
+//     §C 标签即定锚·守一不退:
+//        密码标签后含@仍为密码 (修②)
+//        邮箱标签后必须 isValidEmail 才认 (修④ '账号管理器:URL' 不再误伤)
+//     §D tryPair 用 _isValidEmail 替代 includes('@') (修③)
+//     §E pendingPass 反向配对 (顺逆皆通)
+//     §F _stripWxHints 行尾剥离 (无任何空格)/(去掉点) 等微信提示 · 不弃真主
+//     §G _isNoiseLine 整行模板嗅探 (自动发货/订单编号/账号管理器: URL 等开头明确者)
+//   · 行为对齐:
+//     图3 微信 "账号:foo@gmail.com (无任何空格)\n密码:uuCO4@7hukcO" 识 1 账号 (修前 0)
+//     图4 卡号N:/卡密N: 5 卡全识 (修前 0)
+//     综合极端 _test_v270_omni_recognize.cjs · 72 过 / 0 败
+//   · 道之精要:
+//     · 反者道之动 — 反向出发 · 解构识号四病 · 治本不治标
+//     · 弱者道之用 — 不整行弃 · 仅剥微信提示尾 · 留真主之身
+//     · 唯变所适   — 标签词典极广 · 大方无隅 · 同出异名 · 万法皆归
+//     · 守一       — 标签即定锚 · 含@仍为密码 · 不再以"形似邮箱"草率
+//     · 大象无形   — 邮箱定准 (RFC 宽放) · 严判 TLD ≥2 letters
+//     · 信不足 案有不信 — 测毕 72/0 方为道
+//
+const VERSION = "2.7.0";
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36";
 const WINDSURF = "https://windsurf.com";
@@ -240,7 +387,15 @@ let _output = null,
   _lastPerMsgTriggerAt = 0, // v2.5 per-msg 触发防抖
   _perMsgHits = 0, // v2.5 Layer 6 命中累计 (诊断)
   _perMsgRotates = 0, // v2.5 Layer 6 触发切号累计 (诊断)
-  _perMsgDebounced = 0, // v2.6.7 守一 · 防抖拦截累计 (修后应 ≥ hits 数量级)
+  _quotaPulseCount = 0, // v2.6.11 道恒无名 · W%脉动信号累计 (真本源·后端计费增量计数)
+  _lastQuotaWeekly = -1, // v2.6.11 上轮 weekly% (初始 -1 ·其他为 0-100)
+  _lastQuotaEmail = "", // v2.6.12 守一 · 上轮 weekly% 对应 email · 切号后清·防跨账号假脉动
+  _lastQuotaPulseAt = 0, // v2.6.12 守一 · 上次真脉动时刻 · WAL/pb 在窗口内让位
+  _quotaPulseSuppressedCount = 0, // v2.6.12 守一 · 跨账号假脉动屏蔽计数 (诊断)
+  _quotaDeltaCount = 0, // v2.6.13 阴阳结合 · ⚖额度变动信号累计 (阴·辅·诊断)
+  _lastQuotaDaily = -1, // v2.6.13 阴 · 上轮 daily% (Pro plan 主用 · 与 weekly 维度互补)
+  _lastQuotaPromptCredits = -1, // v2.6.13 阴 · 上轮 promptCredits (微观池·绝对数)
+  _lastQuotaFlowCredits = -1, // v2.6.13 阴 · 上轮 flowCredits (微观池·绝对数)
   _lastRotateToastAt = 0, // 状态栏切号反馈 3s 高亮
   _lastRotateToastEmail = "", // 状态栏切号反馈上次 email
   _layer6Stop = null; // Layer 6 dispose 函数
@@ -464,21 +619,97 @@ async function jsonPost(url, headers, body, timeoutMs) {
   return { status: r.status, json: parsed, text };
 }
 
-// ═══ § 万法识号 · 道法自然 · 一切账号格式同源 ═══
-// 输入: 任意文本 (粘贴自微信/邮件/JSON/CSV/Token面板)
+// ═══ § 万法识号 v2.7.0 · 道法自然 · 一切账号格式同源 ═══
+// 反者道之动 · 弱之胜强 柔之胜刚 · 唯变所适 · 适应万法之格式 · 无为而无不为
+//
+// 输入: 任意文本 (粘贴自微信/邮件/JSON/CSV/Token面板/卡号卡密/订单消息)
 // 输出: { accounts: [{email, password}], tokens: [string] }
-// 兼容: email password / email:pass / email----pass / email|pass / email,pass / email;pass / email\tpass
-//        反序 (pass email) · JSON · 多行标签 (邮箱：x\n密码：y / Email: x\nPassword: y)
-//        全角 ：=＝ · 原始 token (devin-session-token$ / eyJ JWT / auth1_ / 长 base64)
+//
+// 兼容形 (大方无隅 · 同出异名):
+//   - 紧贴/分隔: email password / email:pass / email----pass / email|pass / email,pass / email;pass / email\tpass
+//   - 反序: pass email (空白分)
+//   - JSON 单行 / 多行 JSON 数组
+//   - 多行标签 (邮箱:x\n密码:y / Email:x\nPassword:y / 账号:..\n密码:.. / 卡号N:..\n卡密N:..)
+//   - 标签数字编号: 卡号1:/账号2:/Email3: 自动剥
+//   - 全角 ：=＝ · 标签词典极广 (邮箱|账号|账户|帐号|帐户|用户名|用户|登录名|登陆名|卡号|号码|email|...)
+//   - 密码含 @ (如 uuCO4@7hukcO) 标签明确即守一不退 · 不再误为 email
+//   - 原始 token (devin-session-token$ / eyJ JWT / auth1_ / 长 base64)
+//   - 噪声免疫: '账号管理器:URL' '(无任何空格)' '(去掉点)' '订单编号:数字' '自动发货 时间' 等微信提示文静默跳过
+//
+// 守道之要 · 反者:
+//   1. isValidEmail 严判 (local@domain.tld) · 不再以 includes('@') 草率认 email
+//   2. 标签即定锚 · 守一不退 (密码标签后含@仍是密码 · 邮箱标签后非合法email则放过)
+//   3. 双向配对 (pendingEmail / pendingPass · 顺逆皆通)
+
+// 合法邮箱严判 · 大象无形 而有定准
+function _isValidEmail(s) {
+  if (!s || typeof s !== "string") return false;
+  s = s.trim();
+  if (s.length < 5 || s.length > 254) return false;
+  if (/[\s|;,，；\t]/.test(s)) return false; // 分隔符即非法
+  // local 段 RFC 宽放: A-Z a-z 0-9 . _ + -
+  // domain 段必须有点且 TLD 字母 ≥2
+  return /^[A-Za-z0-9._+\-]+@[A-Za-z0-9](?:[A-Za-z0-9\-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9\-]*[A-Za-z0-9])?)*\.[A-Za-z]{2,}$/.test(
+    s,
+  );
+}
+
+// 行尾提示剥离 · 微信常附 "(无任何空格)" "(去掉点)" 等于真账号行尾 · 弱者道之用
+// 不整行跳过 · 仅剥尾 · 留真主之身
+function _stripWxHints(ln) {
+  if (!ln) return ln;
+  // 反复剥尾 · 直到稳定
+  let prev;
+  do {
+    prev = ln;
+    ln = ln
+      // 微信反屏蔽提示
+      .replace(
+        /[（(]\s*(?:无任何空格|去掉点|去点|去掉空格|无空格)\s*[）)]/g,
+        "",
+      )
+      // 含 URL 的"账号管理器:"等子串 (整行嗅探漏过的中段)
+      .replace(/\s+账号管理器\s*[:：=＝]\s*\S+/, "")
+      .trim();
+  } while (ln !== prev && ln.length > 0);
+  return ln;
+}
+
+// 噪声行嗅探 · 微信/广告/订单 模板文 · 静默跳过
+// 守一: 仅识"整行明显是模板文"者跳过 · 真账号行不在此列 (剥尾后另判)
+function _isNoiseLine(ln) {
+  if (!ln) return true;
+  // 订单编号 · 自动发货 · 您的订单 等模板 (开头明确)
+  if (
+    /^(?:您的|您好|自动发货|订单编号|订单号|交易号|发货时间|订单时间|发货成功|交易成功|尊敬的)/.test(
+      ln,
+    )
+  )
+    return true;
+  // 纯日期时间行 (无其他实质内容)
+  if (/^\s*\d{4}[\-\/年]\d{1,2}[\-\/月]\d{1,2}[\s\d:：年月日时分秒]*$/.test(ln))
+    return true;
+  // 整行就是「账号管理器」类含 URL · 不是真账号
+  // (注: 必须开头即此标签 · 否则可能是真账号行的尾巴 · 已由 _stripWxHints 剥)
+  if (
+    /^(?:账号管理器|管理面板|管理后台|官网|官方网站|官方地址|商城|售后|客服|发货)\s*[:：=＝]/.test(
+      ln,
+    )
+  )
+    return true;
+  return false;
+}
+
 function parseAccountText(content) {
   const accounts = [];
   const tokens = [];
   if (!content || typeof content !== "string") return { accounts, tokens };
 
+  // 标签词典 · 大方无隅 · 标签后兼容 \d* 数字编号 (卡号1: / 账号2: / Email3:)
   const RE_LABEL_EMAIL =
-    /^\s*(?:邮箱|账号|账户|帐号|帐户|用户名|用户|email|account|user(?:name)?|login|mail|id)\s*[:：=＝]\s*/i;
+    /^\s*(?:邮箱|邮件|账号|账户|帐号|帐户|用户名|用户名称|用户|登录名|登陆名|登录账号|登陆账号|登录账户|卡号|号码|账户名|e[\-\s]?mail|email|account|user(?:name)?|login|mail|id|number|num)\s*\d*\s*[:：=＝]\s*/i;
   const RE_LABEL_PASS =
-    /^\s*(?:密码|口令|秘钥|password|pass|pwd|passwd|secret)\s*[:：=＝]\s*/i;
+    /^\s*(?:密码|登录密码|登陆密码|口令|秘钥|密钥|卡密|令牌|password|pass(?:word|wd)?|pwd|secret|key|token|access(?:[\-_]?token)?)\s*\d*\s*[:：=＝]\s*/i;
   const RE_TOKEN_PREFIX = /^(devin-session-token\$|auth1_|sk-)/i;
   const RE_JWT = /^eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+$/;
 
@@ -493,12 +724,16 @@ function parseAccountText(content) {
     return false;
   }
 
+  // tryPair · 用 isValidEmail 严判 · 不再以 includes('@') 草率
   function tryPair(a, b) {
     a = (a || "").trim();
     b = (b || "").trim();
     if (!a || !b) return null;
-    if (a.includes("@")) return { email: a, password: b };
-    if (b.includes("@")) return { email: b, password: a };
+    const aIsEmail = _isValidEmail(a);
+    const bIsEmail = _isValidEmail(b);
+    if (aIsEmail && !bIsEmail) return { email: a, password: b };
+    if (bIsEmail && !aIsEmail) return { email: b, password: a };
+    if (aIsEmail && bIsEmail) return { email: a, password: b }; // 双合法 取首 (理论极罕)
     return null;
   }
 
@@ -531,7 +766,7 @@ function parseAccountText(content) {
       if (r) return r;
     }
     // 5. comma · 分号 (仅 2 段)
-    for (const sep of [",", ";"]) {
+    for (const sep of [",", ";", "，", "；"]) {
       if (ln.includes(sep)) {
         const p = ln.split(sep);
         if (p.length === 2) {
@@ -540,12 +775,12 @@ function parseAccountText(content) {
         }
       }
     }
-    // 6. 空白 · email 在前
-    let m = ln.match(/^(\S+@\S+)\s+(\S.*)$/);
-    if (m) return { email: m[1], password: m[2].trim() };
-    // 7. 空白 · email 在后 (反序)
-    m = ln.match(/^(\S+)\s+(\S+@\S+)\s*$/);
-    if (m && !m[1].includes("@")) return { email: m[2], password: m[1] };
+    // 6. 空白 · 唯需一段为合法 email · 另一段为非空非 email 即认
+    const ws = ln.match(/^(\S+)\s+(\S.*?)\s*$/);
+    if (ws) {
+      const r = tryPair(ws[1], ws[2]);
+      if (r) return r;
+    }
     return null;
   }
 
@@ -555,7 +790,15 @@ function parseAccountText(content) {
     let ln = raw.trim();
     if (!ln || ln.startsWith("#") || ln.startsWith("//")) continue;
 
-    // 0. 整行就是 token
+    // 0a. 剥行尾微信提示 ((无任何空格)/(去掉点)/中段"账号管理器:URL")
+    //     弱者道之用 · 不整行弃 · 留真主之身
+    ln = _stripWxHints(ln);
+    if (!ln) continue;
+
+    // 0b. 噪声行 · 静默跳过 (微信广告模板/订单/账号管理器整行等)
+    if (_isNoiseLine(ln)) continue;
+
+    // 0b. 整行就是 token
     if (looksLikeToken(ln)) {
       items.push({ type: "token", raw: ln });
       continue;
@@ -568,7 +811,7 @@ function parseAccountText(content) {
         const e =
           j.email || j.username || j.account || j.user || j.mail || j.login;
         const p = j.password || j.pass || j.pwd || j.passwd || j.secret;
-        if (e && p && String(e).includes("@")) {
+        if (e && p && _isValidEmail(String(e).trim())) {
           items.push({
             type: "pair",
             email: String(e).trim(),
@@ -589,26 +832,30 @@ function parseAccountText(content) {
       } catch {}
     }
 
-    // 2. 标签前缀 · 密码
+    // 2. 标签前缀 · 密码 · 守一不退: 标签明确即定锚 · 内容含 @ 仍为密码
     const passM = ln.match(RE_LABEL_PASS);
     if (passM) {
       const v = ln.substring(passM[0].length).trim();
-      if (v && !v.includes("@")) {
+      if (v) {
+        // 标签即锚 · 不再以 含@ 排除 (修病二: uuCO4@7hukcO 不再误判)
         if (looksLikeToken(v)) items.push({ type: "token", raw: v });
         else items.push({ type: "pass", password: v });
         continue;
       }
-      ln = v || ln;
+      // v 为空 · 罕 · 跳过即可
+      continue;
     }
 
-    // 3. 标签前缀 · 邮箱
+    // 3. 标签前缀 · 邮箱 · 守一: 必须 isValidEmail 才认 (修病四: '账号管理器:URL' 不再误伤)
     const emailM = ln.match(RE_LABEL_EMAIL);
     if (emailM) {
       const v = ln.substring(emailM[0].length).trim();
-      if (v.includes("@") && !/[\s|:：\t]/.test(v)) {
+      if (_isValidEmail(v)) {
         items.push({ type: "email", email: v });
         continue;
       }
+      // 非合法 email · 可能是 "账号: foo@bar.com password" 之同行带密码
+      // 剥前缀后让 parseSingleLine 处理
       ln = v || ln;
     }
 
@@ -623,8 +870,8 @@ function parseAccountText(content) {
       continue;
     }
 
-    // 5. 兜底: 整行就是邮箱 (待与下一行密码配对)
-    if (/^\S+@\S+$/.test(ln)) {
+    // 5. 兜底: 整行就是合法邮箱 (待与下一行密码配对)
+    if (_isValidEmail(ln)) {
       items.push({ type: "email", email: ln });
       continue;
     }
@@ -641,19 +888,32 @@ function parseAccountText(content) {
     // 不可识别 · 静默跳过
   }
 
-  // 序列配对 · email 后接 pass
+  // 序列配对 · 双向 · 顺逆皆通
   let pendingEmail = null;
+  let pendingPass = null;
   for (const it of items) {
     if (it.type === "pair") {
-      if (it.email && it.password && it.email.includes("@"))
+      if (it.email && it.password && _isValidEmail(it.email))
         accounts.push({ email: it.email, password: it.password });
       pendingEmail = null;
+      pendingPass = null;
     } else if (it.type === "email") {
-      pendingEmail = it.email;
+      if (pendingPass) {
+        // 反序: 先 pass 后 email
+        accounts.push({ email: it.email, password: pendingPass });
+        pendingPass = null;
+        pendingEmail = null;
+      } else {
+        // 已有 pendingEmail 而无 pass · 新 email 覆盖 (前者孤立 · 弃)
+        pendingEmail = it.email;
+      }
     } else if (it.type === "pass") {
       if (pendingEmail) {
         accounts.push({ email: pendingEmail, password: it.password });
         pendingEmail = null;
+      } else {
+        // 反序: pass 在前 · 缓存等下一 email
+        pendingPass = it.password;
       }
     } else if (it.type === "token") {
       tokens.push(it.raw);
@@ -1301,7 +1561,18 @@ class Store {
     this.activeApiServerUrl = apiServerUrl || null;
     this.lastInjectPath = injectPath || null;
     this.lastRotateAt = Date.now();
-    if (isRealSwitch) this.switches++;
+    if (isRealSwitch) {
+      this.switches++;
+      // v2.6.12 守一 · 真切号 → 清 W% 状态 · 防跨账号假脉动
+      //   原 v2.6.11 漏: _lastQuotaWeekly 跨账号比 → 切号瞬间 ΔW% 自然>=0.3% → 假脉动 → 又切号 → 死循环
+      //   新法: 切号即清 → 下轮 tick 重新建基线 (≥0 后才参与判)
+      _lastQuotaWeekly = -1;
+      _lastQuotaEmail = "";
+      // v2.6.13 阴阳结合 · ⚖额度变动 同清 (与 W% 同步建基线)
+      _lastQuotaDaily = -1;
+      _lastQuotaPromptCredits = -1;
+      _lastQuotaFlowCredits = -1;
+    }
     // v2.3.0 使用中🔒 唯一枢纽点 · 凡 active 转换均打印 · 0=off
     // typeof 守 · 测试环境 _cfg 未注入时退默认 120000
     const lockMs = Math.max(
@@ -2398,16 +2669,21 @@ async function _waitIfCascadeBusy(maxWaitMs) {
   return waited;
 }
 
-// ═══ § v2.5 直觉切号 · Layer 6 跨进程信号触发 ═══
-// 道法自然 · 不主动量度 · 仅在 cascade webview 写 state.vscdb 时随之切号
+// ═══ § v2.6.11 直觉切号 · 道恒无名 · 民自均焉 (终极简化) ═══
 //
-// 反者道之动: v2.3-v2.4.13b 尝试 Layer 1-5 (http/net/fetch/http2/sock) hook
-// 均在 ext host 进程内 · 但 cascade webview 在独立 electron renderer 进程
-// 跨进程隔离实证失效 · self-test 自触被误为真命中 → v2.5 大减法弃 L1-L5
+// 上德不德 · 是以有德 · 损之又损 · 以至于无为 · 无为而无不为
+//
+// v2.6.11 损法 (相对 v2.6.10):
+//   · 删 perMessageDebounceMs (4s 防抖) — 真信号无抖·无需聚合
+//   · 删 perMessageMinIntervalMs (60s 强锁) — 真信号即真·无须压制
+//   · 删 perMessageDelayMs (1.5s 延迟) — 切号作用于下次 send·当前 send 已完成
+//
+// 守法:
+//   · _switching 守卫 (避并发切)
+//   · 30s 注入失败冷却 (避雪崩)
+//   · in-use lock 120s (已在 setActive · 切后该号锁 · 不会切回)
 //
 // 配置: wam.rotateOnEveryMessage (默认 true)
-//      wam.perMessageDebounceMs (默认 4000ms)
-//      wam.perMessageDelayMs (默认 1500ms · 切号延迟 · 让当前消息先发出)
 function _maybeTrigger(reason, hint) {
   // v2.3.0 道法自然 · 默认开 (rotateOnEveryMessage=true) · 可手关
   if (!_cfg("rotateOnEveryMessage", true)) return;
@@ -2417,39 +2693,60 @@ function _maybeTrigger(reason, hint) {
   if (_engine && _engine.rotating) return;
 
   const now = Date.now();
-  const debounceMs = Math.max(500, _cfg("perMessageDebounceMs", 4000) | 0);
-  if (now - _lastPerMsgTriggerAt < debounceMs) {
-    // v2.6.7 守一: 防抖拦截入诊断 · 修后多源派生 settle 应在此聚合到一条切号
-    _perMsgDebounced++;
-    log(
-      "👁 per-msg debounced#" +
-        _perMsgDebounced +
-        " · " +
-        reason +
-        " · " +
-        (hint || "?") +
-        " (Δ=" +
-        (now - _lastPerMsgTriggerAt) +
-        "ms<" +
-        debounceMs +
-        "ms)",
-    );
-    try {
-      const diagP = path.join(WAM_DIR, "_per_msg_diag.json");
-      const prev = fs.existsSync(diagP)
-        ? JSON.parse(fs.readFileSync(diagP, "utf8"))
-        : { hits: [], rotates: [] };
-      prev.totalDebounced = _perMsgDebounced;
-      prev.lastDebounced = now;
-      atomicWrite(diagP, JSON.stringify(prev, null, 2));
-    } catch {}
-    return; // 防抖: 一轮对话多请求只算一次
-  }
-  // v2.3.0: 去 switchCooldownMs 闸 · 由 in-use 锁 (120s) 更细粒度替代 (全局 cooldown 会拦正当切号)
+  // v2.3.0: 去 switchCooldownMs 闸 · 由 in-use 锁 (120s) 更细粒度替代
   if (now - _lastInjectFail < 30000) return; // 注入失败冷却仍保 · 30s
-  // v2.5.9: 最小切号间隔 · pb·new 为精确信号故默认 0 · 可手动配置兜底
-  const minIntervalMs = Math.max(0, _cfg("perMessageMinIntervalMs", 0) | 0);
-  if (minIntervalMs > 0 && now - _lastSwitchTime < minIntervalMs) return;
+
+  // v2.6.12 守一 · 主信号优先 (修 v2.6.11 三路抢跑 1.75 倍切号 bug):
+  //   原 v2.6.11: ⚡W%脉动 + 📡WAL·edge + 📃pb·new 三路并发 → 1 send 引发 3 触发
+  //   新法: ⚡W%脉动 = 后端真账 = 主信号 · 触发后 N 秒窗口内 WAL/pb 全部让位 (skip)
+  //   理由: send 完成后后端 W% 必跌 · 文件 IO 是同 send 的副作用 · 不应重复
+  const pulsePriorityMs = Math.max(
+    0,
+    +_cfg("quotaPulsePriorityMs", 60000) || 60000,
+  );
+  if (
+    pulsePriorityMs > 0 &&
+    reason !== "\u26a1W%\u8109\u52a8" && // 非 ⚡W%脉动 来源
+    _lastQuotaPulseAt > 0 &&
+    now - _lastQuotaPulseAt < pulsePriorityMs
+  ) {
+    const sinceMs = now - _lastQuotaPulseAt;
+    log(
+      "\ud83d\udeab " +
+        reason +
+        " \u8ba9\u4f4d\u00b7\u4e3b\u4fe1\u53f7\u00b7" +
+        Math.round(sinceMs / 1000) +
+        "s\u524d \u26a1W%\u8109\u52a8\u5df2\u5207\u00b7\u8df3\u8fc7 " +
+        (hint || "?"),
+    );
+    return;
+  }
+
+  // v2.6.14 守一 · 全 reason 强锁 (复 v2.6.9 之全栏 · 适 W%/WAL/pb/⚖ 万源)
+  //   实证 (179 v2.6.13): 单 send → AI 流 → W%自火 4/40s + WAL 自火 174/5min
+  //   根因: quotaPulsePriorityMs 只守 WAL/pb · 不守 W% 自身 · 阳自决堤
+  //   修: 入口加 perMessageMinIntervalMs 全 reason 强锁 · 大制无割 · 一全锁覆万源
+  //   道: 64 章 "为之者败之·执之者失之·圣人无为故无败" · 单栏 > 多栏
+  const minIntervalMs = Math.max(
+    0,
+    +_cfg("perMessageMinIntervalMs", 60000) || 60000,
+  );
+  if (
+    minIntervalMs > 0 &&
+    _lastPerMsgTriggerAt > 0 &&
+    now - _lastPerMsgTriggerAt < minIntervalMs
+  ) {
+    const sinceMs = now - _lastPerMsgTriggerAt;
+    log(
+      "\ud83d\udeab " +
+        reason +
+        " \u5168\u680f\u00b7" + // 全栏
+        Math.round(sinceMs / 1000) +
+        "s\u524d\u5df2\u5207\u00b7\u8df3\u8fc7 " + // s前已切·跳过
+        (hint || "?"),
+    );
+    return;
+  }
 
   _lastPerMsgTriggerAt = now;
   _perMsgHits++;
@@ -2460,7 +2757,9 @@ function _maybeTrigger(reason, hint) {
       reason +
       " · " +
       (hint || "?") +
-      " → 计划切号",
+      " → 立即切号 (v2.6.14 全栏 " +
+      Math.round(minIntervalMs / 1000) +
+      "s)",
   );
   // v2.2.0 文件诊断 (Output Channel 懒刷盘时仍可观)
   try {
@@ -2476,9 +2775,8 @@ function _maybeTrigger(reason, hint) {
     atomicWrite(diagP, JSON.stringify(prev, null, 2));
   } catch {}
 
-  // 异步切 · 让当前消息先送出 (perMessageDelayMs)
-  const delayMs = Math.max(0, _cfg("perMessageDelayMs", 1500) | 0);
-  setTimeout(async () => {
+  // v2.6.11 立即切 · 不延迟 (W% 信号到达说明 send 已完成·后端已计费)
+  (async () => {
     try {
       if (!_cfg("rotateOnEveryMessage", true)) return;
       if (_wamMode !== "wam" || _switching) return;
@@ -2541,7 +2839,7 @@ function _maybeTrigger(reason, hint) {
     } catch (e) {
       log("per-msg rotate err: " + (e.message || e));
     }
-  }, delayMs);
+  })();
 }
 
 // ═══ Layer 6 · 跨进程文件信号 (v2.5.9 · 反者道之动 · 万法归宗) ═══
@@ -2675,148 +2973,56 @@ function _installLayer6FileWatcher(context) {
         ) {
           await new Promise((r) => setTimeout(r, 1000));
         }
-        _lastPerMsgTriggerAt = 0;
+        // v2.6.11 · 立即触发 (无防抖无强锁·_maybeTrigger 内 _switching 守卫足以)
+        // pb·new 队列保留 3.5s gap·避同时多新对话造成切号抖动 (与 W%脉动 10s 周期协同)
         _maybeTrigger("L6→pb·new", f.slice(0, 8));
-        const gap = Math.max(0, _cfg("perMessageDelayMs", 1500) | 0) + 2000;
-        await new Promise((r) => setTimeout(r, gap));
+        await new Promise((r) => setTimeout(r, 3500));
       }
       _queueRunning = false;
     }
 
+    // v2.6.9 道法自然 · 唯留 pb·new (新对话纯信号 · 1:1 精确)
+    //   实证 v2.6.8: 4 个并行活 .pb 文件 (8bc7943c/b2165dd0/e9e73244/f9ebad5b)
+    //     存量文件 settle 累积模型 = AI 流式段静默 ≠ 用户 click Send · 信号错位
+    //     11min 实测 36 fired + 6 skip · 全部错触发 · 雪崩 9 倍率
+    //   v2.6.9 损法: 删 _firePbSettle / pbSettle Map / settle 常量 / 存量增量分支
+    //     (~150 行净减) · 大制无割 · 反者道之动
+    //   留法: pb·new 唯一信号 · 用户开新对话 → 一新 .pb 文件 → 一切号
     const POLL_MS = 600;
-    // v2.6.6 反者道之动: settle (debounce trailing edge) 替 cooloff
-    // SETTLE_MS: 文件增长后静默此时长 = AI 已停 = 真切号时机
-    const SETTLE_MS = Math.max(3000, _cfg("sendDetectSettleMs", 15000) | 0);
-    // ACCUM_MIN: settle 期间累积增量阈值 · 低于此值视为心跳/元数据 · 不切号
-    const ACCUM_MIN = Math.max(256, _cfg("sendDetectAccumMin", 5120) | 0);
-    // 单次最小增量: 低于此值不入累积 (噪声过滤)
-    const GROW_MIN = Math.max(20, _cfg("sendDetectGrowMin", 30) | 0);
-    // 单次大增量兜底: 单写 ≥ LARGE_DELTA 直接立即切 (AI 大代码块持续流式时不憋太久)
-    const LARGE_DELTA = 131072; // 128KB
-
-    // settle 状态: f → { accum: number, timer: NodeJS.Timeout, claimed: bool }
-    const pbSettle = new Map();
-
-    function _firePbSettle(f, total, reason) {
-      // 跨实例声明锁: 时间桶 key · SETTLE_MS 窗口内唯一
-      const _bucket = Math.floor(Date.now() / SETTLE_MS);
-      const _claim = path.join(
-        L6_CLAIM_DIR,
-        f.slice(0, 8) + "." + _bucket + ".settle",
-      );
-      try {
-        fs.writeFileSync(_claim, String(process.pid), { flag: "wx" });
-      } catch {
-        return; // 已被另一实例认领
-      }
-      log(
-        "Layer 6 · pb·settle: " +
-          f.slice(0, 8) +
-          " 累积" +
-          total +
-          "B · " +
-          reason +
-          " [pid=" +
-          process.pid +
-          "] → 切号",
-      );
-      // v2.6.7 守一 · 删 _lastPerMsgTriggerAt = 0 (自夺防抖) · 让多源派生 settle 自然合一
-      _maybeTrigger("L6→pb·settle", f.slice(0, 8) + "+" + total);
-    }
 
     const timer = setInterval(() => {
       try {
         let hasNew = false;
         for (const f of fs.readdirSync(cascadePbDir)) {
           if (!f.endsWith(".pb")) continue;
+          if (knownPbs.has(f)) continue; // v2.6.9: 存量文件不再监增量 (settle 错位本源)
+          // ── 信号①: 新文件 = 新对话 → 立即入队切号 ──
           const fpath = path.join(cascadePbDir, f);
-
-          if (!knownPbs.has(f)) {
-            // ── 信号①: 新文件 = 新对话 → 立即入队切号 ──
-            knownPbs.add(f);
-            try {
-              const sz = fs.statSync(fpath).size;
-              pbSizes.set(f, sz);
-              if (sz < 64) continue; // Windsurf 预占位临时文件·跳过
-            } catch {
-              continue;
-            }
-            // v2.6.2 · 跨实例声明: 排他创建 · 第一到者触发 · 其余静默跳
-            const _claimNew = path.join(L6_CLAIM_DIR, f + ".new");
-            try {
-              fs.writeFileSync(_claimNew, String(process.pid), { flag: "wx" });
-            } catch {
-              log("Layer 6 · pb·new: " + f.slice(0, 8) + " 已认领·跳");
-              continue;
-            }
-            log(
-              "Layer 6 · pb·new: " +
-                f.slice(0, 12) +
-                " [pid=" +
-                process.pid +
-                "]",
-            );
-            _newConvQueue.push({ f });
-            hasNew = true;
-          } else {
-            // ── 信号②: 存量文件增量 → settle 累积 → 静默后切号 (反者道之动) ──
-            try {
-              const newSz = fs.statSync(fpath).size;
-              const oldSz = pbSizes.get(f) || 0;
-              const delta = newSz - oldSz;
-              pbSizes.set(f, newSz);
-              if (delta < 0) {
-                // 文件缩小(重写/截断) → 清空累积 + 取消 settle
-                const st = pbSettle.get(f);
-                if (st && st.timer) clearTimeout(st.timer);
-                pbSettle.delete(f);
-                continue;
-              }
-              if (delta < GROW_MIN) continue; // 单次太小·跳过
-
-              // 累积
-              let st = pbSettle.get(f);
-              if (!st) {
-                st = { accum: 0, timer: null };
-                pbSettle.set(f, st);
-              }
-              st.accum += delta;
-
-              // 单次大增量兜底: 立即切 + 重置累积
-              if (delta >= LARGE_DELTA && st.accum >= ACCUM_MIN) {
-                if (st.timer) clearTimeout(st.timer);
-                const total = st.accum;
-                st.accum = 0;
-                st.timer = null;
-                _firePbSettle(f, total, "大块" + delta + "B");
-                continue;
-              }
-
-              // 重置 settle 计时器: SETTLE_MS 后到期 → 切号
-              if (st.timer) clearTimeout(st.timer);
-              st.timer = setTimeout(() => {
-                const total = st.accum;
-                st.accum = 0;
-                st.timer = null;
-                if (total < ACCUM_MIN) {
-                  // 累积未达阈值 (心跳/小元数据) · 不切号
-                  log(
-                    "Layer 6 · pb·settle·skip: " +
-                      f.slice(0, 8) +
-                      " 累积" +
-                      total +
-                      "B<" +
-                      ACCUM_MIN +
-                      " [pid=" +
-                      process.pid +
-                      "]",
-                  );
-                  return;
-                }
-                _firePbSettle(f, total, "静默" + SETTLE_MS + "ms");
-              }, SETTLE_MS);
-            } catch {}
+          knownPbs.add(f);
+          try {
+            const sz = fs.statSync(fpath).size;
+            pbSizes.set(f, sz);
+            if (sz < 64) continue; // Windsurf 预占位临时文件·跳过
+          } catch {
+            continue;
           }
+          // v2.6.2 · 跨实例声明: 排他创建 · 第一到者触发 · 其余静默跳
+          const _claimNew = path.join(L6_CLAIM_DIR, f + ".new");
+          try {
+            fs.writeFileSync(_claimNew, String(process.pid), { flag: "wx" });
+          } catch {
+            log("Layer 6 · pb·new: " + f.slice(0, 8) + " 已认领·跳");
+            continue;
+          }
+          log(
+            "Layer 6 · pb·new: " +
+              f.slice(0, 12) +
+              " [pid=" +
+              process.pid +
+              "]",
+          );
+          _newConvQueue.push({ f });
+          hasNew = true;
         }
         if (hasNew) _drainQueue().catch(() => {});
       } catch {}
@@ -2824,11 +3030,6 @@ function _installLayer6FileWatcher(context) {
 
     _layer6Stop = () => {
       clearInterval(timer);
-      // 清理悬挂 settle 计时器 (防退出残留)
-      for (const st of pbSettle.values()) {
-        if (st && st.timer) clearTimeout(st.timer);
-      }
-      pbSettle.clear();
     };
     if (context && context.subscriptions) {
       context.subscriptions.push({
@@ -2841,15 +3042,9 @@ function _installLayer6FileWatcher(context) {
       });
     }
     log(
-      "Layer 6 · watch[pb·new+pb·settle] · " +
+      "Layer 6 · watch[pb·new only · v2.6.9 损 settle] · " +
         POLL_MS +
-        "ms · settle=" +
-        SETTLE_MS +
-        "ms · accum≥" +
-        ACCUM_MIN +
-        "B · grow≥" +
-        GROW_MIN +
-        "B · " +
+        "ms · " +
         cascadePbDir,
     );
   } catch (e) {
@@ -2857,9 +3052,19 @@ function _installLayer6FileWatcher(context) {
   }
 }
 
-// ── WAL 直达触发 (v2.6.3 · 大道至简 · Send 按鈕最底层信号源) ──
-// state.vscdb-wal 在用户点击 Send 后同步写入 SQLite WAL 帧
-// 高于 pb 文件: WAL 写入在 HTTP 请求前发生 · 300ms 轮询 · 比 pb 轮询快一倍
+// ── WAL 边沿首发 (v2.6.11 · 备用信号源 · 真本源 W%脉动 已在 Engine._tick) ──
+// state.vscdb-wal 在用户点击 Send 后 SQLite 同步写入 WAL 帧 (1-2 帧 ≈ 4-8KB)
+//
+// v2.6.11 修法 (道法自然·去芜存菁):
+//   · 删 WAL_EDGE_MAX checkpoint 上限过滤 (实证 v2.6.10 9.5h walfr=0 杀真信号)
+//   · 删 LOCK_MS bucket claim (perMessageMinIntervalMs 已删)
+//   · WAL 仅作为 W%脉动信号的 backup (W% 主导·WAL 备用)
+//   · 真本源迁至 Engine._tick 的 W%增量 (零中间噪音·后端真实计费)
+//
+// v2.6.9-v2.6.10 历史损法 (背景):
+//   · 弃 settle 累积模型 (实证 v2.6.6-2.6.8 0 触发)
+//   · 改首次增量边沿即 fire (WAL_EDGE_MIN ≥ 512B)
+//   · v2.6.10 加 max filter 想拦 checkpoint·实证杀真信号·v2.6.11 删
 function _installWalWatcher(context) {
   try {
     const gsDir = _resolveGlobalStorageDir(context);
@@ -2876,36 +3081,77 @@ function _installWalWatcher(context) {
       return null;
     }
 
-    // v2.6.6 反者道之动: WAL 同走 settle 模型 (debounce trailing edge)
-    const WAL_SETTLE_MS = Math.max(3000, _cfg("walDetectSettleMs", 15000) | 0);
-    const WAL_ACCUM_MIN = Math.max(512, _cfg("walDetectAccumMin", 10240) | 0);
-    // SQLite WAL 帧 = pageSize(4096) + 24B 帧头 · 任意有效内容写入必然 ≥1 帧
-    const WAL_GROW_MIN = Math.max(100, _cfg("walDetectGrowMin", 1024) | 0);
-    const WAL_POLL_MS = 300; // 比 pb 轮询(600ms)快一倍 · 更贴近真实 send 时刻
-    const WAL_LARGE = 524288; // 单次 ≥512KB 立即 settle 兜底
+    // 道法自然 · 边沿首发参数
+    const WAL_EDGE_MIN = Math.max(256, _cfg("walEdgeMinBytes", 512) | 0); // 单次 delta ≥ 此值即 fire (1 SQLite 帧最小 4KB·512B 即可捕捉部分写)
+    const WAL_POLL_MS = Math.max(100, _cfg("walPollMs", 300) | 0);
+    // v2.6.14 守二·守三 · WAL 同源冷 + 启动暖启
+    const WAL_COOLDOWN_MS = Math.max(0, _cfg("walEdgeCooldownMs", 2000) | 0); // 同源最小间隔 (2s 避 4KB 帧连火)
+    const WAL_WARMUP_MS = Math.max(0, _cfg("walWarmupMs", 5000) | 0); // 启动暖启 (5s 防 activate 首 stat 累积差引雪崩)
+    const walInstalledAt = Date.now();
+    let lastWalFireAt = 0;
+    let walWarmupSkipCount = 0;
+    let walCooldownSkipCount = 0;
 
-    let walAccum = 0;
-    let walSettleTimer = null;
-
-    function _fireWalSettle(total, reason) {
-      const bucket = Math.floor(Date.now() / WAL_SETTLE_MS);
-      const claim = path.join(L6_CLAIM_DIR, "wal." + bucket + ".settle");
-      try {
-        fs.writeFileSync(claim, String(process.pid), { flag: "wx" });
-      } catch {
-        return; // 已被其他实例认领
+    function _fireWalEdge(delta, totalSz) {
+      // v2.6.14 守三 · 启动暖启窗 · 跳过首 WAL_WARMUP_MS 内之差 (cascade-server 流期累积)
+      const sinceInstall = Date.now() - walInstalledAt;
+      if (WAL_WARMUP_MS > 0 && sinceInstall < WAL_WARMUP_MS) {
+        walWarmupSkipCount++;
+        log(
+          "WAL · edge·skip[warmup:" +
+            sinceInstall +
+            "ms<" +
+            WAL_WARMUP_MS +
+            "ms] +" +
+            delta +
+            "B (size=" +
+            totalSz +
+            ")",
+        );
+        return;
       }
+      // v2.6.14 守二 · 同源最小间隔 · 避连续 4KB 帧连火 (log 噪削减)
+      const sinceLastFire = Date.now() - lastWalFireAt;
+      if (
+        WAL_COOLDOWN_MS > 0 &&
+        lastWalFireAt > 0 &&
+        sinceLastFire < WAL_COOLDOWN_MS
+      ) {
+        walCooldownSkipCount++;
+        log(
+          "WAL · edge·skip[cooldown:" +
+            sinceLastFire +
+            "ms<" +
+            WAL_COOLDOWN_MS +
+            "ms] +" +
+            delta +
+            "B",
+        );
+        return;
+      }
+      lastWalFireAt = Date.now();
       log(
-        "WAL · settle: 累积" +
-          total +
-          "B · " +
-          reason +
-          " [pid=" +
+        "WAL · edge·fire: +" +
+          delta +
+          "B (size=" +
+          totalSz +
+          ") [pid=" +
           process.pid +
           "] → 切号",
       );
-      // v2.6.7 守一 · 删 _lastPerMsgTriggerAt = 0 (自夺防抖) · WAL 与 pb 同源派生收一道
-      _maybeTrigger("L6→wal·settle", "+" + total);
+      // diag 记录 user send 真信号分布 (v2.6.14 加 warmup/cooldown 计)
+      try {
+        const diagP = path.join(WAM_DIR, "_per_msg_diag.json");
+        const prev = fs.existsSync(diagP)
+          ? JSON.parse(fs.readFileSync(diagP, "utf8"))
+          : { hits: [], rotates: [] };
+        prev.lastEdgeDelta = delta;
+        prev.lastEdgeAt = Date.now();
+        prev.walWarmupSkipCount = walWarmupSkipCount;
+        prev.walCooldownSkipCount = walCooldownSkipCount;
+        atomicWrite(diagP, JSON.stringify(prev, null, 2));
+      } catch {}
+      _maybeTrigger("L6→wal·edge", "+" + delta);
     }
 
     const timer = setInterval(() => {
@@ -2913,60 +3159,32 @@ function _installWalWatcher(context) {
         const newSz = fs.statSync(walPath).size;
         const delta = newSz - walSz;
         if (delta < 0) {
-          // WAL checkpoint: 主 DB 吸收 WAL 后 WAL 缩小 · 重置累积
+          // WAL checkpoint: 主 DB 吸收 WAL 后 WAL 缩小 · 仅更新 baseline
           walSz = newSz;
-          if (walSettleTimer) clearTimeout(walSettleTimer);
-          walSettleTimer = null;
-          walAccum = 0;
           return;
         }
-        if (delta < WAL_GROW_MIN) return;
+        if (delta === 0) return;
+        if (delta < WAL_EDGE_MIN) {
+          // 太小 (SQLite 元数据微动) · 仅推 baseline · 不 fire
+          walSz = newSz;
+          return;
+        }
+        // v2.6.11 · 边沿首发 · 单次 delta ≥ MIN 即 fire (无 max·无累积·无 settle·无 bucket lock)
         walSz = newSz;
-        walAccum += delta;
-
-        // 单次大块兜底
-        if (delta >= WAL_LARGE && walAccum >= WAL_ACCUM_MIN) {
-          if (walSettleTimer) clearTimeout(walSettleTimer);
-          const total = walAccum;
-          walAccum = 0;
-          walSettleTimer = null;
-          _fireWalSettle(total, "大块" + delta + "B");
-          return;
-        }
-
-        // 重置 settle
-        if (walSettleTimer) clearTimeout(walSettleTimer);
-        walSettleTimer = setTimeout(() => {
-          const total = walAccum;
-          walAccum = 0;
-          walSettleTimer = null;
-          if (total < WAL_ACCUM_MIN) {
-            log(
-              "WAL · settle·skip: 累积" +
-                total +
-                "B<" +
-                WAL_ACCUM_MIN +
-                " [pid=" +
-                process.pid +
-                "]",
-            );
-            return;
-          }
-          _fireWalSettle(total, "静默" + WAL_SETTLE_MS + "ms");
-        }, WAL_SETTLE_MS);
+        _fireWalEdge(delta, newSz);
       } catch {}
     }, WAL_POLL_MS);
 
     log(
-      "WAL watcher · " +
+      "WAL watcher v2.6.14·守二守三·备用信号 · poll=" +
         WAL_POLL_MS +
-        "ms · settle=" +
-        WAL_SETTLE_MS +
-        "ms · accum≥" +
-        WAL_ACCUM_MIN +
-        "B · grow≥" +
-        WAL_GROW_MIN +
-        "B · " +
+        "ms · edge≥" +
+        WAL_EDGE_MIN +
+        "B · 同源冷=" +
+        WAL_COOLDOWN_MS +
+        "ms · 暖启=" +
+        WAL_WARMUP_MS +
+        "ms · " +
         walPath,
     );
     return timer;
@@ -3336,9 +3554,9 @@ ${_quotaEndpointDead() ? `<div class="endpoint-warn">&#9888;&#65039; <b>GetPlanS
 <div class="add-section">
 <div class="add-header" onclick="toggleAdd()"><span>&#43; 添加账号</span><span id="addArrow">&#9660;</span></div>
 <div class="add-body" id="addBody">
-<textarea id="addInput" placeholder="支持任意格式，每行一个 (自动识别)：&#10;email password   /   email:password   /   email----password&#10;email|password   /   email,password   /   email\tpassword&#10;邮箱：x@y.com&#10;密码：abc123    (多行标签 · 全角:也行)&#10;{&quot;email&quot;:&quot;x&quot;,&quot;password&quot;:&quot;y&quot;}    (JSON)&#10;devin-session-token$xxx   或   eyJ…JWT   (直接登录)"></textarea>
+<textarea id="addInput" placeholder="万法识号 v2.7 · 任意格式·一文混万法·自动识号：&#10;email password   /   email:password   /   email----password&#10;email|password   /   email,password   /   email\tpassword&#10;邮箱:x@y.com / 账号:x / 卡号1:x   (多行标签·支持数字编号·全角:也行)&#10;密码:abc123 / 卡密1:abc / 口令:abc   (含@亦无碍·守一不退)&#10;{&quot;email&quot;:&quot;x&quot;,&quot;password&quot;:&quot;y&quot;}   (JSON)&#10;devin-session-token$xxx / eyJ…JWT / auth1_…   (直接登录)&#10;微信发货消息原文亦可粘 (自动剥(去掉点)·跳订单/账号管理器)"></textarea>
 <div class="add-actions"><button onclick="doAdd()">添加</button><button onclick="copyAll()" style="background:#333;color:var(--blue);margin-left:auto">&#128203; 一键导出</button></div>
-<div class="add-hint">万法识号 · 邮箱密码自动入库 · 原始 token 自动直登 · 重复跳过</div>
+<div class="add-hint">万法识号 v2.7 · 守道反者 · 卡号/卡密/微信发货/含@密码 皆通 · 原始 token 自动直登 · 重复跳过</div>
 </div></div>
 <div class="sec"><span>&#9660; 账号列表 (${stats.pwCount})</span></div>
 <div id="list">${rows}</div>
@@ -3876,8 +4094,9 @@ class Engine {
 
   startMonitor() {
     if (this.scanTimer) return;
-    const ms = Math.max(30000, _cfg("scanIntervalMs", 60000) | 0);
-    log("monitor start · period=" + ms + "ms");
+    // v2.6.11 · min 5s (为 W%脉动信号争取实时性 · 原 30s 太慢·合并多次 send)
+    const ms = Math.max(5000, _cfg("scanIntervalMs", 10000) | 0);
+    log("monitor start · period=" + ms + "ms (v2.6.11 W%脉动真本源)");
     this.scanTimer = setInterval(() => {
       this._tick().catch((e) => log("tick err: " + (e.message || e)));
     }, ms);
@@ -3936,6 +4155,110 @@ class Engine {
       log("tick: planStatus 拉空 · 跳过");
       return;
     }
+    // v2.6.12 道恒无名 · 民自均焉 · W%脉动信号 (真本源 · 守一)
+    //   原理: 每次 user send → 后端计费 → weekly% 减少 (Remaining%)
+    //   两轮间 prevW% - newW% = 本轮 user send 总消耗
+    //   外在文件 IO 全不必赖 · 零中间噪音 · 后端账即真账
+    //
+    //   v2.6.12 守一 (修 v2.6.11 跨账号假脉动 bug):
+    //     · 必须同账号 (_lastQuotaEmail === activeEmail) 才比 W% (跨账号 ΔW% 是切号引起·非 send)
+    //     · 真脉动 → 设 _lastQuotaPulseAt → 后续 N 秒内 WAL/pb 让位 (主信号优先)
+    const pulseMinDelta = Math.max(
+      0.01,
+      +_cfg("quotaPulseMinDelta", 0.3) || 0.3,
+    );
+    const curEmail = this.store.activeEmail || "";
+    if (
+      _lastQuotaWeekly >= 0 &&
+      _lastQuotaEmail === curEmail &&
+      curEmail &&
+      typeof q.weekly === "number" &&
+      q.weekly >= 0 &&
+      _lastQuotaWeekly - q.weekly >= pulseMinDelta
+    ) {
+      const dW = +(_lastQuotaWeekly - q.weekly).toFixed(3);
+      _quotaPulseCount++;
+      _lastQuotaPulseAt = Date.now(); // 守一 · 主信号窗口起点
+      log(
+        "\u26a1 W%\u8109\u52a8\u4fe1\u53f7#" +
+          _quotaPulseCount +
+          " \u00b7 W " +
+          _lastQuotaWeekly.toFixed(2) +
+          "% \u2192 " +
+          q.weekly.toFixed(2) +
+          "% \u00b7 \u0394=-" +
+          dW +
+          "% \u2192 \u89e6\u53d1\u5207\u53f7",
+      );
+      _maybeTrigger("\u26a1W%\u8109\u52a8", "-" + dW + "%");
+    } else if (
+      _lastQuotaWeekly >= 0 &&
+      _lastQuotaEmail !== curEmail &&
+      typeof q.weekly === "number" &&
+      q.weekly >= 0 &&
+      Math.abs(_lastQuotaWeekly - q.weekly) >= pulseMinDelta
+    ) {
+      // 跨账号变化 · 屏蔽假脉动 · 仅诊断计数 (不打 log 噪音 · 仅累计)
+      _quotaPulseSuppressedCount++;
+    }
+    // v2.6.13 阴阳结合 · ⚖额度变动信号 (阴·辅 · 与 W%脉动互补)
+    //   原理: weekly% (阳·主·宏观百分比) ↔ daily%/promptCredits/flowCredits (阴·辅·微观+其他维度)
+    //   反者道之动: 自彼则不见 · 自是则知之 · W% 自是 · ⚖ 自彼 · 阴阳互补显全象
+    //   不冲突: 同入 _maybeTrigger · 同受 60s 强锁 · W%脉动主信号窗内 ⚖ 让位 (主 _maybeTrigger 已处理)
+    //   防跨账号假脉动: 同 W% · 必 _lastQuotaEmail === curEmail 才比 (在更新 _lastQuotaEmail 之前)
+    if (
+      _cfg("quotaDeltaEnable", true) &&
+      curEmail &&
+      _lastQuotaEmail === curEmail
+    ) {
+      const creditsMin = Math.max(1, +_cfg("quotaDeltaCreditsMin", 1) || 1);
+      const dailyMin = Math.max(0.01, +_cfg("quotaDeltaDailyMin", 0.3) || 0.3);
+      const dDaily =
+        _lastQuotaDaily >= 0 && typeof q.daily === "number" && q.daily >= 0
+          ? _lastQuotaDaily - q.daily
+          : 0;
+      const dPC =
+        _lastQuotaPromptCredits >= 0 &&
+        typeof q.promptCredits === "number" &&
+        q.promptCredits >= 0
+          ? _lastQuotaPromptCredits - q.promptCredits
+          : 0;
+      const dFC =
+        _lastQuotaFlowCredits >= 0 &&
+        typeof q.flowCredits === "number" &&
+        q.flowCredits >= 0
+          ? _lastQuotaFlowCredits - q.flowCredits
+          : 0;
+      const triggers = [];
+      if (dDaily >= dailyMin) triggers.push("D-" + dDaily.toFixed(2) + "%");
+      if (dPC >= creditsMin) triggers.push("PC-" + dPC);
+      if (dFC >= creditsMin) triggers.push("FC-" + dFC);
+      if (triggers.length > 0) {
+        _quotaDeltaCount++;
+        log(
+          "\u2696 \u989d\u5ea6\u53d8\u52a8\u4fe1\u53f7#" + // ⚖ 额度变动信号#
+            _quotaDeltaCount +
+            " \u00b7 " + // ·
+            triggers.join(",") +
+            " \u2192 \u89e6\u53d1\u5207\u53f7", // → 触发切号
+        );
+        _maybeTrigger("\u2696\u989d\u5ea6\u53d8\u52a8", triggers.join(",")); // ⚖额度变动
+      }
+    }
+    // 基线统一更新 (W% + ⚖ 同步) · 切号后 setActive 已清 -1 · 此处只更非负值
+    _lastQuotaWeekly =
+      typeof q.weekly === "number" ? q.weekly : _lastQuotaWeekly;
+    _lastQuotaEmail = curEmail;
+    _lastQuotaDaily =
+      typeof q.daily === "number" && q.daily >= 0 ? q.daily : _lastQuotaDaily;
+    _lastQuotaPromptCredits =
+      typeof q.promptCredits === "number" && q.promptCredits >= 0
+        ? q.promptCredits
+        : _lastQuotaPromptCredits;
+    _lastQuotaFlowCredits =
+      typeof q.flowCredits === "number" && q.flowCredits >= 0
+        ? q.flowCredits
+        : _lastQuotaFlowCredits;
     this.store.setHealth(this.store.activeEmail, q);
     _broadcastUI();
 
@@ -4798,7 +5121,17 @@ async function activate(context) {
   log(
     "WAM v" +
       VERSION +
-      " activated · 道法自然 · 太上下知有之 · settle 模型[pb·new+pb·settle+wal·settle] · 4s 防抖" +
+      " activated · 三守俱全·大制无割 · ⚡W%脉动 (\u0394\u2265" +
+      (+_cfg("quotaPulseMinDelta", 0.3)).toFixed(2) +
+      "%·同账号判·切号清基线) + [全栏 " +
+      Math.round(+_cfg("perMessageMinIntervalMs", 60000) / 1000) +
+      "s / WAL让位 " +
+      Math.round(+_cfg("quotaPulsePriorityMs", 60000) / 1000) +
+      "s / WAL冷 " +
+      Math.round(+_cfg("walEdgeCooldownMs", 2000) / 1000) +
+      "s / 暖启 " +
+      Math.round(+_cfg("walWarmupMs", 5000) / 1000) +
+      "s]" +
       (_cfg("rotateOnEveryMessage", true) ? " [开]" : " [关]") +
       " · 使用中🔒 " +
       Math.round(_cfg("inUseLockMs", 120000) / 1000) +

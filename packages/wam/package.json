@@ -2,7 +2,7 @@
 	"name": "rt-flow",
 	"displayName": "Runtime Flow",
 	"description": "Runtime flow management · adaptive scheduling",
-	"version": "2.6.8",
+	"version": "2.7.0",
 	"publisher": "devaid",
 	"repository": {
 		"type": "git",
@@ -164,8 +164,8 @@
 				},
 				"wam.scanIntervalMs": {
 					"type": "number",
-					"default": 60000,
-					"description": "Quota scan interval (ms, min 30s)"
+					"default": 10000,
+					"description": "v2.6.11 道恒无名·民自均 · W%轮询周期 (ms·min 5000) · 作为 user send 真本源信号查询周期 · 10s 使 W%增量在 1 轮内足以体现"
 				},
 				"wam.preferYi": {
 					"type": "boolean",
@@ -247,50 +247,60 @@
 					"default": 120000,
 					"description": "v2.3.0 使用中🔒: 切号成功后该号锁定 N ms · 锁期内自动切号不入选 · 手动切号不受影响 · 0=关 · 默认 120s"
 				},
-				"wam.perMessageDebounceMs": {
+				"wam.quotaPulseMinDelta": {
 					"type": "number",
-					"default": 4000,
-					"description": "每消息切号防抖 (一轮多请求只算一次, ms)"
+					"default": 0.3,
+					"description": "v2.6.11 道恒无名 · W%脉动信号阈值 — 两轮轮询间 weekly%增量 ≥ 此值 即为一次 user send 完成 · 触发切号 (默认 0.3% · 一次 Sonnet send 约增 0.3-1% · 流式 single token 只增 0.001%) · v2.6.12 加同账号判 (跨账号变化屏蔽)"
 				},
-				"wam.perMessageDelayMs": {
+				"wam.quotaPulsePriorityMs": {
 					"type": "number",
-					"default": 1500,
-					"description": "每消息切号延迟 (让当前消息先送出再切, ms)"
-				},
-				"wam.sendDetectSettleMs": {
-					"type": "number",
-					"default": 15000,
-					"description": "v2.6.6 pb·settle 静默期 — 反者道之动 · 文件增长后静默此时长未再变 → AI 已停 → 切号 (ms)"
-				},
-				"wam.sendDetectAccumMin": {
-					"type": "number",
-					"default": 5120,
-					"description": "v2.6.6 pb·settle 累积阈值 — settle 期内累积增量 ≥ 此值才切号 · 过滤 cascade 心跳/元数据小写 (bytes)"
-				},
-				"wam.sendDetectGrowMin": {
-					"type": "number",
-					"default": 30,
-					"description": "v2.6.6 pb·settle 单次最小增量 — 低于此值不入累积 · 噪声过滤 (bytes)"
+					"default": 60000,
+					"description": "v2.6.12 守一 · W%脉动主信号窗口 — 一次 ⚡W%脉动 触发后 N ms 内 WAL/pb 备用信号让位 (skip) · 解决三路抢跑 1.75 倍切号 · 默认 60s · 0=关守一·复 v2.6.11 三路并发"
 				},
 				"wam.walDetect": {
 					"type": "boolean",
 					"default": true,
-					"description": "v2.6.3 WAL 直达触发 — 监听 state.vscdb-wal 作为 Send 按鈕最底层信号源 (click Send 后 SQLite 同步写入·早于 AI 响应)"
+					"description": "v2.6.3 WAL 直达触发 — 监听 state.vscdb-wal 作为 Send 按钪最底层信号源 (click Send 后 SQLite 同步写入·早于 AI 响应)"
 				},
-				"wam.walDetectSettleMs": {
+				"wam.walEdgeMinBytes": {
 					"type": "number",
-					"default": 15000,
-					"description": "v2.6.6 wal·settle 静默期 — 反者道之动 · WAL 增长后静默此时长未再变 → 切号 (ms)"
+					"default": 512,
+					"description": "v2.6.9 边沿首发 · WAL 单次增量下限 — delta ≥ 此值即 fire (1 SQLite 帧 ≈4120B · 部分写 ≥512B 即可捕捉)"
 				},
-				"wam.walDetectAccumMin": {
+				"wam.walPollMs": {
 					"type": "number",
-					"default": 10240,
-					"description": "v2.6.6 wal·settle 累积阈值 — settle 期内 WAL 累积增量 ≥ 此值才切号 · 过滤 SQLite 心跳 (bytes)"
+					"default": 300,
+					"description": "v2.6.9 WAL 轮询间隔 — stat() state.vscdb-wal 轮询频率 (默认 300ms · 低延迟高应)"
 				},
-				"wam.walDetectGrowMin": {
+				"wam.quotaDeltaEnable": {
+					"type": "boolean",
+					"default": true,
+					"description": "v2.6.13 阴阳结合 · ⚖额度变动信号 — 监测 daily%/promptCredits/flowCredits 任一下降 ≥ 阈值即触发切号 (与 W%脉动互补·主信号窗内自动让位·反者道之动)"
+				},
+				"wam.quotaDeltaCreditsMin": {
 					"type": "number",
-					"default": 1024,
-					"description": "v2.6.3 WAL 单次最小增量 — SQLite WAL 帧 = pageSize(4096)+24B/帧 · 1024 可捕获任意有效写入 (bytes)"
+					"default": 1,
+					"description": "v2.6.13 ⚖ promptCredits/flowCredits 下降阈值 (默 1 · 任何整数减少即触发 · 微观额度池绝对数·与 quota% 解耦)"
+				},
+				"wam.quotaDeltaDailyMin": {
+					"type": "number",
+					"default": 0.3,
+					"description": "v2.6.13 ⚖ daily% 下降阈值 (默 0.3% · 与 W%脉动 quotaPulseMinDelta 同量级 · Pro plan daily 维度专用)"
+				},
+				"wam.perMessageMinIntervalMs": {
+					"type": "number",
+					"default": 60000,
+					"description": "v2.6.14 守一·全 reason 强锁 — _maybeTrigger 入口全栏 · 适 ⚡W%脉动/📡WAL/📃pb·new/⚖额度变动 万源 · 1 user send ≤ 1 切号 · 复 v2.6.9 之全栏治 v2.6.13 W% 自火与 WAL 抢跑雪崩 · 默 60s · 0=关复 v2.6.11 无栏行为"
+				},
+				"wam.walEdgeCooldownMs": {
+					"type": "number",
+					"default": 2000,
+					"description": "v2.6.14 守二·WAL 同源最小间隔 — _fireWalEdge 两次间 ≥ 此值才 fire · 避连续 4KB SQLite 帧连火 · 削 log 噪 · 默 2000ms · 0=关"
+				},
+				"wam.walWarmupMs": {
+					"type": "number",
+					"default": 5000,
+					"description": "v2.6.14 守三·WAL 启动暖启窗 — _installWalWatcher 后首 N ms 内 WAL fire 全跳 · 防 activate 首 stat 累积差引启动雪崩 (实证 reload 0.5s 即火) · 默 5000ms · 0=关"
 				}
 			}
 		}

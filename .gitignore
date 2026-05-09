@@ -70,3 +70,7 @@ accounts*.md
 **/_probe_*.cjs
 **/_capture_*.js
 **/_test_bench_*.cjs
+
+# 例外 · packages/wam/账号库.example.md (脱敏 example · 主公私产真账号由 .gitignore 屏蔽)
+!packages/wam/账号库.example.md
+

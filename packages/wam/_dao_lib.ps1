@@ -17,37 +17,61 @@
 $script:DaoLibDir = $PSScriptRoot
 
 function Get-DaoEnv {
-    param([string]$EnvFile = (Join-Path $script:DaoLibDir '_dao_env.psd1'))
-    if (-not (Test-Path $EnvFile)) {
-        return @{
-            extensionId = 'devaid.rt-flow'
-            wamHomeDir  = '.wam'
-            extDirHint  = '.windsurf\extensions'
-            targets     = @(@{ name = 'local'; kind = 'local' })
+    param(
+        [string]$EnvFile      = (Join-Path $script:DaoLibDir '_dao_env.psd1'),
+        [string]$LocalEnvFile = (Join-Path $script:DaoLibDir '_dao_env.local.psd1')
+    )
+    # 道法自然 · 三层载入 (后者覆盖前者):
+    #   1. defaults                    水之常 (cannot fail)
+    #   2. _dao_env.psd1               base (git-tracked · for all machines)
+    #   3. _dao_env.local.psd1         override (gitignored · this machine)
+    #   4. WAM_TARGETS_JSON env        transient override
+
+    # 1. defaults
+    $h = @{
+        extensionId = 'devaid.rt-flow'
+        wamHomeDir  = '.wam'
+        extDirHint  = '.windsurf\extensions'
+        targets     = @(@{ name = 'local'; kind = 'local' })
+    }
+    # 2. base file
+    if (Test-Path $EnvFile) {
+        try {
+            $base = Import-PowerShellDataFile -Path $EnvFile
+            foreach ($k in $base.Keys) { $h[$k] = $base[$k] }
+        } catch {
+            Write-Warning ('base env file parse fail: ' + $_.Exception.Message)
         }
     }
-    $h = Import-PowerShellDataFile -Path $EnvFile
-    if (-not $h.extensionId) { $h.extensionId = 'devaid.rt-flow' }
-    if (-not $h.wamHomeDir)  { $h.wamHomeDir  = '.wam' }
-    if (-not $h.extDirHint)  { $h.extDirHint  = '.windsurf\extensions' }
-    if (-not $h.targets)     { $h.targets     = @(@{ name = 'local'; kind = 'local' }) }
-
-    # env override: WAM_TARGETS_JSON
+    # 3. local override (gitignored · this machine, this user)
+    if (Test-Path $LocalEnvFile) {
+        try {
+            $local = Import-PowerShellDataFile -Path $LocalEnvFile
+            foreach ($k in $local.Keys) { $h[$k] = $local[$k] }
+        } catch {
+            Write-Warning ('local env file parse fail: ' + $_.Exception.Message)
+        }
+    }
+    # 4. env override: WAM_TARGETS_JSON
     if ($env:WAM_TARGETS_JSON) {
         try {
             $arr = $env:WAM_TARGETS_JSON | ConvertFrom-Json
-            $h.targets = @($arr | ForEach-Object { @{} + $_.PSObject.Properties.Where({$true}).ForEach({@{$_.Name=$_.Value}}) })
+            $h.targets = @($arr | ForEach-Object {
+                $hash = @{}
+                foreach ($p in $_.PSObject.Properties) { $hash[$p.Name] = $p.Value }
+                $hash
+            })
         } catch {
             Write-Warning ('WAM_TARGETS_JSON parse fail: ' + $_.Exception.Message)
         }
     }
     return $h
 }
-
 function Get-WamSourceVersion {
     param([string]$ExtensionJs = (Join-Path $script:DaoLibDir 'extension.js'))
     if (-not (Test-Path $ExtensionJs)) { return $null }
-    $head = Get-Content $ExtensionJs -TotalCount 200 -ErrorAction SilentlyContinue
+    # v2.6.9: head 扩至 400 行 · 防 changelog 注释累积推 VERSION 出窗 (v2.6.9 注释 ~46 行 · VERSION 在 220)
+    $head = Get-Content $ExtensionJs -TotalCount 400 -ErrorAction SilentlyContinue
     $verLine = ($head | Select-String 'const VERSION\s*=\s*"' | Select-Object -First 1)
     if (-not $verLine) { return $null }
     return ($verLine.Line -replace '.*"([0-9]+\.[0-9]+\.[0-9]+)".*', '$1')
@@ -71,6 +95,17 @@ function Get-WamSourceShortSha {
     return (Get-FileHash $ExtensionJs -Algorithm SHA256).Hash.Substring(0, $Length).ToLower()
 }
 
+# 道法自然 · 单一信源 · 万法 wamHomeDir 走此一道
+# v2.7.0 软编码归一: 各 _v2611_* / _dao_postreload_verify 不再字面 '.wam'
+# 主公在 _dao_env(.local).psd1 改 wamHomeDir 此处即响应
+function Get-WamDir {
+    param($Env = $null)
+    if (-not $Env) { $Env = Get-DaoEnv }
+    $userHome = $env:USERPROFILE
+    if (-not $userHome) { $userHome = $env:HOME }   # Linux/macOS 兼容兜底
+    return Join-Path $userHome $Env.wamHomeDir
+}
+
 function Resolve-DevaidLocation {
     param(
         [Parameter(Mandatory)] [string]$ExtRoot,
@@ -84,6 +119,12 @@ function Resolve-DevaidLocation {
         $arr = Get-Content $xj -Raw -Encoding utf8 | ConvertFrom-Json
     } catch {
         return [pscustomobject]@{ ok=$false; reason="json parse: $($_.Exception.Message)"; path=''; relPath=''; xj=$xj }
+    }
+    # v2.6.13 道法自然·唯变所适: 兼容两形 extensions.json 结构
+    #   1. 裸数组:         [{ext1},{ext2},...]                 (老/local)
+    #   2. 包装对象:       {"value":[...], "Count":N}          (新 Windsurf · 如 179 机)
+    if ($arr -is [System.Management.Automation.PSCustomObject] -and $arr.PSObject.Properties['value']) {
+        $arr = $arr.value
     }
     $rec = $arr | Where-Object { $_.identifier.id -eq $ExtensionId } | Select-Object -First 1
     if (-not $rec) {

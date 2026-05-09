@@ -1,18 +1,24 @@
-# _dao_env.psd1 - WAM dao environment - soft config, no hardcode
+# _dao_env.psd1 - WAM dao environment - default soft config (git-tracked)
 #
-# 道法自然 · 唯变所适 · 适配万法之用户万法之环境
+# 道法自然 · 唯变所适 · 适配万法之电脑万法之用户
+# 水无常形 · 利万物而有静 · 此为默认骨 · 不绑特定主机/用户
 #
-# 何变此中: targets, extensionId, wamHomeDir, extDirHint
-# 何不变: 本目录之 extension.js / package.json 即源
+# 三层配置 (后者覆盖前者):
+#   1. _dao_env.psd1           本文件 · git 跟踪 · 通用默认
+#   2. _dao_env.local.psd1     本地覆盖 · gitignored · 此机此人专
+#   3. WAM_TARGETS_JSON env    临时 override (JSON array)
 #
-# 用户可
-#   1. 直接编辑此文件
-#   2. 设置环境变量 WAM_TARGETS_JSON (JSON array) 覆盖 targets
-#   3. 部署/验证脚本传 -Targets 参数覆盖
+# 远程目标加配 -> 编辑 _dao_env.local.psd1 (示例:)
+#   @{
+#       targets = @(
+#           @{ name = 'local'; kind = 'local' }
+#           @{ name = 'peer';  kind = 'smb'; host = '<ip>'; user = '<user>'; drive = 'C' }
+#       )
+#   }
 #
 # kind:
 #   local   = $env:USERPROFILE on this machine
-#   smb     = \\<host>\<drive>$\Users\<user>  (Windows admin share, fallback drive letter)
+#   smb     = \\<host>\<drive>$\Users\<user>  (Windows admin share)
 #   ssh     = ssh <user>@<host>  (reserved for future remote-exec mode)
 
 @{
@@ -20,14 +26,8 @@
     wamHomeDir  = '.wam'
     extDirHint  = '.windsurf\extensions'
 
+    # 默认仅本机 · 任何 clone 即可工作 · 万人通用
     targets = @(
         @{ name = 'local'; kind = 'local' }
-        @{
-            name  = '179'
-            kind  = 'smb'
-            host  = '192.168.31.179'
-            user  = 'zhouyoukang'
-            drive = 'C'
-        }
     )
 }

@@ -1,17 +1,20 @@
-// v2.6.7 守一·减二·防抖回归测试
+// v2.6.10 治人事天·莫若啬 · checkpoint 过滤 回归测试 (包含 v2.6.9 回归)
 //
-// 验证维度:
+// 演化历史:
+//   v2.6.6: settle (debounce trailing edge) 替 cooloff · reset 自夺防抖
+//   v2.6.7: 删 settle 路径中的 reset (守一) · 会 saw 4s 防抖送多源收一道
+//   v2.6.8: 实证仍雪崩 22s/次切号 · 根因是多 .pb 文件并发 + claim 锁失效
+//   v2.6.9: 头损 settle 整段 + WAL 边沿首发 + 60s 全局强锁 (反者道之动) · 实证降幅 98.9%
+//   v2.6.10: WAL 上限过滤 checkpoint (实证 840KB/708KB edge·fire 是 auto_checkpoint) · 治人事天·莫若啬
+//
+// 验证维度 (v2.6.10 接代 v2.6.9 · 全兼容):
 //   §1 静态规约 (extension.js 文本分析)
-//     - VERSION === "2.6.7"
-//     - pb·settle / wal·settle fire 前不再有 _lastPerMsgTriggerAt = 0
-//     - pb·new 队列里的 reset 保留 (串行需绕 4s 防抖)
-//     - _perMsgDebounced 状态变量声明
-//     - _maybeTrigger 防抖分支含计数 + 诊断写入
-//   §2 行为隔离 (核心逻辑独立验)
-//     - 4s 窗口内多次 fire → 仅 1 hit + N-1 debounced
-//     - 4s 窗口外 fire → 继续 hit
-//   §3 实战追演 (实证根因样本)
-//     - 11:25-11:27 雪崩 4 分钟 18 切号样本 → v2.6.7 应≤6 切号
+//     - VERSION === "2.6.10"
+//     - v2.6.9 尽纯 (settle 已删 · edge 已立 · 60s 强锁 · 纯 bucket)
+//     - v2.6.10 新: _skipWalEdge 存 / walEdgeMaxBytes 配 / _edgeSkipCount 声 / skip log / diag 扩
+//   §2 行为隔离 (v2.6.9 4s 防抖 + 60s 强锁 逻辑 仍需验)
+//   §3 实战追演 (三代模型对比: v2.6.6 / v2.6.7 / v2.6.9)
+//   §4 _per_msg_diag.json schema 兼容 (v2.6.10 新字段向后兼容)
 //
 "use strict";
 const fs = require("node:fs");
@@ -34,7 +37,7 @@ function expect(name, cond, detail) {
 console.log(
   "\n================================================================",
 );
-console.log("  v2.6.7 shou yi - jian er - debounce regression test");
+console.log("  v2.6.10 zhi ren shi tian - mo ruo se - checkpoint guard");
 console.log("================================================================");
 
 // ════════════════════════════════════════════════════════════════
@@ -46,74 +49,52 @@ const extPath = path.join(__dirname, "extension.js");
 const extSrc = fs.readFileSync(extPath, "utf8");
 const lines = extSrc.split("\n");
 
-// 1.1 VERSION === "2.6.7"
+// 1.1 VERSION === "2.6.10"
 {
   const m = extSrc.match(/^const VERSION = "([0-9.]+)";/m);
   const v = m ? m[1] : "??";
-  expect("VERSION === 2.6.8", v === "2.6.8", "actual=" + v);
+  expect("VERSION === 2.6.10", v === "2.6.10", "actual=" + v);
 }
 
-// 1.2 pb·settle fire 前 reset 已删 (找 pb·settle 上下文)
+// 1.2 v2.6.9: _firePbSettle 函数已删 (settle 信号源本错位 · 雪崩本源)
 {
-  // 找 _maybeTrigger("L6→pb·settle"... 调用
-  let foundCall = -1;
-  for (let i = 0; i < lines.length; i++) {
-    if (lines[i].includes('_maybeTrigger("L6→pb·settle"')) {
-      foundCall = i;
-      break;
-    }
-  }
   expect(
-    "pb·settle _maybeTrigger 调用存在",
-    foundCall >= 0,
-    "line=" + (foundCall + 1),
+    "v2.6.9 _firePbSettle 函数已删 (settle 信号错位)",
+    !/function\s+_firePbSettle\s*\(/.test(extSrc),
+    "损 settle 模型 · pb 增量=AI 流·不该切号",
   );
-
-  if (foundCall >= 0) {
-    // 检查上方 5 行内不应有 _lastPerMsgTriggerAt = 0 (代码行, 排除注释)
-    const ctxStart = Math.max(0, foundCall - 5);
-    const codeLines = lines
-      .slice(ctxStart, foundCall)
-      .map((l) => l.split("//")[0]); // 剥行尾注释 (避 . 不匫 \r 问)
-    const codeOnly = codeLines.join("\n");
-    expect(
-      "pb·settle 上方 5 行代码无 _lastPerMsgTriggerAt = 0",
-      !codeOnly.match(/_lastPerMsgTriggerAt\s*=\s*0/),
-      "ctx 行 " + (ctxStart + 1) + "-" + foundCall,
-    );
-  }
+  expect(
+    "v2.6.9 _maybeTrigger 'L6→pb·settle' 调用已删",
+    !extSrc.includes('_maybeTrigger("L6→pb·settle"'),
+    "settle 路径清除",
+  );
 }
 
-// 1.3 wal·settle fire 前 reset 已删
+// 1.3 v2.6.9: _fireWalSettle 已删 · _fireWalEdge 接代 (边沿首发)
 {
-  let foundCall = -1;
-  for (let i = 0; i < lines.length; i++) {
-    if (lines[i].includes('_maybeTrigger("L6→wal·settle"')) {
-      foundCall = i;
-      break;
-    }
-  }
   expect(
-    "wal·settle _maybeTrigger 调用存在",
-    foundCall >= 0,
-    "line=" + (foundCall + 1),
+    "v2.6.9 _fireWalSettle 函数已删 (settle 对 WAL 实证 0 触发)",
+    !/function\s+_fireWalSettle\s*\(/.test(extSrc),
+    "实证: SQLite checkpoint 15s 内抢截·累积永不到阈值",
   );
-
-  if (foundCall >= 0) {
-    const ctxStart = Math.max(0, foundCall - 5);
-    const codeLines = lines
-      .slice(ctxStart, foundCall)
-      .map((l) => l.split("//")[0]);
-    const codeOnly = codeLines.join("\n");
-    expect(
-      "wal·settle 上方 5 行代码无 _lastPerMsgTriggerAt = 0",
-      !codeOnly.match(/_lastPerMsgTriggerAt\s*=\s*0/),
-      "ctx 行 " + (ctxStart + 1) + "-" + foundCall,
-    );
-  }
+  expect(
+    "v2.6.9 _fireWalEdge 函数存在 (边沿首发接代)",
+    /function\s+_fireWalEdge\s*\(/.test(extSrc),
+    "单次 delta ≥ 阈值即 fire · 不累积不等 settle",
+  );
+  expect(
+    "v2.6.9 _maybeTrigger 'L6→wal·settle' 已删",
+    !extSrc.includes('_maybeTrigger("L6→wal·settle"'),
+    "settle 路径清除",
+  );
+  expect(
+    "v2.6.9 _maybeTrigger 'L6→wal·edge' 调用存在",
+    extSrc.includes('_maybeTrigger("L6→wal·edge"'),
+    "边沿首发 → _maybeTrigger",
+  );
 }
 
-// 1.4 pb·new 队列里的 reset 保留 (queue gap 3500ms < debounce 4000ms · 串行需绕)
+// 1.4 v2.6.9: pb·new 上方的 _lastPerMsgTriggerAt = 0 已删 (最后一处自夺防抖)
 {
   let foundCall = -1;
   for (let i = 0; i < lines.length; i++) {
@@ -123,20 +104,51 @@ const lines = extSrc.split("\n");
     }
   }
   expect(
-    "pb·new _maybeTrigger 调用存在",
+    "pb·new _maybeTrigger 调用存在 (保留唯一信号源)",
     foundCall >= 0,
     "line=" + (foundCall + 1),
   );
 
   if (foundCall >= 0) {
+    // v2.6.9: 上方 5 行代码中不应有 _lastPerMsgTriggerAt = 0 (最后一处自夺已删)
     const ctxStart = Math.max(0, foundCall - 5);
-    const ctx = lines.slice(ctxStart, foundCall).join("\n");
+    const codeLines = lines
+      .slice(ctxStart, foundCall)
+      .map((l) => l.split("//")[0]); // 剥行尾注释
+    const codeOnly = codeLines.join("\n");
     expect(
-      "pb·new 上方 5 行 _lastPerMsgTriggerAt = 0 应保留 (队列串行)",
-      !!ctx.match(/_lastPerMsgTriggerAt\s*=\s*0/),
+      "v2.6.9 pb·new 上方代码无 _lastPerMsgTriggerAt = 0 (最后自夺损之)",
+      !codeOnly.match(/_lastPerMsgTriggerAt\s*=\s*0/),
       "ctx 行 " + (ctxStart + 1) + "-" + foundCall,
     );
   }
+}
+
+// 1.4b v2.6.9: perMessageMinIntervalMs 默认 60000 (60s 全局强锁)
+{
+  expect(
+    "v2.6.9 perMessageMinIntervalMs 默认 60000",
+    /_cfg\("perMessageMinIntervalMs",\s*60000/.test(extSrc),
+    "实证 v2.6.8 22s/次切号 · 60s 强锁后 ≥1:1 用户对话频率",
+  );
+}
+
+// 1.4c v2.6.9: _maybeTrigger 内 minInterval-locked 日志路径
+{
+  expect(
+    "v2.6.9 _maybeTrigger 包含 minInterval-locked 日志",
+    extSrc.includes("minInterval-locked"),
+    "诊断强锁拦截事件 · 可调",
+  );
+}
+
+// 1.4d v2.6.9: WAL claim key = "wal." + bucket + ".edge" (纯 bucket · 多源合一)
+{
+  expect(
+    'v2.6.9 WAL claim key = "wal." + bucket + ".edge" (纯 bucket)',
+    /"wal\."\s*\+\s*bucket\s*\+\s*"\.edge"/.test(extSrc),
+    "不带 prefix · 多 ext-host 实例派生收一道",
+  );
 }
 
 // 1.5 _perMsgDebounced 状态变量声明
@@ -175,13 +187,108 @@ const lines = extSrc.split("\n");
   }
 }
 
-// 1.7 v2.6.7 changelog 头部记录存在 (idx ~5021)
+// ==================================================================
+// 1.8 ~ 1.12 · v2.6.10 新增奇 (checkpoint 过滤 · 空间过滤 + 时间强锁 两道互补)
+// ==================================================================
+
+// 1.8 v2.6.10: _skipWalEdge 函数存在 (checkpoint 识别+跳过)
 {
-  const headBlock = extSrc.substring(0, 8000);
   expect(
-    "head changelog 含 v2.6.7 守一",
+    "v2.6.10 _skipWalEdge 函数存在 (checkpoint 过滤)",
+    /function\s+_skipWalEdge\s*\(/.test(extSrc),
+    "WAL_EDGE_MAX 超限 → skip 不 fire · 道法自然·莫若啬",
+  );
+}
+
+// 1.9 v2.6.10: walEdgeMaxBytes 配置读取存在 (默 65536)
+{
+  expect(
+    'v2.6.10 _cfg("walEdgeMaxBytes", 65536) 配置读取存在',
+    /_cfg\("walEdgeMaxBytes",\s*65536/.test(extSrc),
+    "64KB 上限 · user send 常 4-32KB · checkpoint 常 MB级",
+  );
+}
+
+// 1.10 v2.6.10: _edgeSkipCount 全局声明
+{
+  expect(
+    "v2.6.10 _edgeSkipCount 全局声明",
+    /_edgeSkipCount\s*=\s*0/.test(extSrc),
+    "诊断计数 · wal·edge·skip 总次",
+  );
+}
+
+// 1.11 v2.6.10: wal·edge·skip[checkpoint: 日志模板
+{
+  expect(
+    "v2.6.10 wal·edge·skip[checkpoint: log 模板存在",
+    /edge·skip\[checkpoint:/.test(extSrc),
+    "与 edge·fire 双轨可观 · 分而中之",
+  );
+}
+
+// 1.12 v2.6.10: diag 新字段 (lastEdgeDelta / lastCheckpointDelta / edgeSkipCount)
+{
+  expect(
+    "v2.6.10 diag 写入 lastEdgeDelta (user send 真信号分布)",
+    /prev\.lastEdgeDelta\s*=\s*delta/.test(extSrc),
+    "在 _fireWalEdge 写入 · 记录 user send 分布",
+  );
+  expect(
+    "v2.6.10 diag 写入 lastCheckpointDelta",
+    /prev\.lastCheckpointDelta\s*=\s*delta/.test(extSrc),
+    "在 _skipWalEdge 写入 · checkpoint 分布",
+  );
+  expect(
+    "v2.6.10 diag 写入 edgeSkipCount",
+    /prev\.edgeSkipCount\s*=\s*_edgeSkipCount/.test(extSrc),
+    "skip 总次",
+  );
+}
+
+// 1.13 v2.6.10: 主 poll 循环含 WAL_EDGE_MAX 分支
+{
+  expect(
+    "v2.6.10 主 poll 循环含 WAL_EDGE_MAX 上限分支",
+    /WAL_EDGE_MAX\s*>\s*0\s*&&\s*delta\s*>\s*WAL_EDGE_MAX/.test(extSrc),
+    "delta > MAX → _skipWalEdge · 不 fire · 不切号",
+  );
+}
+
+// 1.14 v2.6.10: package.json 含 walEdgeMaxBytes 配置项
+{
+  const pkgPath = path.join(__dirname, "package.json");
+  if (fs.existsSync(pkgPath)) {
+    const pkgSrc = fs.readFileSync(pkgPath, "utf8");
+    expect(
+      "v2.6.10 package.json 含 wam.walEdgeMaxBytes",
+      /"wam\.walEdgeMaxBytes"/.test(pkgSrc) &&
+        /"default":\s*65536/.test(pkgSrc),
+      "user 配置面暴露 · 默 64KB · 0=关上限",
+    );
+    expect(
+      "v2.6.10 package.json version === 2.6.10",
+      /"version":\s*"2\.6\.10"/.test(pkgSrc),
+      "与 extension.js VERSION 同步",
+    );
+  } else {
+    expect("v2.6.10 package.json 存在", false, pkgPath);
+  }
+}
+
+// 1.7 v2.6.9 changelog 头部记录存在 (v2.6.9 注释 ~9.4KB · 窗口扩至 12000)
+{
+  const headBlock = extSrc.substring(0, 12000);
+  expect(
+    "head changelog 含 v2.6.9 道法自然",
+    /v2\.6\.9.*道法自然/s.test(headBlock),
+    "regex /v2.6.9.*道法自然/ in 0..12000",
+  );
+  // 保留 v2.6.7 历史设况检查 (作为演化锁定)
+  expect(
+    "head changelog 仍含 v2.6.7 守一 (演化史记录)",
     /v2\.6\.7.*守一/s.test(headBlock),
-    "regex /v2.6.7.*守一/ in 0..8000",
+    "regex /v2.6.7.*守一/ in 0..12000",
   );
 }
 
@@ -312,9 +419,29 @@ expect(
 
 const reduction = ((v266.hits - v267.hits) / v266.hits) * 100;
 expect(
-  "切号率降 >= 40% (多源派生 settle 聚合)",
+  "v2.6.7 切号率降 >= 40% (多源派生 settle 聚合)",
   reduction >= 40,
   "实降 " + reduction.toFixed(1) + "%",
+);
+
+// v2.6.9 模型追加对比: 60s 全局强锁 (60000ms debounce window)
+const v269 = makeDebouncer(60000);
+for (const s of samples) {
+  v269.fire(s.t);
+}
+console.log(
+  "  v2.6.9 (60s 强锁)   hits=" + v269.hits + " debounced=" + v269.debounced,
+);
+expect(
+  "v2.6.9 模型: 60s 强锁 (原 9 样本 · 跨 60s+ 事件仅 11:26 一个)",
+  v269.hits <= 2,
+  "hits=" + v269.hits + " debounced=" + v269.debounced,
+);
+const reduction269 = ((v266.hits - v269.hits) / v266.hits) * 100;
+expect(
+  "v2.6.9 切号率降 >= 75% (边沿+强锁合道)",
+  reduction269 >= 75,
+  "实降 " + reduction269.toFixed(1) + "%",
 );
 
 // ════════════════════════════════════════════════════════════════
@@ -373,6 +500,6 @@ try {
 console.log(
   "\n================================================================",
 );
-console.log("  v2.6.7 result:  " + pass + " pass / " + fail + " fail");
+console.log(`  v2.6.10 result:  ${pass} pass / ${fail} fail`);
 console.log("================================================================");
 process.exit(fail > 0 ? 1 : 0);

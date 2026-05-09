@@ -380,10 +380,13 @@ console.log("\n[H] 体积守卫 (大制不割 · 监控代码膨胀)");
   // v2.2.0 ≈ 121 KB · v2.3.0 加 21 KB (in-use) · v2.4.1 加 crypto+真路径 ≈ 158 KB
   // v2.4.4 加 setHealth 防御 + Layer 3 fetch ≈ 170 KB
   // v2.4.5 加 Layer 4 http2 hook ≈ 173 KB
-  //   上限 200 KB (允未来小规模增 · 防大失控)
+  // v2.6.13 阴阳结合 ⚖ ≈ 199 KB
+  // v2.6.14 三守俱全 (perMessageMinIntervalMs + walEdgeCooldownMs + walWarmupMs + 三守 changelog)
+  //   + 5 KB 详细 changelog + 净代码 ~30 行 ≈ 205 KB
+  //   上限 220 KB (允未来小规模增 · 防大失控 · 仍远低 v17.42.20 原 437 KB)
   expect(
-    "extension.js 体积 < 200 KB",
-    sz < 200 * 1024,
+    "extension.js 体积 < 220 KB",
+    sz < 220 * 1024,
     sz + " bytes (~" + Math.round(sz / 1024) + " KB)",
   );
 }
