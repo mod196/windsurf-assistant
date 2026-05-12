@@ -1,9 +1,17 @@
 name: Deploy Web UI to GitHub Pages
 
+# 印 69 · 慎终若始 · 一次治本
+#   [1] configure-pages@v4 → v5 + enablement: true  首次自动启 Pages
+#   [2] paths 加 workflow 自身                       改本 yml 即触发 redeploy
+#   [3] cancel-in-progress: false                   生产 deploy 不被中止
+#   [4] if owner == zhouyoukang                     fork 跑空 · 不污染用户 Actions
+
 on:
   push:
     branches: [main]
-    paths: ['web/**']
+    paths:
+      - 'web/**'
+      - '.github/workflows/deploy-pages.yml'
   workflow_dispatch:
 
 permissions:
@@ -13,17 +21,21 @@ permissions:
 
 concurrency:
   group: "pages"
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   deploy:
+    if: github.repository_owner == 'zhouyoukang'
     runs-on: ubuntu-latest
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/configure-pages@v4
+      - name: Setup Pages (auto-enable on first run)
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
       - uses: actions/upload-pages-artifact@v3
         with:
           path: 'web'
