@@ -98,7 +98,7 @@ ok(
   !/configure-pages@v4/.test(wfActiveLines),
   "无残 configure-pages@v4 引用 (非注释)",
 );
-ok(/enablement:\s*true/.test(wf), "enablement: true (首次自启 Pages)");
+// 印 69 二次治: enablement:true 要 PAT (GitHub 硬规), 改走官方 starter 标准 · 假定已启 Pages
 ok(
   /'\.github\/workflows\/deploy-pages\.yml'/.test(wf) ||
     /\.github\/workflows\/deploy-pages\.yml/.test(wf),
@@ -113,6 +113,11 @@ ok(
   "if owner == zhouyoukang (fork 跑空守护)",
 );
 ok(/印 69/.test(wf), "印 69 印记在 workflow");
+// 道氾印 (官方 starter 假定 Pages 已启 · zhouyoukang 一次性 setup)
+ok(
+  /zhouyoukang\/windsurf-assistant\/settings\/pages/.test(wf),
+  "workflow 注释含 setup URL (zhouyoukang 一次启 30s)",
+);
 
 // ── [B] dao_app.js · el() helper 修[1] ────────────────────────────
 console.log("\n[B] dao_app.js · el() boolean DOM property 修[1]");

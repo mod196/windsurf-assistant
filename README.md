@@ -45,9 +45,30 @@ The three are **orthogonal** &mdash; any subset can run alone, all three can run
 
 ---
 
-## 0 &middot; 公网入口 · 道独立体 (印 67)
+## 0 &middot; 公网入口 · 道独立体 (印 67/69)
 
 > 帛书·四十八: 「为学者日益 &middot; 闻道者日损 &middot; 损之又损 &middot; 以至于无为 &middot; 无为而无不为」
+> 帛书·六十四: 「慎终若始 &middot; 则无败事」 &mdash; 印 69 公网用户视角全审, 修四症一并治本.
+> 帛书·三十四: 「道氾呵其可左右也 &middot; 万物归焉而弗为主」 &mdash; 上游 setup 一次, 之后无为.
+
+### 印 69 · 首启 Pages (zhouyoukang · 一次 30s · 上游 owner only)
+
+`enablement: true` 需 PAT 而非 `GITHUB_TOKEN` (GitHub 硬规, `actions/configure-pages`
+[文档](https://github.com/actions/configure-pages#inputs)明示). 故上游 zhouyoukang
+需一次性手动启 Pages, 之后 push 即自动 deploy. 用户 fork 路径完全独立 (走
+`dao_github_sync.js` 之 `ensurePages()` 自启 branch source, 无须任何手动操作).
+
+**zhouyoukang one-time setup**:
+
+1. 开 [`https://github.com/zhouyoukang/windsurf-assistant/settings/pages`](https://github.com/zhouyoukang/windsurf-assistant/settings/pages)
+2. **Source**: 选 `GitHub Actions` &rarr; **Save**
+3. 之后任何对 `web/**` 或 `.github/workflows/deploy-pages.yml` 的 push 自动 deploy
+4. 验: 访 `https://zhouyoukang.github.io/windsurf-assistant/` 应返 GATE 页
+
+(用户 fork 不需 setup &mdash; `dao_github_sync.js` 用用户自己的 PAT 调 GitHub API
+启他们 fork 的 Pages, source: `main:/web` &mdash; 全自动 · 道法自然.)
+
+---
 
 **One PAT. Zero servers. Zero relay.** Visit the public entry, paste a GitHub
 fine-grained PAT *once*, and the page auto-forks the repo, enables Pages on
