@@ -1,0 +1,795 @@
+// ═══════════════════════════════════════════════════════════════════════
+// dao_app.js · 印 67 · 道独立体公网交互层 · 道法自然
+// ═══════════════════════════════════════════════════════════════════════
+//
+// 帛书·二十二:   圣人执一 · 以为天下牧
+// 帛书·二十五:   独立而不垓 · 可以为天地母
+// 帛书·四十八:   为道者日损 · 损之又损 · 以至于无为 · 无为而无不为
+//
+// 三态:
+//   gate       通用入口 (在 upstream · 无 PAT 或 PAT 失效) → 显示登入门
+//   onboarding 在 upstream · 已识 PAT → 跑 fork → Pages → Gist → 跳专属页
+//   mine       在用户 fork · 三栏 (左 API+SP / 中 WAM 切号 / 右 chat)
+//
+// 数据流:
+//   gist (云) ─── readGist ───→ memo ──[user edit + debounce 1.5s]→ writeGist
+//   memo · 单一真相 · 修一处万法响应
+//
+// 0 依赖 · 纯浏览器 · 仅 fetch + Web Crypto · GitHub REST v3
+// ═══════════════════════════════════════════════════════════════════════
+(function () {
+'use strict';
+
+// ─── DOM helpers ────────────────────────────────────────────────────
+const $  = (id) => document.getElementById(id);
+const $$ = (sel, root) => Array.from((root || document).querySelectorAll(sel));
+function el(tag, attrs, children) {
+  const e = document.createElement(tag);
+  if (attrs) for (const k in attrs) {
+    if (k === 'class') e.className = attrs[k];
+    else if (k === 'style' && typeof attrs[k] === 'object') Object.assign(e.style, attrs[k]);
+    else if (k.startsWith('on') && typeof attrs[k] === 'function') e.addEventListener(k.slice(2).toLowerCase(), attrs[k]);
+    else if (attrs[k] != null) e.setAttribute(k, attrs[k]);
+  }
+  (Array.isArray(children) ? children : [children]).forEach(c => {
+    if (c == null) return;
+    if (typeof c === 'string' || typeof c === 'number') e.appendChild(document.createTextNode(String(c)));
+    else if (c instanceof Node) e.appendChild(c);
+  });
+  return e;
+}
+function show(id) { const e = $(id); if (e) e.style.display = ''; }
+function hide(id) { const e = $(id); if (e) e.style.display = 'none'; }
+function setText(id, t) { const e = $(id); if (e) e.textContent = t; }
+
+// ─── toast ──────────────────────────────────────────────────────────
+function toast(msg, kind) {
+  kind = kind || 'info';
+  const tEl = $('toast');
+  if (!tEl) { console.log('[toast] ' + msg); return; }
+  const item = el('div', { class: 'toast-item toast-' + kind }, msg);
+  tEl.appendChild(item);
+  setTimeout(() => { item.style.opacity = '0'; setTimeout(() => item.remove(), 350); }, 3000);
+}
+
+// ─── memo (single source of truth) ──────────────────────────────────
+const memo = {
+  data: null,       // dao.json payload (from Gist or cache or default)
+  gistId: null,
+  me: null,         // GitHub user (login/avatar/...)
+  fork: null,       // {owner, repo, htmlUrl, ...}
+  site: null,       // detectSite() output
+  pagesUrl: null,
+  dirty: false,
+  saveTimer: null,
+  syncing: false
+};
+
+// debounced save to Gist (1.5s)
+function markDirty() {
+  memo.dirty = true;
+  setText('hdr-gist', '○ 待同步…');
+  if (memo.saveTimer) clearTimeout(memo.saveTimer);
+  memo.saveTimer = setTimeout(() => { saveNow().catch(e => toast('同步失败: ' + e.message, 'err')); }, 1500);
+}
+async function saveNow() {
+  if (!memo.gistId || !memo.data) return;
+  if (memo.syncing) return;
+  memo.syncing = true;
+  setText('hdr-gist', '↻ 同步中…');
+  try {
+    await daoSync.writeGist(memo.gistId, memo.data);
+    memo.dirty = false;
+    setText('hdr-gist', '✓ Gist 同步');
+  } finally {
+    memo.syncing = false;
+  }
+}
+
+// ─── 启动 ───────────────────────────────────────────────────────────
+async function boot() {
+  memo.site = daoSync.detectSite();
+  // 顶栏 host 显示
+  setText('hdr-host', memo.site.host || 'local');
+
+  // 无 PAT → gate
+  if (!daoSync.hasPat()) {
+    return renderGate();
+  }
+  // 有 PAT → 验
+  try {
+    memo.me = await daoSync.whoami();
+    setText('hdr-login', '@' + memo.me.login);
+  } catch (e) {
+    if (e.status === 401) {
+      daoSync.clearPat();
+      toast('PAT 失效 · 请重粘', 'err');
+      return renderGate();
+    }
+    toast('GitHub 不通: ' + e.message + ' · 离线态', 'warn');
+    return renderOffline();
+  }
+
+  // 已在用户 fork 且 owner === me → 直接 mine
+  if (memo.site.isUserFork && memo.site.owner === memo.me.login) {
+    return enterMine();
+  }
+  // 在 upstream (或本地/其他) 且已识 → onboarding
+  return renderOnboarding();
+}
+
+// ═══ Gate · 入口减法 (帛书·四十八: 为道者日损) ════════════════════════
+function renderGate() {
+  show('state-gate'); hide('state-onboarding'); hide('state-mine');
+  setText('hdr-login', '(未登入)');
+  setText('hdr-gist', '');
+
+  const inp = $('gate-pat');
+  const btn = $('gate-btn-login');
+  const lnk = $('gate-link-legacy');
+  if (inp && !inp.__bound) {
+    inp.__bound = true;
+    inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') btn.click(); });
+  }
+  if (btn && !btn.__bound) {
+    btn.__bound = true;
+    btn.addEventListener('click', async () => {
+      const pat = (inp.value || '').trim();
+      if (!pat) { toast('请粘 PAT', 'warn'); inp.focus(); return; }
+      try {
+        daoSync.setPat(pat);
+      } catch (e) {
+        toast('PAT 格式异: ' + e.message, 'err');
+        return;
+      }
+      btn.disabled = true; btn.textContent = '验证中…';
+      try {
+        memo.me = await daoSync.whoami();
+      } catch (e) {
+        daoSync.clearPat();
+        toast('PAT 无效: ' + e.message, 'err');
+        btn.disabled = false; btn.textContent = '以 PAT 登入 →';
+        return;
+      }
+      btn.textContent = '✓ @' + memo.me.login + ' 已识';
+      setText('hdr-login', '@' + memo.me.login);
+      // 若当前已在 fork → 直跳 mine
+      if (memo.site.isUserFork && memo.site.owner === memo.me.login) {
+        enterMine();
+      } else {
+        renderOnboarding();
+      }
+    });
+  }
+  if (lnk) { lnk.href = 'legacy.html'; }
+}
+
+// ═══ Onboarding · 一气化三清 (fork → Pages → Gist → 跳) ═══════════════
+async function renderOnboarding() {
+  hide('state-gate'); show('state-onboarding'); hide('state-mine');
+  setText('onboard-login', '@' + (memo.me && memo.me.login || '?'));
+
+  const setStep = (id, status, sub) => {
+    const e = $(id);
+    if (!e) return;
+    const icon = status === 'ok' ? '✓' : status === 'run' ? '↻' : status === 'err' ? '✗' : '○';
+    const klass = 'onboard-step onboard-' + status;
+    e.className = klass;
+    e.querySelector('.icon').textContent = icon;
+    if (sub != null) e.querySelector('.sub').textContent = sub;
+  };
+
+  // §1 fork
+  setStep('step-fork', 'run', 'POST /repos/' + daoSync.UPSTREAM_OWNER + '/' + daoSync.UPSTREAM_REPO + '/forks');
+  let fork;
+  try {
+    fork = await daoSync.ensureFork(memo.me);
+    memo.fork = fork;
+    setStep('step-fork', 'ok', fork.alreadyExisted ? '已 fork · ' + fork.htmlUrl : '新建 fork · ' + fork.htmlUrl);
+  } catch (e) {
+    setStep('step-fork', 'err', e.message);
+    toast('fork 失败: ' + e.message, 'err');
+    return;
+  }
+
+  // §2 Pages
+  setStep('step-pages', 'run', 'POST /repos/' + fork.owner + '/' + fork.repo + '/pages (source main:/web)');
+  try {
+    const p = await daoSync.ensurePages(fork.owner, fork.repo);
+    memo.pagesUrl = p.url;
+    setStep('step-pages', 'ok',
+      (p.alreadyEnabled ? '已启用 · ' : (p.pending ? '已下令 · build 中 · ' : '新启用 · ')) + p.url);
+  } catch (e) {
+    setStep('step-pages', 'err', e.message);
+    toast('Pages 启用失败 (可手动启): ' + e.message, 'warn');
+    // 容错继续 · 用推断 URL
+    memo.pagesUrl = daoSync.forkPagesUrl(fork.owner);
+  }
+
+  // §3 Gist
+  setStep('step-gist', 'run', 'GET /gists · 查 dao.json');
+  try {
+    const g = await daoSync.findOrCreateGist();
+    memo.gistId = g.id;
+    memo.data = g.data;
+    setStep('step-gist', 'ok', (g.alreadyExisted ? '已存 · ' : '新建 · ') + g.url);
+  } catch (e) {
+    setStep('step-gist', 'err', e.message);
+    toast('Gist 失败 (检查 PAT 是否有 gist scope): ' + e.message, 'err');
+    return;
+  }
+
+  // §4 跳专属页
+  setStep('step-redirect', 'run', '即将跳转 ' + memo.pagesUrl);
+  daoSync.setState({
+    fork: fork,
+    gistId: memo.gistId,
+    pagesUrl: memo.pagesUrl,
+    onboardedAt: new Date().toISOString()
+  });
+  // 5s 倒计时
+  const linkA = $('onboard-link');
+  if (linkA) {
+    linkA.href = memo.pagesUrl;
+    linkA.style.display = '';
+    linkA.textContent = '→ 进入专属页面 (' + memo.pagesUrl + ')';
+  }
+  let n = 5;
+  setStep('step-redirect', 'ok', '已就绪 · ' + n + 's 后自动跳转');
+  const timer = setInterval(() => {
+    n--;
+    setStep('step-redirect', 'ok', '已就绪 · ' + n + 's 后自动跳转');
+    if (n <= 0) {
+      clearInterval(timer);
+      window.location.href = memo.pagesUrl;
+    }
+  }, 1000);
+}
+
+// ═══ Offline 态 (网不通 · 用 cache) ════════════════════════════════════
+function renderOffline() {
+  hide('state-gate'); hide('state-onboarding');
+  const cached = daoSync.getCache();
+  const st = daoSync.getState();
+  if (cached && st.gistId) {
+    memo.data = cached;
+    memo.gistId = st.gistId;
+    setText('hdr-gist', '⚠ 离线 (cache)');
+    return enterMine(true);
+  }
+  // 无 cache → 仍显 gate 但带 hint
+  toast('GitHub 不通 · 离线无 cache · 请联网重试', 'err');
+  renderGate();
+}
+
+// ═══ Mine · 三栏归一 · 用户专属态 ════════════════════════════════════
+async function enterMine(offline) {
+  hide('state-gate'); hide('state-onboarding'); show('state-mine');
+
+  // 若还没拿 data (从 gate 跳过来的) → 读
+  if (!memo.data || !memo.gistId) {
+    setText('hdr-gist', '↻ 读 Gist…');
+    try {
+      const st = daoSync.getState();
+      let gid = st.gistId;
+      if (!gid) {
+        // onboarding 未走过 (用户直接进 fork URL) · 现场补
+        const g = await daoSync.findOrCreateGist();
+        gid = g.id;
+        memo.data = g.data;
+        daoSync.setState({ gistId: gid });
+      } else {
+        memo.data = await daoSync.readGist(gid);
+      }
+      memo.gistId = gid;
+      daoSync.setCache(memo.data);
+      setText('hdr-gist', '✓ Gist 同步');
+    } catch (e) {
+      // 落 cache
+      const cached = daoSync.getCache();
+      if (cached) {
+        memo.data = cached;
+        setText('hdr-gist', '⚠ 离线 (cache)');
+        toast('Gist 不通 · 用 cache: ' + e.message, 'warn');
+      } else {
+        toast('Gist 读失败: ' + e.message, 'err');
+        return;
+      }
+    }
+  }
+
+  if (offline) setText('hdr-gist', '⚠ 离线 (cache)');
+
+  // schema 补全 (兼容老 Gist)
+  const def = daoSync.defaultData();
+  for (const k in def) if (memo.data[k] == null) memo.data[k] = def[k];
+  if (!memo.data.sp) memo.data.sp = def.sp;
+  for (const k in def.sp) if (memo.data.sp[k] == null) memo.data.sp[k] = def.sp[k];
+
+  renderLeft();
+  renderMid();
+  renderRight();
+}
+
+// ─── 左栏 · API 接口管理 + 反代提示词管理 ────────────────────────────
+function renderLeft() {
+  const root = $('mine-left');
+  if (!root) return;
+  root.innerHTML = '';
+  const D = memo.data;
+
+  // A · VM 端点
+  root.appendChild(el('div', { class: 'pane' }, [
+    el('div', { class: 'pane-hd' }, ['反代 VM 端点']),
+    el('div', { class: 'pane-bd' }, [
+      el('label', null, ['VM URL (cloudflared tunnel)']),
+      el('input', {
+        type: 'text', id: 'in-vm-url', class: 'inp',
+        placeholder: 'https://xxxx.trycloudflare.com',
+        value: D.vmUrl || ''
+      }),
+      el('label', null, ['Auth Key (sk-ws-proxy-*)']),
+      el('div', { class: 'row' }, [
+        el('input', {
+          type: 'password', id: 'in-vm-authkey', class: 'inp grow',
+          placeholder: 'sk-ws-proxy-...',
+          value: D.vmAuthKey || ''
+        }),
+        el('button', { class: 'btn tiny', onclick: () => {
+          const k = 'sk-ws-proxy-' + Array.from(crypto.getRandomValues(new Uint8Array(24))).map(b => 'abcdefghijklmnopqrstuvwxyz0123456789'[b % 36]).join('');
+          $('in-vm-authkey').value = k;
+          D.vmAuthKey = k; markDirty();
+        } }, ['生成']),
+        el('button', { class: 'btn tiny ghost', onclick: () => {
+          const i = $('in-vm-authkey'); i.type = i.type === 'password' ? 'text' : 'password';
+        } }, ['👁'])
+      ]),
+      el('div', { class: 'row gap' }, [
+        el('button', { class: 'btn', onclick: testVm }, ['测试连接']),
+        el('button', { class: 'btn ghost', onclick: () => {
+          const url = D.vmUrl; if (!url) { toast('先设 VM URL', 'warn'); return; }
+          navigator.clipboard.writeText(url + '/v1');
+          toast('Base URL → ' + url + '/v1 已复制', 'ok');
+        } }, ['复 Base URL']),
+        el('button', { class: 'btn ghost', onclick: () => {
+          if (!D.vmAuthKey) { toast('无 auth key', 'warn'); return; }
+          navigator.clipboard.writeText(D.vmAuthKey);
+          toast('Auth Key 已复制', 'ok');
+        } }, ['复 Key'])
+      ]),
+      el('div', { id: 'vm-status', class: 'status-line' }, ['—'])
+    ])
+  ]));
+
+  $('in-vm-url').addEventListener('input', (e) => { D.vmUrl = e.target.value.trim().replace(/\/+$/, ''); markDirty(); });
+  $('in-vm-authkey').addEventListener('input', (e) => { D.vmAuthKey = e.target.value.trim(); markDirty(); });
+
+  // B · Devin Bootstrap 一键
+  root.appendChild(el('div', { class: 'pane' }, [
+    el('div', { class: 'pane-hd' }, ['起 Devin VM · 一键令']),
+    el('div', { class: 'pane-bd' }, [
+      el('div', { class: 'hint' }, ['粘到 Devin Chat · 一行起 unit + tunnel · 返你 URL → 粘上方 VM URL']),
+      el('div', { class: 'code-wrap' }, [
+        el('pre', { id: 'devin-cmd', class: 'code' }, [genDevinCmd()]),
+        el('button', { class: 'btn tiny copy-btn', onclick: () => {
+          navigator.clipboard.writeText($('devin-cmd').textContent);
+          toast('Devin 命令已复制', 'ok');
+        } }, ['复'])
+      ]),
+      el('div', { class: 'row gap', style: { marginTop: '8px' } }, [
+        el('button', { class: 'btn ghost', onclick: () => {
+          $('devin-cmd').textContent = genDevinCmd();
+          toast('已用最新 Auth Key 重生', 'ok');
+        } }, ['↻ 重生命令']),
+        el('a', { class: 'btn ghost', href: 'https://app.devin.ai/', target: '_blank' }, ['开 Devin →'])
+      ])
+    ])
+  ]));
+
+  // C · 反代提示词管理 (印 52 守一不离)
+  const sp = D.sp;
+  root.appendChild(el('div', { class: 'pane' }, [
+    el('div', { class: 'pane-hd' }, ['反代提示词 · SP 三模 ',
+      el('span', { class: 'meta' }, [sp.mode])
+    ]),
+    el('div', { class: 'pane-bd' }, [
+      el('div', { class: 'sp-mode-grp' }, [
+        ['passthrough', '透 · 不动 system'],
+        ['dao', '道 · 帛书《老子》替'],
+        ['custom', '自定 · 用户 SP 替']
+      ].map(([m, label]) => el('button', {
+        class: 'sp-mode-btn' + (sp.mode === m ? ' active' : ''),
+        'data-mode': m,
+        onclick: () => { sp.mode = m; markDirty(); renderLeft(); }
+      }, [label]))),
+      el('details', { open: sp.mode === 'custom' }, [
+        el('summary', null, ['自定 SP 文本']),
+        el('textarea', {
+          id: 'in-sp-custom', class: 'inp', rows: '4',
+          placeholder: '自定 SP (空 → custom 退化为 passthrough)',
+        }, [sp.custom || ''])
+      ]),
+      el('details', null, [
+        el('summary', null, ['隔离强度 (剥侧道·中性化)']),
+        spCheckbox('sp-strip-side',   '剥 SIDE_CHANNEL · 32 项',       sp.stripSideChannel,   (v) => { sp.stripSideChannel = v; markDirty(); }),
+        spCheckbox('sp-strip-memory', '剥 MEMORY 块',                  sp.stripMemory,        (v) => { sp.stripMemory = v; markDirty(); }),
+        spCheckbox('sp-neutralize',   '中性化 SECTION_OVERRIDE',       sp.neutralizeOverride, (v) => { sp.neutralizeOverride = v; markDirty(); }),
+        spCheckbox('sp-inject-keeps', '注入 keep_blocks (整体)',       sp.injectKeeps,        (v) => { sp.injectKeeps = v; markDirty(); })
+      ]),
+      el('details', null, [
+        el('summary', null, ['保留接口 (dao/custom 时保哪些块)']),
+        spCheckbox('keep-tool',  'tool_calling · 工具调用',         sp.keeps.tool_calling,         (v) => { sp.keeps.tool_calling = v; markDirty(); }),
+        spCheckbox('keep-mcp',   'mcp_servers · MCP 单',            sp.keeps.mcp_servers,          (v) => { sp.keeps.mcp_servers = v; markDirty(); }),
+        spCheckbox('keep-user',  'user_information · 用户元',       sp.keeps.user_information,     (v) => { sp.keeps.user_information = v; markDirty(); }),
+        spCheckbox('keep-ws',    'workspace_information · 工作区',  sp.keeps.workspace_information, (v) => { sp.keeps.workspace_information = v; markDirty(); })
+      ])
+    ])
+  ]));
+  const taC = $('in-sp-custom');
+  if (taC) taC.addEventListener('input', (e) => { sp.custom = e.target.value; markDirty(); });
+}
+
+function spCheckbox(id, label, checked, onChange) {
+  const cb = el('input', { type: 'checkbox', id });
+  cb.checked = !!checked;
+  cb.addEventListener('change', (e) => onChange(e.target.checked));
+  return el('label', { class: 'cb' }, [cb, el('span', null, [label])]);
+}
+
+function genDevinCmd() {
+  const D = memo.data;
+  const fork = (memo.fork && memo.fork.owner) ? memo.fork.owner : (memo.site && memo.site.owner) || daoSync.UPSTREAM_OWNER;
+  const repoUrl = 'https://github.com/' + fork + '/' + daoSync.UPSTREAM_REPO + '.git';
+  const auth = D.vmAuthKey || 'sk-ws-proxy-CHANGE_ME';
+  const acct = memo.data.activeAccountEmail || (memo.data.accounts && memo.data.accounts[0] && memo.data.accounts[0].email) || 'you@windsurf.com';
+  const apik = ((memo.data.accounts || []).find(a => a.email === acct) || {}).apiKey || 'sk-ws-01-CHANGE_ME';
+  return [
+    'curl -sL https://raw.githubusercontent.com/' + fork + '/' + daoSync.UPSTREAM_REPO + '/main/scripts/devin-bootstrap.sh | \\',
+    '  DAO_API_KEY="' + apik + '" \\',
+    '  DAO_AUTH_KEY="' + auth + '" \\',
+    '  DAO_ACCOUNT="' + acct + '" \\',
+    '  DAO_REPO="' + repoUrl + '" \\',
+    '  DAO_TUNNEL=yes \\',
+    '  bash'
+  ].join('\n');
+}
+
+// 测 VM /health
+async function testVm() {
+  const D = memo.data;
+  if (!D.vmUrl) { toast('先填 VM URL', 'warn'); return; }
+  setText('vm-status', '↻ 测试中…');
+  try {
+    const r = await fetch(D.vmUrl + '/health', { cache: 'no-store' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const j = await r.json();
+    const ok = j.ok !== false;
+    setText('vm-status',
+      (ok ? '✓ ' : '⚠ ') + 'unit ' + (j.version || '?') +
+      ' · up ' + ((j.uptimeSec || 0) | 0) + 's' +
+      ' · auth=' + (j.authRequired ? 'on' : 'off') +
+      ' · sse=' + (j.sseActive || 0));
+  } catch (e) {
+    setText('vm-status', '✗ ' + e.message);
+  }
+}
+
+// ─── 中栏 · WAM 切号 ────────────────────────────────────────────────
+function renderMid() {
+  const root = $('mine-mid');
+  if (!root) return;
+  root.innerHTML = '';
+  const D = memo.data;
+
+  // A · 加号表单
+  root.appendChild(el('div', { class: 'pane' }, [
+    el('div', { class: 'pane-hd' }, ['+ 加 Windsurf 账号']),
+    el('div', { class: 'pane-bd' }, [
+      el('div', { class: 'row gap' }, [
+        el('input', { id: 'in-acct-email', class: 'inp grow', placeholder: 'email · you@windsurf.com' }),
+        el('input', { id: 'in-acct-key', type: 'password', class: 'inp grow', placeholder: 'API Key · sk-ws-01-...' }),
+        el('button', { class: 'btn', onclick: addAccount }, ['加'])
+      ]),
+      el('div', { class: 'hint' }, ['email + key 落用户私有 Gist · zhouyoukang 不见 · 各账号自属自己 Devin VM'])
+    ])
+  ]));
+
+  // B · 账号表
+  const tbl = el('div', { class: 'acct-table' });
+  if (!D.accounts || D.accounts.length === 0) {
+    tbl.appendChild(el('div', { class: 'empty' }, ['(无账号 · 上方加之)']));
+  } else {
+    D.accounts.forEach((a, i) => {
+      const isActive = a.email === D.activeAccountEmail;
+      tbl.appendChild(el('div', { class: 'acct-row' + (isActive ? ' active' : '') }, [
+        el('span', { class: 'dot ' + (a.alive === false ? 'off' : 'on') }, []),
+        el('span', { class: 'acct-mail', title: a.email }, [a.email]),
+        el('span', { class: 'acct-quota' }, [a.quotaD != null ? ('D' + a.quotaD + ' / W' + (a.quotaW != null ? a.quotaW : '?')) : '—']),
+        el('span', { class: 'acct-time' }, [a.lastUsedAt ? new Date(a.lastUsedAt).toLocaleString() : '—']),
+        el('button', { class: 'btn tiny' + (isActive ? ' active' : ''), onclick: () => { D.activeAccountEmail = a.email; markDirty(); renderMid(); renderLeft(); } }, [isActive ? '★ active' : '设 active']),
+        el('button', { class: 'btn tiny ghost', onclick: () => probeAccount(i) }, ['探']),
+        el('button', { class: 'btn tiny danger', onclick: () => { if (confirm('删 ' + a.email + ' ?')) { D.accounts.splice(i, 1); if (a.email === D.activeAccountEmail) D.activeAccountEmail = ''; markDirty(); renderMid(); } } }, ['×'])
+      ]));
+    });
+  }
+  root.appendChild(el('div', { class: 'pane' }, [
+    el('div', { class: 'pane-hd' }, ['账号库 ', el('span', { class: 'meta' }, [(D.accounts || []).length + ' 号 · active: ' + (D.activeAccountEmail || '—')])]),
+    el('div', { class: 'pane-bd' }, [tbl])
+  ]));
+
+  // C · 一键探所有
+  root.appendChild(el('div', { class: 'pane' }, [
+    el('div', { class: 'pane-bd row gap' }, [
+      el('button', { class: 'btn', onclick: probeAll }, ['⚡ 探针全部 (调 VM /quota)']),
+      el('button', { class: 'btn ghost', onclick: rotateActive }, ['↻ 轮换 active (quota-aware)']),
+      el('span', { class: 'grow' }, []),
+      el('span', { class: 'hint' }, ['探针需 VM URL 设妥 · /quota 借 active 账号查'])
+    ])
+  ]));
+}
+
+function addAccount() {
+  const D = memo.data;
+  const email = ($('in-acct-email').value || '').trim();
+  const key   = ($('in-acct-key').value   || '').trim();
+  if (!email || !key) { toast('email + key 必填', 'warn'); return; }
+  if (D.accounts.find(a => a.email === email)) { toast('账号已存', 'warn'); return; }
+  D.accounts.push({ email, apiKey: key, addedAt: new Date().toISOString(), alive: null });
+  if (!D.activeAccountEmail) D.activeAccountEmail = email;
+  markDirty();
+  $('in-acct-email').value = '';
+  $('in-acct-key').value = '';
+  renderMid();
+}
+
+async function probeAccount(i) {
+  const D = memo.data;
+  const a = D.accounts[i];
+  if (!a) return;
+  if (!D.vmUrl) { toast('先设 VM URL · 探针借 VM /auth/status', 'warn'); return; }
+  toast('探 ' + a.email + ' …', 'info');
+  try {
+    const r = await fetch(D.vmUrl + '/auth/status', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(D.vmAuthKey ? { 'Authorization': 'Bearer ' + D.vmAuthKey } : {}) },
+      body: JSON.stringify({ api_key: a.apiKey })
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const j = await r.json();
+    a.alive = !!j.ok;
+    a.quotaD = j.dailyRemaining != null ? j.dailyRemaining : (j.quota && j.quota.daily);
+    a.quotaW = j.weeklyRemaining != null ? j.weeklyRemaining : (j.quota && j.quota.weekly);
+    a.lastUsedAt = new Date().toISOString();
+    markDirty(); renderMid();
+    toast('探 ' + a.email + ' · D' + a.quotaD + ' W' + a.quotaW, a.alive ? 'ok' : 'warn');
+  } catch (e) {
+    a.alive = false;
+    markDirty(); renderMid();
+    toast('探失败: ' + e.message, 'err');
+  }
+}
+
+async function probeAll() {
+  const D = memo.data;
+  if (!D.accounts || !D.accounts.length) { toast('无账号', 'warn'); return; }
+  for (let i = 0; i < D.accounts.length; i++) {
+    await probeAccount(i);
+  }
+}
+
+function rotateActive() {
+  const D = memo.data;
+  if (!D.accounts || !D.accounts.length) { toast('无账号', 'warn'); return; }
+  // quota-aware: 选 quotaD 最大者 · 否则 round-robin
+  const sorted = D.accounts.slice().sort((a, b) => (b.quotaD || 0) - (a.quotaD || 0));
+  const next = sorted[0];
+  if (next && next.email !== D.activeAccountEmail) {
+    D.activeAccountEmail = next.email;
+    markDirty(); renderMid(); renderLeft();
+    toast('active → ' + next.email + ' (quota D' + (next.quotaD || '?') + ')', 'ok');
+  } else {
+    toast('已是最优 active', 'info');
+  }
+}
+
+// ─── 右栏 · Chat (Cascade-like) ─────────────────────────────────────
+let chatAbort = null;
+
+function renderRight() {
+  const root = $('mine-right');
+  if (!root) return;
+  root.innerHTML = '';
+  const D = memo.data;
+
+  // 模型 (默用 claude-sonnet-4 · /v1/models 可拉)
+  const models = ['claude-sonnet-4-20250514', 'claude-haiku-4-20250514', 'gpt-4o', 'gpt-4o-mini', 'o1', 'o1-mini', 'gemini-2.0-flash-exp', 'deepseek-v3', 'qwen-coder-32b-instruct'];
+
+  // 顶 · 模型选 + 高级 + 清
+  const head = el('div', { class: 'chat-head' }, [
+    el('select', { id: 'in-chat-model', class: 'inp small' }, models.map(m => el('option', { value: m }, [m]))),
+    el('button', { class: 'btn tiny ghost', onclick: () => $('chat-adv').style.display = ($('chat-adv').style.display === 'none' ? '' : 'none'), title: '高级' }, ['⚙']),
+    el('button', { class: 'btn tiny ghost', onclick: () => { D.chatHistory = []; markDirty(); renderRight(); } }, ['✕ 清'])
+  ]);
+  root.appendChild(head);
+
+  // 高级 (默隐)
+  const adv = el('div', { id: 'chat-adv', class: 'pane', style: { display: 'none' } }, [
+    el('div', { class: 'pane-bd' }, [
+      el('label', null, ['stream']),
+      el('input', { type: 'checkbox', id: 'in-chat-stream', checked: true }),
+      el('label', null, ['max_tokens']),
+      el('input', { type: 'number', id: 'in-chat-max', class: 'inp small', value: '2048', min: '16', max: '32768' }),
+      el('label', null, ['temperature']),
+      el('input', { type: 'number', id: 'in-chat-temp', class: 'inp small', value: '0.7', min: '0', max: '2', step: '0.1' })
+    ])
+  ]);
+  root.appendChild(adv);
+  // checked attr trick (布尔值不被 attr API 正确处理 · 后修)
+  setTimeout(() => { const s = $('in-chat-stream'); if (s) s.checked = true; }, 0);
+
+  // 历史
+  const hist = el('div', { id: 'chat-history', class: 'chat-history' });
+  if (!D.chatHistory || D.chatHistory.length === 0) {
+    hist.appendChild(el('div', { class: 'chat-empty' }, [
+      el('div', { class: 'dao' }, ['道']),
+      el('div', { class: 'dao-line' }, ['道可道 · 非恒道']),
+      el('div', { class: 'hint' }, ['⏎ 发 · shift+⏎ 换行'])
+    ]));
+  } else {
+    D.chatHistory.forEach((m, idx) => hist.appendChild(renderMsg(m, idx)));
+  }
+  root.appendChild(hist);
+
+  // 输入区
+  const inp = el('textarea', { id: 'in-chat-input', class: 'chat-input', rows: '3', placeholder: 'Ask 道 · 言之' });
+  const sendBtn = el('button', { id: 'btn-chat-send', class: 'btn chat-send', onclick: () => sendChat() }, ['↑']);
+  const stopBtn = el('button', { id: 'btn-chat-stop', class: 'btn chat-send danger', style: { display: 'none' }, onclick: () => { if (chatAbort) chatAbort.abort(); } }, ['⏹']);
+  inp.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); }
+  });
+  root.appendChild(el('div', { class: 'chat-input-area' }, [inp, sendBtn, stopBtn]));
+}
+
+function renderMsg(m, idx) {
+  const wrap = el('div', { class: 'msg msg-' + m.role });
+  wrap.appendChild(el('div', { class: 'role' }, [m.role]));
+  wrap.appendChild(el('div', { class: 'content' }, [m.content || '']));
+  if (m.role !== 'system') {
+    wrap.appendChild(el('button', { class: 'btn tiny ghost del-btn', onclick: () => { memo.data.chatHistory.splice(idx, 1); markDirty(); renderRight(); } }, ['×']));
+  }
+  return wrap;
+}
+
+async function sendChat() {
+  const D = memo.data;
+  if (!D.vmUrl) { toast('先设左栏 VM URL', 'warn'); return; }
+  const inp = $('in-chat-input');
+  const userText = (inp.value || '').trim();
+  if (!userText) return;
+
+  D.chatHistory.push({ role: 'user', content: userText, ts: Date.now() });
+  inp.value = '';
+  renderRight();
+
+  // 准备 assistant 占位
+  D.chatHistory.push({ role: 'assistant', content: '', ts: Date.now(), streaming: true });
+  renderRight();
+  const histDom = $('chat-history');
+  if (histDom) histDom.scrollTop = histDom.scrollHeight;
+
+  const model = ($('in-chat-model') && $('in-chat-model').value) || 'claude-sonnet-4-20250514';
+  const stream = !!($('in-chat-stream') && $('in-chat-stream').checked);
+  const maxT = parseInt(($('in-chat-max') && $('in-chat-max').value) || '2048', 10);
+  const temp = parseFloat(($('in-chat-temp') && $('in-chat-temp').value) || '0.7');
+
+  const messages = D.chatHistory
+    .filter(m => !m.streaming || m.content)
+    .filter((m, i, arr) => !(m.role === 'assistant' && m.streaming))
+    .map(m => ({ role: m.role, content: m.content }));
+
+  // SP injection (mode=dao / custom 时 · 这里仅作 system 注入 · 真正帛书替由 dao-proxy-min IDE-side 做)
+  let systemPrompt = '';
+  if (D.sp.mode === 'custom' && D.sp.custom) systemPrompt = D.sp.custom;
+  else if (D.sp.mode === 'dao') systemPrompt = '道可道 · 非恒道. (本端为 web · 帛书《老子》全文请用 dao-proxy-min IDE 扩展; 此处仅占位)';
+  if (systemPrompt) messages.unshift({ role: 'system', content: systemPrompt });
+
+  chatAbort = new AbortController();
+  $('btn-chat-send').style.display = 'none';
+  $('btn-chat-stop').style.display = '';
+
+  const last = D.chatHistory[D.chatHistory.length - 1];
+
+  try {
+    const resp = await fetch(D.vmUrl + '/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(D.vmAuthKey ? { 'Authorization': 'Bearer ' + D.vmAuthKey } : {})
+      },
+      body: JSON.stringify({ model, messages, stream, max_tokens: maxT, temperature: temp }),
+      signal: chatAbort.signal
+    });
+    if (!resp.ok) {
+      const t = await resp.text().catch(() => '');
+      throw new Error('HTTP ' + resp.status + ' · ' + t.slice(0, 200));
+    }
+
+    if (stream && resp.body) {
+      const reader = resp.body.getReader();
+      const dec = new TextDecoder();
+      let buf = '';
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const lines = buf.split('\n');
+        buf = lines.pop() || '';
+        for (const line of lines) {
+          if (!line.startsWith('data:')) continue;
+          const data = line.slice(5).trim();
+          if (data === '[DONE]') { break; }
+          try {
+            const obj = JSON.parse(data);
+            const delta = obj.choices && obj.choices[0] && obj.choices[0].delta;
+            const txt = delta && delta.content;
+            if (txt) {
+              last.content += txt;
+              // 增量更新 (避免重渲染) · 用 textContent 替最后一条 .content
+              const histChildren = $('chat-history').children;
+              const lastMsgDom = histChildren[histChildren.length - 1];
+              if (lastMsgDom) {
+                const c = lastMsgDom.querySelector('.content');
+                if (c) c.textContent = last.content;
+              }
+              if (histDom) histDom.scrollTop = histDom.scrollHeight;
+            }
+          } catch {}
+        }
+      }
+    } else {
+      const j = await resp.json();
+      const txt = j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content;
+      last.content = txt || '(empty)';
+      renderRight();
+    }
+
+    last.streaming = false;
+    markDirty();
+  } catch (e) {
+    last.content = (last.content || '') + '\n\n✗ ' + (e.name === 'AbortError' ? '中止' : e.message);
+    last.streaming = false;
+    last.role = 'error';
+    markDirty();
+    renderRight();
+  } finally {
+    $('btn-chat-send').style.display = '';
+    $('btn-chat-stop').style.display = 'none';
+    chatAbort = null;
+  }
+}
+
+// ═══ 顶栏 (常驻) · 退出 / 同步状态 ════════════════════════════════════
+function bindHeaderActions() {
+  const logout = $('hdr-logout');
+  if (logout && !logout.__bound) {
+    logout.__bound = true;
+    logout.addEventListener('click', () => {
+      if (!confirm('清 PAT + 本地缓存 ?\n(Gist 数据仍在你的 GitHub · 重登可恢复)')) return;
+      daoSync.clearPat();
+      window.location.reload();
+    });
+  }
+  const lk = $('hdr-link-upstream');
+  if (lk) lk.href = 'https://github.com/' + daoSync.UPSTREAM_OWNER + '/' + daoSync.UPSTREAM_REPO;
+}
+
+// ═══ 主入口 ════════════════════════════════════════════════════════
+document.addEventListener('DOMContentLoaded', () => {
+  bindHeaderActions();
+  boot().catch(e => {
+    console.error(e);
+    toast('启动失败: ' + e.message, 'err');
+  });
+});
+
+})();

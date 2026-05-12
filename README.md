@@ -45,6 +45,69 @@ The three are **orthogonal** &mdash; any subset can run alone, all three can run
 
 ---
 
+## 0 &middot; 公网入口 · 道独立体 (印 67)
+
+> 帛书·四十八: 「为学者日益 &middot; 闻道者日损 &middot; 损之又损 &middot; 以至于无为 &middot; 无为而无不为」
+
+**One PAT. Zero servers. Zero relay.** Visit the public entry, paste a GitHub
+fine-grained PAT *once*, and the page auto-forks the repo, enables Pages on
+your fork, creates a private Gist as your data cloud, and redirects you to
+**your own** `<you>.github.io/windsurf-assistant/` &mdash; where every byte
+(VM URL, accounts, SP presets, chat history) lives in *your* GitHub. The
+upstream owner sees **nothing**.
+
+```
+   https://zhouyoukang.github.io/windsurf-assistant/    (公网入口 · gate)
+              │
+              │  ① paste PAT (一次"为")
+              ▼
+   GitHub API · 自动:
+     • fork zhouyoukang/windsurf-assistant → <you>/windsurf-assistant
+     • POST /pages   (source: main:/web · Pages enabled)
+     • POST /gists   (private "dao.json" · 你的数据云)
+              │
+              │  ② redirect (5s 倒计时)
+              ▼
+   https://<you>.github.io/windsurf-assistant/         (专属页 · mine)
+   ┌──────────────┬──────────────────┬──────────────┐
+   │  左 · API+SP │  中 · WAM 切号    │  右 · 对话    │
+   │  VM URL      │  + Windsurf 账号 │  Cascade-like │
+   │  Auth Key    │  · quota probe   │  SSE 流       │
+   │  SP 三模     │  · rotate active │  历史 + 模型  │
+   │  Devin 令    │  · ★ active 切   │  · stop 中止  │
+   └──────────────┴──────────────────┴──────────────┘
+              │
+              │  ③ 起 Devin VM (一键命令复制 · 粘 Devin Chat)
+              ▼
+   Your Devin VM (`fleet_vm_unit.js` + cloudflared)
+              │
+              ▼
+   Windsurf Cloud · inference.codeium.com
+```
+
+**Three "为" total** (粘 PAT · 粘 Devin 命令 · 粘 VM URL), 之后皆 "无为".
+每个用户在自己的 fork 下部署相同代码 &mdash; 同源不同身, **道法自然 · 各正性命**.
+
+### 隐私 · Trust model
+
+| 字节 | 在哪 | 谁看见 |
+|---|---|---|
+| GitHub PAT | 你浏览器 `localStorage` | 你 (退出按钮 = 清) |
+| `dao.json` (VM URL · accounts · SP · 对话) | 你的私有 GitHub Gist | 你 + 你的 PAT 持有方 |
+| Windsurf API key | 你浏览器 + 你 Devin VM | 你 |
+| Public Pages 站 | 你的 GitHub Pages | 公开 (但仅静态代码 · 无数据) |
+
+`zhouyoukang/windsurf-assistant` 上游收到的只有一次 GitHub `POST /forks`
+(GitHub 服务器自身行为); 之后你的浏览器**永远不再连**上游 &mdash; 全部数据流
+直进你自己的 GitHub + 你自己的 Devin VM. **原汤化原食 · 账号本身即一切**.
+
+### 旁支 · legacy 5-tab
+
+无 PAT 用户可走 `legacy.html` (5-tab Setup/Chat/API/Deploy/Docs &mdash; 印 66 末态),
+功能等同, 仅缺 "自动 fork + 同步" 一层. 入口页右下角有链.
+
+---
+
 ## I &middot; 反代 API (`packages/dao-core/`)
 
 **One GitHub fork. One web page. One VM per account. Zero npm dependencies.**
