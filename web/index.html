@@ -423,9 +423,10 @@ details > div{margin-top:8px;padding:10px;background:var(--panel2);border-radius
         <div style="font-size:12px;color:var(--gold);margin-bottom:4px"><b>III &middot; dao-proxy-min</b></div>
         <div style="font-size:11px;color:var(--dim);line-height:1.5">
           <code>windsurf --install-extension dao-proxy-min-9.8.0.vsix</code><br>
-          Cascade now uses 《老子》 as system prompt &middot; @-tools preserved.
+          Cascade now uses 《老子》 as system prompt &middot; @-tools preserved.<br>
+          <i>Build the vsix from source with <code>_build_vsix.ps1</code>.</i>
         </div>
-        <div style="margin-top:6px"><a id="link-pure-3" class="btn" style="padding:4px 10px;font-size:11px" target="_blank" rel="noopener">Latest VSIX &rarr;</a></div>
+        <div style="margin-top:6px"><a id="link-pure-3" class="btn" style="padding:4px 10px;font-size:11px" target="_blank" rel="noopener">Source &amp; build &rarr;</a></div>
       </div>
     </div>
     <p class="hint" style="margin-top:12px;font-size:11px">
@@ -1166,7 +1167,7 @@ function refreshAllDerived(){
   const pure2=$('link-pure-2');
   if(pure2)pure2.href=`https://github.com/${owner}/${repo}/tree/main/packages/wam`;
   const pure3=$('link-pure-3');
-  if(pure3)pure3.href=`https://github.com/${owner}/${repo}/releases/latest`;
+  if(pure3)pure3.href=`https://github.com/${owner}/${repo}/tree/main/packages/dao-proxy-min`;
 }
 
 restoreConfig();

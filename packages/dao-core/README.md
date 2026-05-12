@@ -1,5 +1,10 @@
 # dao-core
 
+> **一气化三清 · Three Pure · 道并行而不悖**
+> **[I · 反代 API · 本](README.md)** &middot; [II · 切号 WAM · `wam`](../wam/README.md) &middot; [III · 提示词反代 · `dao-proxy-min`](../dao-proxy-min/README.md)
+>
+> dao-core 服任意 OpenAI 客户端 (cloud-side)；wam 服 Windsurf IDE 多账号轮转；dao-proxy-min 服 Cascade 提示词替换。三者正交，**道并行而不悖**。
+
 > 天下之至柔，驰骋于天下之致坚；无有入于无间。
 
 **Zero-dependency** Windsurf cloud reverse proxy core. Directly communicates with Windsurf Cloud via Connect-RPC over HTTPS, exposes an OpenAI-compatible API.

@@ -251,6 +251,9 @@ async function handleChatCompletions(req, res, body) {
 
   const modelUid = CE.resolveModel(model);
 
+  // 印 66 · _t0 提至函数级 · 防非流式 catch 引用未定义致 unit 崩 (反者道之动·公网视角)
+  const _t0 = Date.now();
+
   if (stream) {
     // ── SSE 流式 ──────────────────────────────
     res.writeHead(200, {
@@ -280,7 +283,6 @@ async function handleChatCompletions(req, res, body) {
     res.on("close", cleanup);
     res.on("finish", cleanup);
 
-    const _t0 = Date.now();
     let tokenCount = 0;
 
     try {
@@ -342,17 +344,19 @@ async function handleChatCompletions(req, res, body) {
       });
     } catch (e) {
       STATS.errors++;
+      // 印 66 · 全安化 e.message · 防 reject 非 Error 致 catch 自身崩
+      const errMsg = String(e?.message || e || "unknown error");
       _recordStat({
         at: Date.now(),
         ms: Date.now() - _t0,
         model: modelUid,
         ok: false,
-        err: e.message?.slice(0, 80),
+        err: errMsg.slice(0, 80),
       });
       const errChunk = {
         id: requestId,
         object: "chat.completion.chunk",
-        error: { message: e.message, type: "server_error" },
+        error: { message: errMsg, type: "server_error" },
       };
       try {
         res.write(`data: ${JSON.stringify(errChunk)}\n\n`);
@@ -396,29 +400,31 @@ async function handleChatCompletions(req, res, body) {
       });
     } catch (e) {
       STATS.errors++;
+      // 印 66 · e 可能是字串 / 空对象 / Error · 全安化
+      const errMsg = String(e?.message || e || "unknown error");
       _recordStat({
         at: Date.now(),
         ms: Date.now() - _t0,
         model: modelUid,
         ok: false,
-        err: e.message?.slice(0, 80),
+        err: errMsg.slice(0, 80),
       });
       // 限流检测
       if (
-        e.message.includes("rate") ||
-        e.message.includes("quota") ||
-        e.message.includes("resource_exhausted")
+        errMsg.includes("rate") ||
+        errMsg.includes("quota") ||
+        errMsg.includes("resource_exhausted")
       ) {
         sendJson(res, 429, {
           error: {
-            message: e.message,
+            message: errMsg,
             type: "rate_limit_error",
             code: "rate_limit_exceeded",
           },
         });
       } else {
         sendJson(res, 502, {
-          error: { message: e.message, type: "server_error" },
+          error: { message: errMsg, type: "server_error" },
         });
       }
     }
@@ -996,6 +1002,22 @@ server.on("error", (e) => {
     console.error("[fatal]", e.message);
   }
   process.exit(1);
+});
+
+// 印 66 · 反者道之动 · 全局守门 · unit 永不因错误路径崩
+//   帛书·六十二: 「道者, 万物之注也; 善人之董也, 不善人之所保也.」
+//   任何 unhandled rejection / uncaughtException · 记日志·不退进程 · 仅同路径下次正路返 5xx
+process.on("unhandledRejection", (reason, promise) => {
+  STATS.errors++;
+  const msg = String(reason?.message || reason || "unhandledRejection");
+  console.error(`[unhandledRejection] ${msg.slice(0, 200)}`);
+});
+process.on("uncaughtException", (err) => {
+  STATS.errors++;
+  const msg = String(err?.message || err || "uncaughtException");
+  console.error(`[uncaughtException] ${msg.slice(0, 200)}`);
+  if (err?.stack) console.error(err.stack.split("\n").slice(0, 5).join("\n"));
+  // 不退 · 让 unit 继续服件 · 如同道隆反代「善者善之, 不善者亦善之」
 });
 
 // 优雅停 · 印 64 · 先标 draining · 等 SSE 流出 · 再关 server

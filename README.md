@@ -191,11 +191,16 @@ you can run WAM alone, or WAM + dao-core, or all three together.
 
 ### Install &middot; dao-proxy-min
 
+Build the vsix from source (`packages/dao-proxy-min/_build_vsix.ps1`), then:
+
 ```powershell
+# 1. Build (one-time · from source · zero npm deps · uses extension.js + vendor/)
+cd packages/dao-proxy-min
+.\_build_vsix.ps1            # produces  dao-proxy-min-9.8.0.vsix
+
+# 2. Install into Windsurf
 windsurf --install-extension dao-proxy-min-9.8.0.vsix
 ```
-
-Latest VSIX: [GitHub Releases](https://github.com/zhouyoukang/windsurf-assistant/releases/latest) &middot; `dao-proxy-min-9.8.0.vsix`
 
 Full docs: [`packages/dao-proxy-min/README.md`](packages/dao-proxy-min/README.md) (v9.8.0 守一不离 &middot; @-tool root preserved &middot; 三档 RPC 全覆盖 &middot; SSE 实时推送).
 

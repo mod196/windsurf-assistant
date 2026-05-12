@@ -145,12 +145,37 @@ function main() {
   ok(web.includes("dao-proxy-min"), "web 含 'dao-proxy-min'");
   ok(/function\s+switchTab\s*\(/.test(web), "switchTab 函数定义");
   ok(/window\.switchTab\s*=\s*switchTab/.test(web), "window.switchTab 暴露");
-  // link-pure-2/3 should be wired to packages/wam · releases/latest
+  // link-pure-2/3 should both be wired to source tree (与 dao-proxy-min vsix release 缺失对称)
   ok(
-    web.includes("/tree/main/packages/wam") || web.includes("packages/wam"),
-    "link-pure-2 指 packages/wam",
+    web.includes("/tree/main/packages/wam"),
+    "link-pure-2 指 packages/wam tree",
   );
-  ok(web.includes("/releases/latest"), "link-pure-3 指 releases/latest");
+  ok(
+    web.includes("/tree/main/packages/dao-proxy-min"),
+    "link-pure-3 指 packages/dao-proxy-min tree (印 66: 修原 releases/latest 不含 dao-proxy-min vsix 之疑)",
+  );
+  ok(
+    /Source\s*&amp;\s*build|Source\s*&\s*build|Source\s+and\s+build/.test(web),
+    "link-pure-3 文案 'Source & build' (替 'Latest VSIX' · 因 vsix 自构于本地)",
+  );
+
+  // ── [C0] packages/dao-core/README.md 导航 ────────────────
+  // 印 66 · 三清均衡 · I 不可独无导航
+  console.log("[C0] packages/dao-core/README.md 三清导航 (印 66 均衡)");
+  const dcRm = read("packages/dao-core/README.md");
+  ok(dcRm.includes("一气化三清"), "dao-core README 含 '一气化三清'");
+  ok(dcRm.includes("Three Pure"), "dao-core README 含 'Three Pure'");
+  ok(dcRm.includes("../wam/README.md"), "dao-core README 链 ../wam/README.md");
+  ok(
+    dcRm.includes("../dao-proxy-min/README.md"),
+    "dao-core README 链 ../dao-proxy-min/README.md",
+  );
+  ok(
+    /I\s*·\s*反代\s*API\s*·\s*本/.test(dcRm) ||
+      /I\s+&middot;\s+反代\s+API\s+&middot;\s+本/.test(dcRm) ||
+      dcRm.includes("I · 反代 API · 本"),
+    "dao-core README 自标 I · 本",
+  );
 
   // ── [C] packages/wam/README.md 导航 ──────────────────────
   console.log("[C] packages/wam/README.md 三清导航");
