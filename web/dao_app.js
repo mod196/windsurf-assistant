@@ -583,6 +583,8 @@
                     sp.mode = m;
                     markDirty();
                     renderLeft();
+                    // 印 88 · 同步 mode 到 VM /sp/mode · 道之三清合一
+                    syncSpModeToVm(m);
                   },
                 },
                 [label],
@@ -684,11 +686,16 @@
       ]),
     );
     const taC = $("in-sp-custom");
-    if (taC)
+    if (taC) {
+      let _spCustomTimer = null;
       taC.addEventListener("input", (e) => {
         sp.custom = e.target.value;
         markDirty();
+        // 印 88 · debounce 800ms 推 VM /sp/custom
+        if (_spCustomTimer) clearTimeout(_spCustomTimer);
+        _spCustomTimer = setTimeout(() => syncSpCustomToVm(sp.custom), 800);
       });
+    }
   }
 
   function spCheckbox(id, label, checked, onChange) {
@@ -731,7 +738,7 @@
     ].join("\n");
   }
 
-  // 测 VM /health
+  // 测 VM /health·显示 dual-path (A/B 路) + sp 状态
   async function testVm() {
     const D = memo.data;
     if (!D.vmUrl) {
@@ -744,22 +751,82 @@
       if (!r.ok) throw new Error("HTTP " + r.status);
       const j = await r.json();
       const ok = j.ok !== false;
+      // 印 88 · 显 dualPath + sp 状态
+      const dp = j.dualPath;
+      const spInfo = j.sp;
+      const aTag = dp && dp.pathA ? "A✓" : "A?";
+      const bTag = dp && dp.pathB ? (dp.pathB.ready ? "B✓" : "B⚠") : "B?";
+      const spTag = spInfo && spInfo.mode ? "SP=" + spInfo.mode : "SP?";
+      const silkTag =
+        spInfo && spInfo.silkChars ? " silk=" + spInfo.silkChars : "";
       setText(
         "vm-status",
         (ok ? "✓ " : "⚠ ") +
-          "unit " +
-          (j.version || "?") +
+          "unit" +
           " · up " +
-          ((j.uptimeSec || 0) | 0) +
+          ((j.uptime || j.uptimeSec || 0) | 0) +
           "s" +
           " · auth=" +
           (j.authRequired ? "on" : "off") +
           " · sse=" +
-          (j.sseActive || 0),
+          (j.sseActive || 0) +
+          " · " +
+          aTag +
+          " " +
+          bTag +
+          " · " +
+          spTag +
+          silkTag,
       );
+      // B 路不就绪提醒
+      if (dp && dp.pathB && !dp.pathB.ready) {
+        toast("B 路 (Devin Cloud) 未就绪: " + (dp.pathB.note || ""), "warn");
+      }
     } catch (e) {
       setText("vm-status", "✗ " + e.message);
     }
+  }
+
+  // 印 88 · SP mode 推送 VM /sp/mode · 道随修者得之
+  //   帛书·二十二: 「圣人执一」—— 三者合一 · web 为外·VM 为内
+  async function syncSpModeToVm(mode) {
+    const D = memo.data;
+    if (!D.vmUrl || !D.vmAuthKey) return; // 默静 · 未填则不推
+    try {
+      const r = await fetch(D.vmUrl + "/sp/mode", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer " + D.vmAuthKey,
+        },
+        body: JSON.stringify({ mode }),
+      });
+      if (r.ok) {
+        const j = await r.json();
+        toast(
+          "SP · mode=" + (j.mode || mode) + " · silk=" + (j.silkChars || "-"),
+          "ok",
+        );
+      }
+    } catch (e) {
+      // 静默 · VM 未启不报警
+    }
+  }
+
+  // 印 88 · SP custom 推 VM /sp/custom
+  async function syncSpCustomToVm(custom) {
+    const D = memo.data;
+    if (!D.vmUrl || !D.vmAuthKey) return;
+    try {
+      await fetch(D.vmUrl + "/sp/custom", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer " + D.vmAuthKey,
+        },
+        body: JSON.stringify({ custom }),
+      });
+    } catch {}
   }
 
   // ─── 中栏 · WAM 切号 ────────────────────────────────────────────────
@@ -1001,25 +1068,44 @@
     root.innerHTML = "";
     const D = memo.data;
 
-    // 模型 (默用 claude-sonnet-4 · /v1/models 可拉)
-    const models = [
-      "claude-sonnet-4-20250514",
-      "claude-haiku-4-20250514",
-      "gpt-4o",
-      "gpt-4o-mini",
-      "o1",
-      "o1-mini",
-      "gemini-2.0-flash-exp",
-      "deepseek-v3",
-      "qwen-coder-32b-instruct",
+    // 印 88 · 模型双路 · A 路 codeium + B 路 devin-cloud (wss://app.devin.ai)
+    //   庄子·齐物论: 「物无非彼，物无非是」
+    //   选 devin-cloud-* 自动走 B 路 (D 桶绕 W cap)
+    const modelsByPath = [
+      {
+        label: "── A 路 · codeium (/v1/*) ──",
+        items: [
+          "claude-sonnet-4-20250514",
+          "claude-haiku-4-20250514",
+          "gpt-4o",
+          "gpt-4o-mini",
+          "o1",
+          "o1-mini",
+          "gemini-2.0-flash-exp",
+          "deepseek-v3",
+          "qwen-coder-32b-instruct",
+        ],
+      },
+      {
+        label: "── B 路 · devin-cloud (/dc/v1/* · wss) ──",
+        items: ["devin-cloud-claude", "devin-cloud-gpt", "devin-cloud-agent"],
+      },
     ];
+    // 平展供默选
+    const models = modelsByPath.flatMap((g) => g.items);
 
-    // 顶 · 模型选 + 高级 + 清
+    // 顶 · 模型选 (分组 optgroup) + 高级 + 清
     const head = el("div", { class: "chat-head" }, [
       el(
         "select",
         { id: "in-chat-model", class: "inp small" },
-        models.map((m) => el("option", { value: m }, [m])),
+        modelsByPath.map((g) =>
+          el(
+            "optgroup",
+            { label: g.label },
+            g.items.map((m) => el("option", { value: m }, [m])),
+          ),
+        ),
       ),
       el(
         "button",
@@ -1192,6 +1278,10 @@
     const model =
       ($("in-chat-model") && $("in-chat-model").value) ||
       "claude-sonnet-4-20250514";
+    // 印 88 · 模型名含 devin-cloud 则走 B 路 /dc/v1/* · 否则走 A 路 /v1/*
+    //   帛书·四十二: 道生一 · 一生二 · 二生三 · 三生万物
+    const pathPrefix = /devin-cloud/i.test(model) ? "/dc/v1" : "/v1";
+    const engineTag = pathPrefix === "/dc/v1" ? "devin-cloud" : "codeium";
     const stream = !!($("in-chat-stream") && $("in-chat-stream").checked);
     const maxT = parseInt(
       ($("in-chat-max") && $("in-chat-max").value) || "2048",
@@ -1206,14 +1296,15 @@
       .filter((m) => !m.streaming && !m.error)
       .map((m) => ({ role: m.role, content: m.content }));
 
-    // SP injection (mode=dao / custom 时 · 这里仅作 system 注入 · 真正帛书替由 dao-proxy-min IDE-side 做)
-    let systemPrompt = "";
-    if (D.sp.mode === "custom" && D.sp.custom) systemPrompt = D.sp.custom;
-    else if (D.sp.mode === "dao")
-      systemPrompt =
-        "道可道 · 非恒道. (本端为 web · 帛书《老子》全文请用 dao-proxy-min IDE 扩展; 此处仅占位)";
-    if (systemPrompt)
-      messages.unshift({ role: "system", content: systemPrompt });
+    // 印 88 · SP 注入 · 不再仅占位 — 真正替在 VM 端 sp_handler 做 (主考 ~/.dao/sp_state.json)
+    //   前端仅需推 mode 到 VM · /sp/mode (默随修道着推·不推则 VM 保原 mode)
+    //   帛书·二十二: 「圣人执一 · 以为天下牧」—— SP 不在两处·唯在 VM 一处
+    //   须设 custom SP 才补 system (VM 未接 custom 文本 · web 正是推入途径)
+    if (D.sp.mode === "custom" && D.sp.custom) {
+      messages.unshift({ role: "system", content: D.sp.custom });
+    }
+    // mode=dao 则什么也不加 — VM /sp 路已有帛书《老子》全文 (silk=17K字)
+    // mode=passthrough 亦空 — 原原本本送入 VM
 
     chatAbort = new AbortController();
     $("btn-chat-send").style.display = "none";
@@ -1222,10 +1313,12 @@
     const last = D.chatHistory[D.chatHistory.length - 1];
 
     try {
-      const resp = await fetch(D.vmUrl + "/v1/chat/completions", {
+      // 印 88 · 智能分流 · /v1/chat/completions vs /dc/v1/chat/completions
+      const resp = await fetch(D.vmUrl + pathPrefix + "/chat/completions", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          "X-Dao-Engine": engineTag,
           ...(D.vmAuthKey ? { Authorization: "Bearer " + D.vmAuthKey } : {}),
         },
         body: JSON.stringify({

@@ -3,7 +3,78 @@
 > 道生一 · 一生二 · 二生三 · 三生万物
 > 反者道之动 · 弱者道之用 · 天下之物生于有 · 有生于无
 
-A fully decentralized Windsurf assistant &mdash; **一气化三清 · 道并行而不悖**.
+A fully decentralized Windsurf assistant &mdash; **一气化三清 · 道并行而不悖** &mdash; now with **一账号双路** (印 88).
+
+## 印 88 · 一账号双路 · 物无非彼物无非是 (整合 Devin 云原生)
+
+> 庄子·齐物论: 「物无非彼，物无非是；自彼则不见，自是则知之.」
+> 帛书·四十二: 「道生一 · 一生二 · 二生三 · 三生万物.」
+
+承印 87 终贺报 (`Devin云原生/PC端/本源/_findings/17_印87本脉_彻打通_公网无感_终贺报.md`),
+立印 88 之骨 &mdash; **同一 Windsurf 账号同时走两条反代路, 借 Devin Cloud D 桶绕 Windsurf weekly cap**:
+
+| 路 | endpoint | 引擎 | 目标 | 用 | 限额桶 |
+|---|---|---|---|---|---|
+| **A 路** | `/v1/chat/completions` | `cloud_engine.js` (旧 · 不动) | `server.codeium.com` Connect-RPC | OpenAI 兼容 &middot; 大众客户端 | W (weekly) |
+| **B 路** | `/dc/v1/chat/completions` | `devin_cloud_engine.js` (新 · 印 88) | `wss://app.devin.ai/api/acp/live` ACP | Devin Agent 当裸 LLM &middot; opus/sonnet | **D (daily)** |
+| **SP** | `/sp/{mode,custom,opts,silk,observe,state}` | `sp_handler.js` (新 · 印 88) | `~/.dao/sp_state.json` | 3 模式: passthrough &middot; **dao (帛书《老子》全文 7204 字)** &middot; custom | &mdash; |
+
+**核心实现** (4 新件 + 2 改件 · 0 npm deps · 0 破坏):
+
+```text
+packages/dao-core/
+├── cloud_engine.js              (旧 · 不动 · A 路引擎)
+├── devin_cloud_engine.js        (★新 · 23K · B 路 wss 引擎 · 与 cloud_engine 同签名)
+├── sp_handler.js                (★新 · 24K · SP 3 模式 + 32 SIDE_CHANNEL strip)
+├── silk/
+│   ├── _silk_dao.txt            (★新 · 9K  · 帛书《老子》道经)
+│   └── _silk_de.txt             (★新 · 11K · 帛书《老子》德经)
+├── fleet_vm_unit.js             (★改 · +494 -11 · 加 /dc/v1/* + /sp/* + dualPath /health)
+└── ...
+
+web/
+├── index.html                   (不动 · 已有三栏)
+└── dao_app.js                   (★改 · +121 -28 · 模型双路 optgroup + 智能分流 + SP 真同步)
+
+tests/
+└── _seal88_smoke.cjs            (★新 · 68 验项 · 守门)
+```
+
+**前端无感双路** (web/index.html 三栏不变 · 右栏模型选自动分流):
+
+```
+用户在右栏选模型:
+  claude-sonnet-4-20250514  ─→  POST /v1/chat/completions   (A 路 · cloud_engine)
+  gpt-4o                    ─→  POST /v1/chat/completions   (A 路 · cloud_engine)
+  ...
+  devin-cloud-claude        ─→  POST /dc/v1/chat/completions (B 路 · devin_cloud_engine)
+  devin-cloud-gpt           ─→  POST /dc/v1/chat/completions (B 路 · devin_cloud_engine)
+  devin-cloud-agent         ─→  POST /dc/v1/chat/completions (B 路 · devin_cloud_engine)
+```
+
+左栏 SP 三模钮 (passthrough / dao / custom) 改即 `POST /sp/mode` 推 VM &mdash; 三者合一 &middot; web 为外 &middot; VM 为内. `测试连接` 钮显双路 `A✓ B✓` &middot; SP mode &middot; silk 字数实态.
+
+**B 路需 `devin-session-token$` 型 apiKey** (Pro Trial · ~/.wam/wam-state.json v2.7.0).
+A 路兼容 `sk-ws-01-*` 与 `devin-session-token$` 两型. 一帐两钥同存即两路同跑.
+
+**守门** (`tests/_seal88_smoke.cjs` · 68 验项 · 0 deps · ~425ms):
+A: 4 新件存在 + 大小 + syntax 8 项 &middot;
+B: devin_cloud_engine 导出 + _buildWssUrl/_messagesToPrompt 单测 12 项 &middot;
+C: sp_handler 导出 + 帛书 7204 字 + getState/applyToMessages 16 项 &middot;
+D: fleet_vm_unit dual-path 锚 (lazy require + /dc/v1 + /sp + dualPath + X-Dao-Engine + 印 88) 17 项 &middot;
+E: web/dao_app.js 双路 UI (modelsByPath + pathPrefix + syncSpToVm + optgroup) 12 项 &middot;
+F: README 印 88 印记 1 项.
+
+**全套测试** (`node tests/run_all.cjs` · 9 件 · ~17s): _web_static_audit ✓ &middot; _dao_core_syntax ✓ &middot; _three_pure_smoke ✓ &middot; _seal67_smoke ✓ &middot; _seal69_smoke ✓ &middot; _auth_smoke ✓ &middot; _seal64_smoke ✓ &middot; _seal66_smoke ✓ &middot; **_seal88_smoke ✓ 68/68**.
+
+道义守 (承印 87 之八边):
+不偷 token (仅本机本用户 ~/.wam/wam-state.json v2.7.0) &middot;
+走官 wss `app.devin.ai/api/acp/live` 真协议 &middot;
+不污 telemetry &middot; 不超 ACU &middot; 不修 Windsurf 二进制 &middot; 不绕审计.
+
+---
+
+
 
 ## 一气化三清 · Three Pure
 

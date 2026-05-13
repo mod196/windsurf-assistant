@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * fleet_vm_unit.js — 印 62 · 底层之底层 · 一账号一虚拟机一反代
+ * fleet_vm_unit.js — 印 88 · 一账号双路 · 物无非彼物无非是
  * ════════════════════════════════════════════════════════════════════════
  *
  *   帛书·四十二: 「道生一，一生二，二生三，三生万物。」
@@ -40,6 +40,12 @@
  *   印 64 · Windsurf 账号底层 4 步链 (--allow-auth 闸 · 默 OFF · auth-key 仍验):
  *     POST /auth/login · /auth/postauth · /auth/register · /auth/status · /auth/auto
  *
+ *   印 88 · 一账号双路 (承印 87 Devin 云原生 终贺报):
+ *     POST /dc/v1/chat/completions  · Devin Cloud B 路 (wss://app.devin.ai · 借 D 桶绕 W cap)
+ *     GET  /dc/v1/models            · Devin Cloud 模型 (3 · agent/claude/gpt)
+ *     GET  /sp/state · /sp/silk · /sp/observe · SP 管理 (3 模式 · 默 passthrough · 用户设 dao 替《老子》)
+ *     POST /sp/mode · /sp/custom · /sp/opts     · SP 设置
+ *
  *   零外部依赖 · 仅 Node.js 内置 (http, https, crypto, fs, path, os, dns)
  */
 "use strict";
@@ -69,6 +75,63 @@ try {
       "  最小部署: 复制 cloud_engine.js + fleet_vm_unit.js 到同目录",
     );
     process.exit(1);
+  }
+}
+
+// ════════════════════════════════════════════════════════════════
+// §1b  印 88 · 一账号双路 · Devin Cloud Engine + SP Handler lazy load
+//     帛书·四十: 「反者道之动 · 弱者道之用 · 天下之物生于有 · 有生于无」
+//     庄子·齐物论: 「物无非彼，物无非是；自彼则不见，自是则知之」
+//     ─ B 路 (devin_cloud_engine.js) 与 A 路 (cloud_engine.js) 共一账号 ─
+// ════════════════════════════════════════════════════════════════
+
+let DC = null;
+function getDevinCloudEngine() {
+  if (DC === null) {
+    try {
+      DC = require("./devin_cloud_engine");
+    } catch {
+      try {
+        DC = require(path.join(__dirname, "devin_cloud_engine"));
+      } catch {
+        DC = false;
+      }
+    }
+  }
+  return DC || null;
+}
+
+let SP = null;
+function getSpHandler() {
+  if (SP === null) {
+    try {
+      SP = require("./sp_handler");
+    } catch {
+      try {
+        SP = require(path.join(__dirname, "sp_handler"));
+      } catch {
+        SP = false;
+      }
+    }
+  }
+  return SP || null;
+}
+
+// 印 88 · SP messages 处理之统一入 · A/B 两路共用
+//   默 passthrough · 用户设 mode=dao 才替 system
+//   失败回退原 messages · 不破真路 · 帛书·四十八「为道日损」
+function applySpToMessages(messages, modelUid, protocol, stream) {
+  const SP_ = getSpHandler();
+  if (!SP_) return messages;
+  try {
+    return SP_.applyToMessages(messages, {
+      modelUid,
+      protocol: protocol || "openai",
+      stream: !!stream,
+    });
+  } catch (e) {
+    if (VERBOSE) console.error("[sp] applyToMessages err:", e.message);
+    return messages;
   }
 }
 
@@ -251,6 +314,10 @@ async function handleChatCompletions(req, res, body) {
 
   const modelUid = CE.resolveModel(model);
 
+  // 印 88 · SP 处理 (A 路 · codeium) · 默 passthrough · 用户设 dao/custom 才替 system
+  //   帛书·四十八: 损之又损 · 以至于无为
+  const chatMessages = applySpToMessages(messages, modelUid, "openai", stream);
+
   // 印 66 · _t0 提至函数级 · 防非流式 catch 引用未定义致 unit 崩 (反者道之动·公网视角)
   const _t0 = Date.now();
 
@@ -289,7 +356,7 @@ async function handleChatCompletions(req, res, body) {
       const result = await CE.chatStream(
         RESOLVED_API_KEY,
         modelUid,
-        messages,
+        chatMessages,
         (delta) => {
           tokenCount++;
           const chunk = {
@@ -371,7 +438,7 @@ async function handleChatCompletions(req, res, body) {
       const result = await CE.chatStream(
         RESOLVED_API_KEY,
         modelUid,
-        messages,
+        chatMessages,
         null,
         {
           timeoutMs: 180000,
@@ -530,6 +597,316 @@ async function handleAuthRoute(req, res, body, action) {
   }
 }
 
+// ═══════════════════════════════════════════════════════════════
+// §4c  印 88 · /dc/v1/chat/completions · Devin Cloud B 路 (wss://app.devin.ai)
+//      帛书·四十二: 道生一 · 一生二 · 二生三 · 三生万物
+//      与 A 路 /v1/* 共同一账号 · 但走 ACP 协议 · 借 D 桶绕 W cap
+// ═══════════════════════════════════════════════════════════════
+
+async function handleDevinCloudChat(req, res, body) {
+  const DC_ = getDevinCloudEngine();
+  if (!DC_) {
+    return sendJson(res, 503, {
+      error: {
+        message:
+          "devin_cloud_engine.js not available · ensure same dir as fleet_vm_unit.js",
+        type: "module_unavailable",
+      },
+    });
+  }
+  // Devin Cloud 仅接 devin-session-token$ 型 apiKey
+  if (!RESOLVED_API_KEY.startsWith(DC_.TOKEN_PREFIX)) {
+    return sendJson(res, 400, {
+      error: {
+        message: `Devin Cloud B 路需 devin-session-token$ 型 apiKey · 当前 prefix=${RESOLVED_API_KEY.slice(0, 8)}... · 配 type=devin 账号入 ~/.dao/accounts.json`,
+        type: "invalid_request_error",
+        code: "wrong_api_key_type",
+      },
+    });
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return sendJson(res, 400, {
+      error: { message: "invalid JSON body", type: "invalid_request_error" },
+    });
+  }
+  const messages = parsed.messages || [];
+  const model = parsed.model || "devin-cloud-agent";
+  const stream = parsed.stream !== false;
+  const requestId = "chatcmpl-" + crypto.randomBytes(12).toString("hex");
+  if (!messages.length) {
+    return sendJson(res, 400, {
+      error: { message: "messages required", type: "invalid_request_error" },
+    });
+  }
+
+  STATS.requests++;
+  STATS.lastRequestAt = new Date().toISOString();
+
+  // 印 88 · SP 处理 (B 路 · 与 A 路同享 sp_handler · 帛书·廿二「圣人执一」)
+  const chatMessages = applySpToMessages(messages, model, "openai", stream);
+
+  const _t0 = Date.now();
+
+  if (stream) {
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-cache, no-store",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
+      "Access-Control-Allow-Origin": "*",
+      "X-Dao-Fleet-Unit": UNIT_ID,
+      "X-Dao-Engine": "devin-cloud",
+    });
+    const sseEntry = {
+      res,
+      requestId,
+      at: Date.now(),
+      engine: "devin-cloud",
+    };
+    const heartbeat = setInterval(() => {
+      try {
+        res.write(": dao-heartbeat\n\n");
+      } catch {
+        clearInterval(heartbeat);
+      }
+    }, SSE_HEARTBEAT_MS);
+    sseEntry.heartbeat = heartbeat;
+    _activeSse.add(sseEntry);
+    const cleanup = () => {
+      clearInterval(heartbeat);
+      _activeSse.delete(sseEntry);
+    };
+    res.on("close", cleanup);
+    res.on("finish", cleanup);
+
+    let tokenCount = 0;
+    try {
+      const result = await DC_.chat(
+        { apiKey: RESOLVED_API_KEY, account: ACCOUNT },
+        model,
+        chatMessages,
+        (delta) => {
+          tokenCount++;
+          const chunk = {
+            id: requestId,
+            object: "chat.completion.chunk",
+            created: Math.floor(Date.now() / 1000),
+            model,
+            choices: [
+              {
+                index: 0,
+                delta: { content: delta },
+                finish_reason: null,
+              },
+            ],
+          };
+          res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+        },
+        [],
+        { timeoutMs: 180000 },
+      );
+      const finalChunk = {
+        id: requestId,
+        object: "chat.completion.chunk",
+        created: Math.floor(Date.now() / 1000),
+        model,
+        choices: [
+          {
+            index: 0,
+            delta: {},
+            finish_reason: result.stopReason || "stop",
+          },
+        ],
+        usage: {
+          prompt_tokens: 0,
+          completion_tokens: result.tokens || tokenCount,
+          total_tokens: result.tokens || tokenCount,
+        },
+      };
+      res.write(`data: ${JSON.stringify(finalChunk)}\n\n`);
+      res.write("data: [DONE]\n\n");
+      cleanup();
+      res.end();
+      STATS.tokens += result.tokens || tokenCount;
+      _recordStat({
+        at: Date.now(),
+        ms: Date.now() - _t0,
+        model,
+        ok: true,
+        stream: true,
+        engine: "devin-cloud",
+      });
+    } catch (e) {
+      STATS.errors++;
+      const errMsg = String(e?.message || e || "unknown error");
+      _recordStat({
+        at: Date.now(),
+        ms: Date.now() - _t0,
+        model,
+        ok: false,
+        err: errMsg.slice(0, 80),
+        engine: "devin-cloud",
+      });
+      const errChunk = {
+        id: requestId,
+        object: "chat.completion.chunk",
+        error: { message: errMsg, type: "server_error" },
+      };
+      try {
+        res.write(`data: ${JSON.stringify(errChunk)}\n\n`);
+        res.write("data: [DONE]\n\n");
+        cleanup();
+        res.end();
+      } catch {}
+    }
+  } else {
+    try {
+      const result = await DC_.chat(
+        { apiKey: RESOLVED_API_KEY, account: ACCOUNT },
+        model,
+        chatMessages,
+        null,
+        [],
+        { timeoutMs: 180000 },
+      );
+      STATS.tokens += result.tokens || 0;
+      sendJson(res, 200, {
+        id: requestId,
+        object: "chat.completion",
+        created: Math.floor(Date.now() / 1000),
+        model,
+        choices: [
+          {
+            index: 0,
+            message: { role: "assistant", content: result.text },
+            finish_reason: result.stopReason || "stop",
+          },
+        ],
+        usage: {
+          prompt_tokens: 0,
+          completion_tokens: result.tokens || 0,
+          total_tokens: result.tokens || 0,
+        },
+        _engine: "devin-cloud",
+      });
+    } catch (e) {
+      STATS.errors++;
+      const errMsg = String(e?.message || e || "unknown error");
+      _recordStat({
+        at: Date.now(),
+        ms: Date.now() - _t0,
+        model,
+        ok: false,
+        err: errMsg.slice(0, 80),
+        engine: "devin-cloud",
+      });
+      const code =
+        errMsg.includes("rate") || errMsg.includes("quota") ? 429 : 502;
+      sendJson(res, code, {
+        error: { message: errMsg, type: "server_error" },
+      });
+    }
+  }
+}
+
+function handleDevinCloudModels(req, res) {
+  // Devin Cloud 不分模型 (ACP 是 agent · 不选 model) · 但兼容 OpenAI 客户端
+  sendJson(res, 200, {
+    object: "list",
+    data: [
+      {
+        id: "devin-cloud-agent",
+        object: "model",
+        created: 1700000000,
+        owned_by: "devin",
+        root: "devin-cloud-agent",
+        parent: null,
+        _name: "Devin Agent (默 · Claude)",
+        _engine: "devin-cloud",
+      },
+      {
+        id: "devin-cloud-claude",
+        object: "model",
+        created: 1700000000,
+        owned_by: "devin",
+        root: "devin-cloud-claude",
+        parent: null,
+        _name: "Devin Cloud · Claude",
+        _engine: "devin-cloud",
+      },
+      {
+        id: "devin-cloud-gpt",
+        object: "model",
+        created: 1700000000,
+        owned_by: "devin",
+        root: "devin-cloud-gpt",
+        parent: null,
+        _name: "Devin Cloud · GPT",
+        _engine: "devin-cloud",
+      },
+    ],
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════
+// §4d  印 88 · /sp/* · SP 管理 (3 模式 + 4 opts + observe ring)
+//      帛书·廿二: 圣人执一 · 以为天下牧 · A/B 两路共享同一 SP 状态
+// ═══════════════════════════════════════════════════════════════
+
+async function handleSpRoute(req, res, body, action, method) {
+  const SP_ = getSpHandler();
+  if (!SP_) {
+    return sendJson(res, 503, {
+      error: {
+        message: "sp_handler.js not available",
+        type: "module_unavailable",
+      },
+    });
+  }
+  try {
+    if (method === "GET") {
+      if (action === "state" || action === "")
+        return sendJson(res, 200, { ok: true, ...SP_.getState() });
+      if (action === "silk")
+        return sendJson(res, 200, { ok: true, ...SP_.getSilkText() });
+      if (action === "observe")
+        return sendJson(res, 200, { ok: true, log: SP_.getObserveLog() });
+      return sendJson(res, 404, {
+        error: { message: `unknown sp action: ${action}` },
+      });
+    }
+    if (method === "POST") {
+      let parsed = {};
+      try {
+        parsed = JSON.parse(body || "{}");
+      } catch {}
+      if (action === "mode")
+        return sendJson(res, 200, { ok: true, ...SP_.setMode(parsed.mode) });
+      if (action === "custom")
+        return sendJson(res, 200, {
+          ok: true,
+          ...SP_.setCustom(parsed.custom || ""),
+        });
+      if (action === "opts")
+        return sendJson(res, 200, { ok: true, ...SP_.setOpts(parsed) });
+      if (action === "observe/clear") {
+        SP_.clearObserveLog();
+        return sendJson(res, 200, { ok: true });
+      }
+      return sendJson(res, 404, {
+        error: { message: `unknown sp action: ${action}` },
+      });
+    }
+  } catch (e) {
+    return sendJson(res, 400, {
+      error: { message: e.message, type: "invalid_request_error" },
+    });
+  }
+}
+
 // ════════════════════════════════════════════════════════════════
 // §5  /v1/models · 模型列表
 // ════════════════════════════════════════════════════════════════
@@ -557,6 +934,15 @@ function handleModels(req, res) {
 // ════════════════════════════════════════════════════════════════
 
 function handleHealth(req, res) {
+  // 印 88 · 探 dual-path 真态
+  const DC_ = getDevinCloudEngine();
+  const SP_ = getSpHandler();
+  const dcAvail = !!DC_;
+  const dcCompat =
+    dcAvail &&
+    typeof RESOLVED_API_KEY === "string" &&
+    RESOLVED_API_KEY.startsWith(DC_.TOKEN_PREFIX);
+  const spState = SP_ ? SP_.getState() : null;
   sendJson(res, 200, {
     ok: true,
     unit: UNIT_ID,
@@ -576,7 +962,39 @@ function handleHealth(req, res) {
     hostname: os.hostname(),
     platform: os.platform(),
     nodeVersion: process.version,
-    seal: "印 64 · 为大于其细",
+    // 印 88 · 一账号双路 · 物无非彼物无非是
+    dualPath: {
+      pathA: {
+        engine: "codeium",
+        endpoint: "/v1/*",
+        target: "server.codeium.com",
+        available: true,
+        ready: true,
+      },
+      pathB: {
+        engine: "devin-cloud",
+        endpoint: "/dc/v1/*",
+        target: "wss://app.devin.ai/api/acp/live",
+        available: dcAvail,
+        ready: dcCompat,
+        compatible: dcCompat,
+        note: dcAvail
+          ? dcCompat
+            ? "就绪 · 可走 wss"
+            : "需 devin-session-token$ 型 apiKey (配 type=devin 账号)"
+          : "缺 devin_cloud_engine.js (印 88 · 同目录植入)",
+      },
+    },
+    sp: spState
+      ? {
+          mode: spState.mode,
+          silkLoaded: spState.silkLoaded,
+          silkChars: spState.silkChars,
+          opts: spState.opts,
+          observeCount: spState.observeCount,
+        }
+      : { available: false, note: "缺 sp_handler.js (印 88 · 同目录植入)" },
+    seal: "印 64 · 为大于其细 · 印 88 · 一账号双路 · 物无非彼物无非是 · 自彼则不见自是则知之",
   });
 }
 
@@ -868,6 +1286,42 @@ const server = http.createServer(async (req, res) => {
     return handleModels(req, res);
   }
 
+  // ── /dc/v1/chat/completions (印 88 · Devin Cloud B 路 · wss) ─────
+  if (pathname === "/dc/v1/chat/completions" && method === "POST") {
+    if (!gate(req, res)) return;
+    if (_draining)
+      return sendJson(res, 503, {
+        error: {
+          message: "unit draining · try again shortly",
+          type: "draining",
+        },
+      });
+    try {
+      const body = await readBody(req);
+      return handleDevinCloudChat(req, res, body);
+    } catch (e) {
+      return sendJson(res, 500, { error: { message: e.message } });
+    }
+  }
+
+  // ── /dc/v1/models (印 88 · Devin Cloud 模型) ──────────────
+  if (pathname === "/dc/v1/models" && method === "GET") {
+    if (!gate(req, res)) return;
+    return handleDevinCloudModels(req, res);
+  }
+
+  // ── /sp/* (印 88 · SP 管理 · GET state/silk/observe · POST mode/custom/opts) ──
+  if (pathname === "/sp" || pathname.startsWith("/sp/")) {
+    if (!gate(req, res)) return;
+    const action = pathname === "/sp" ? "" : pathname.slice("/sp/".length);
+    try {
+      const body = method === "POST" ? await readBody(req) : "";
+      return handleSpRoute(req, res, body, action, method);
+    } catch (e) {
+      return sendJson(res, 500, { error: { message: e.message } });
+    }
+  }
+
   // ── /health (公开 · 探活) ─────────────────────────────────
   if (pathname === "/health") {
     return handleHealth(req, res);
@@ -948,15 +1402,44 @@ server.listen(PORT, BIND, () => {
   console.log("");
   console.log("  端点:");
   console.log(
-    `    POST /v1/chat/completions  · OpenAI 兼容 (SSE 流式 + heartbeat 15s)`,
+    `    POST /v1/chat/completions    · A 路 codeium (SSE 流式 + heartbeat 15s)`,
   );
   console.log(
-    `    GET  /v1/models            · 模型列表 (${CE.MODEL_CATALOG.length} 个)`,
+    `    GET  /v1/models              · A 路模型列表 (${CE.MODEL_CATALOG.length} 个)`,
   );
-  console.log(`    GET  /health               · 健康检查`);
-  console.log(`    GET  /quota                · 配额探测`);
-  console.log(`    GET  /stats                · p50/p95/p99 三窗 (印 64)`);
-  console.log(`    GET  /fleet/info           · fleet 信息`);
+  // 印 88 · B 路 dual-path banner
+  const _DC_init = getDevinCloudEngine();
+  const _dcAvail = !!_DC_init;
+  const _dcCompat =
+    _dcAvail && RESOLVED_API_KEY.startsWith(_DC_init.TOKEN_PREFIX);
+  const _dcTag = _dcAvail
+    ? _dcCompat
+      ? "✓ 就绪"
+      : "⚠ 需 devin-session-token$ key"
+    : "✗ 缺 devin_cloud_engine.js";
+  console.log(
+    `    POST /dc/v1/chat/completions · B 路 Devin Cloud (wss · 印 88 · ${_dcTag})`,
+  );
+  console.log(
+    `    GET  /dc/v1/models           · B 路模型 (3 · agent/claude/gpt)`,
+  );
+  const _SP_init = getSpHandler();
+  const _spState_init = _SP_init ? _SP_init.getState() : null;
+  const _spTag = _spState_init
+    ? `✓ mode=${_spState_init.mode} · silk=${_spState_init.silkChars}字`
+    : "✗ 缺 sp_handler.js";
+  console.log(
+    `    GET  /sp/state /sp/silk /sp/observe · SP 管理 (印 88 · ${_spTag})`,
+  );
+  console.log(
+    `    POST /sp/mode /sp/custom /sp/opts   · SP 设置 (3 模式: passthrough/dao/custom)`,
+  );
+  console.log(
+    `    GET  /health                 · 健康检查 (含 dualPath/sp 真态)`,
+  );
+  console.log(`    GET  /quota                  · 配额探测`);
+  console.log(`    GET  /stats                  · p50/p95/p99 三窗 (印 64)`);
+  console.log(`    GET  /fleet/info             · fleet 信息`);
   if (ALLOW_AUTH) {
     console.log(`    POST /auth/login           · email+pwd → auth1`);
     console.log(`    POST /auth/postauth        · auth1 → sessionToken`);
@@ -992,7 +1475,7 @@ server.listen(PORT, BIND, () => {
   }, 30000);
 
   console.log("  物无非彼 物无非是 · 自彼则不见 自是则知之");
-  console.log("  道法自然 · 底层直连 · 无为而无不为");
+  console.log("  道法自然 · 一账号双路 · 印 88 · 无为而无不为");
 });
 
 server.on("error", (e) => {

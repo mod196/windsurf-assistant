@@ -32,6 +32,7 @@ const TESTS = [
   "_auth_smoke",
   "_seal64_smoke", // 印 64 · 4 步链 + SSE + /stats
   "_seal66_smoke", // 印 66 · 反者道之动 · 公网视角 fake-key crash-proof + CORS Allow-Headers
+  "_seal88_smoke", // 印 88 · 一账号双路 · 物无非彼物无非是 · 整合 Devin 云原生
 ];
 
 let allOk = true;
