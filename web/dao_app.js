@@ -775,6 +775,135 @@
         ]),
       ]),
     );
+
+    // E · 印 93 · Devin 中枢 C 道身桥 (本机 :11445/:11446 独立体)
+    //   帛书·廿二: 圣人执一 · 以为天下牧
+    //   帛书·廿五: 独立而不垓 · 可以为天地母
+    //   道并行而不悖 — 本面 (公网/VM) 与本机 Devin 云原生中枢 (印 91/92) 同源同道 · 各得其用
+    //   此 pane 仅作导航 + 健康探 (不替不夺 · 不强用 · 不强连)
+    root.appendChild(
+      el("div", { class: "pane" }, [
+        el("div", { class: "pane-hd" }, [
+          "Devin 中枢 · 印 93 ",
+          el("span", { class: "meta" }, ["本机 :11445/:11446 · 独立体"]),
+        ]),
+        el("div", { class: "pane-bd" }, [
+          el("div", { class: "hint" }, [
+            "本机 Devin 云原生中枢 (独立体) · 切号/备份/git/IDE桥 + 太上 pilot 操 app.devin.ai · 与上方 VM 反代道并行不悖",
+          ]),
+          el("div", { class: "row gap", style: { marginTop: "8px" } }, [
+            el(
+              "a",
+              {
+                class: "btn",
+                href: "http://127.0.0.1:11445",
+                target: "_blank",
+              },
+              ["中枢 ↗"],
+            ),
+            el(
+              "a",
+              {
+                class: "btn ghost",
+                href: "http://127.0.0.1:11446",
+                target: "_blank",
+              },
+              ["Pilot ↗"],
+            ),
+            el(
+              "button",
+              {
+                class: "btn ghost",
+                onclick: probeDevinHub,
+              },
+              ["探健康"],
+            ),
+          ]),
+          el(
+            "div",
+            {
+              id: "devin-hub-status",
+              class: "status-line",
+              style: { marginTop: "6px" },
+            },
+            ["(点 探健康 · 或见折叠之一键启)"],
+          ),
+          el("details", { style: { marginTop: "8px" } }, [
+            el(
+              "summary",
+              {
+                class: "hint",
+                style: { cursor: "pointer", fontSize: "11px" },
+              },
+              ["▸ 一键启 · 本机 Devin 中枢 (印 91 + 印 92)"],
+            ),
+            el(
+              "pre",
+              {
+                class: "code",
+                style: {
+                  fontSize: "10px",
+                  marginTop: "4px",
+                  whiteSpace: "pre-wrap",
+                },
+              },
+              [
+                "# 1. 起印 91 中枢 (五职 · :11445)\n" +
+                  "cd Devin云原生\\PC端\\本源\n" +
+                  "node 印91_万法归宗中枢\\server.js\n\n" +
+                  "# 2. 起印 92 太上 pilot (:11446 · playwright 操 app.devin.ai)\n" +
+                  "node 印92_太上_pilot\\pilot.js\n\n" +
+                  "# 3. (可选) 公网入口 (cloudflared / localhost.run / bore)\n" +
+                  ".\\起公网入口.ps1",
+              ],
+            ),
+          ]),
+        ]),
+      ]),
+    );
+  }
+
+  // 印 93 · 探 Devin 中枢 C 道身健康 (本机 :11445 + :11446 · 独立体桥)
+  //   道法自然 · 不通则静 · 不强连
+  async function probeDevinHub() {
+    const stEl = $("devin-hub-status");
+    if (!stEl) return;
+    stEl.textContent = "↻ 探 :11445/health ...";
+    let hubOk = false;
+    let hubMsg = "";
+    try {
+      const r = await fetch("http://127.0.0.1:11445/health", {
+        cache: "no-store",
+      });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const j = await r.json();
+      hubOk = true;
+      const d = j.data || j;
+      hubMsg =
+        "✓ 中枢 :11445" +
+        (d.windsurfAccounts != null ? " · ws=" + d.windsurfAccounts : "") +
+        (d.devinAccounts != null ? " · dv=" + d.devinAccounts : "") +
+        (d.uptime ? " · up " + ((d.uptime / 1000) | 0) + "s" : "");
+    } catch (e) {
+      hubMsg = "✗ :11445 不通 (印 91 未起 · 见上一键启)";
+    }
+    let pilotMsg = "";
+    try {
+      const r2 = await fetch("http://127.0.0.1:11446/health", {
+        cache: "no-store",
+      });
+      if (r2.ok) {
+        pilotMsg = " · pilot :11446 ✓";
+      } else {
+        pilotMsg = " · pilot :11446 ⚠";
+      }
+    } catch {
+      pilotMsg = " · pilot :11446 ✗";
+    }
+    stEl.textContent = hubMsg + pilotMsg;
+    if (hubOk) {
+      toast("Devin 中枢 ✓ · 道并行而不悖", "ok");
+    }
   }
 
   function spCheckbox(id, label, checked, onChange) {

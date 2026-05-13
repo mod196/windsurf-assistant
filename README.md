@@ -3,7 +3,41 @@
 > 道生一 · 一生二 · 二生三 · 三生万物
 > 反者道之动 · 弱者道之用 · 天下之物生于有 · 有生于无
 
-A fully decentralized Windsurf assistant &mdash; **一气化五清 · 道并行而不悖** &mdash; **一账号双路** (印 88) + **柔反 alignment** (印 89) + **浏览器内 wss hook 直注** (印 90) + **三栏 engine badge + iframe app.devin.ai** (印 91) + **得鱼忘笙 · 1 ACU 换 24h VM** (印 92).
+A fully decentralized Windsurf assistant &mdash; **一气化五清 · 道并行而不悖** &mdash; **一账号双路** (印 88) + **柔反 alignment** (印 89) + **浏览器内 wss hook 直注** (印 90) + **三栏 engine badge + iframe app.devin.ai** (印 91) + **得鱼忘笙 · 1 ACU 换 24h VM** (印 92) + **三身一道锚定** (印 93).
+
+---
+
+## 印 93 · 万法归宗 · 三身一道 · 一文锚之 (2026-05-13)
+
+> 帛书·廿二: 「**圣人执一 · 以为天下牧.**」
+> 帛书·四十八: 「**为道日损 · 损之又损 · 以至于无为 · 无为而无不为.**」
+> **道并行而不相悖.**
+
+承印 67-92 之一气化五清 · 立印 93 之**一文锚** &mdash; **用户最终管理使用页 · 三身各立 · 一文尽全**:
+
+| 道身 | 处 | 受众 | 形 |
+|---|---|---|---|
+| **A · 公网** (this repo) | GitHub Pages | 公网用户 (任何 fork 此 repo 之人) | `web/` gate→onboarding→mine 三态 · 左 API+SP / 中 WAM / 右 chat |
+| **B · 本地** (130 admin) | 自托管 `node fleet_vm_unit.js --port 7862` | 开发者本机 | `packages/dao-core/` 11 件 · OpenAI/Anthropic/Gemini 三协议 + auth/sp/dc 全链 |
+| **C · Devin 中枢** (独立体) | `../Devin云原生/PC端/本源/印91/92` | 主公本机 + 公网 (cloudflared) | :11445 五职 (切号/备份/git/IDE桥/健康) + :11446 太上 pilot (playwright) |
+
+**五合一 · 一目尽全** (用户五诉求 ↔ 现位):
+
+| 求 | A · 公网 | B · 本地 | C · Devin |
+|---|---|---|---|
+| 反代 Windsurf | `/v1/*` cloud_engine | `_kernel/cloud_engine.js` | — |
+| 反代 Devin | `/dc/v1/*` (印 88) | `_kernel/devin_cloud_engine.js` | pilot playwright (印 92) |
+| 提示词管理 | `/sp/*` 三模式 + injector (印 90) + proxy-min VSIX | `_kernel/sp_handler.js` + 左栏 SP UI | `sp_manager.js` |
+| 反代 API 管理 | 左栏 VM URL/auth key/测试 | 同 + admin :7870 | — |
+| WAM 切号 | `packages/wam` VSIX + 中栏账号库 | `_kernel/wam_bridge.js` + WAM iframe | 印91 §1 一键切 |
+| Agent 交互测试 | 右栏 SSE chat (A/B 双路 + 模型 picker) | 右栏 Cascade/Devin 双模 | pilot ask/observe |
+| 一笔起 24h VM | `packages/dao-vm/vm_up.js` (印 92) | — | pilot launch |
+
+**结论**: **万法已俱 · 三身已各立** · 缺者唯**锚定一文** &mdash; 即此节 + [`INDEX_GUIZONG.md`](./INDEX_GUIZONG.md).
+
+新开者从 [`INDEX_GUIZONG.md`](./INDEX_GUIZONG.md) 入即得三身全图 · 一键启 · 道义守.
+
+---
 
 ## 印 92 · 反者道之动 · 万物归焉而弗为主 · 得鱼忘笙
 
