@@ -355,8 +355,9 @@ jobs:
       - name: 末 · 状态 dump (always · 不论成败)
         if: always()
         env:
-          DAO_POOL_GIST_ID: ${{ secrets.DAO_POOL_GIST_ID }}
-          DAO_POOL_PAT: ${{ secrets.DAO_POOL_PAT }}
+          # 印 100: inputs 优先 (dispatch 时清此 run · 退 secrets · cron 时清)
+          DAO_POOL_GIST_ID: ${{ github.event.inputs.gist_id || secrets.DAO_POOL_GIST_ID }}
+          DAO_POOL_PAT: ${{ github.event.inputs.pat || secrets.DAO_POOL_PAT }}
         run: |
           echo ""
           echo "════════════════════════════════════════"
