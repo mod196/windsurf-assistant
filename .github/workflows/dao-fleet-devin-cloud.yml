@@ -52,9 +52,10 @@ on:
   schedule:
     # 每 5 小时一次 · cron 接续 · daemon 真永活
     - cron: '0 */5 * * *'
-  push:
-    paths:
-      - '.github/workflows/dao-fleet-devin-cloud.yml'
+  # 印 116 损: 删 push trigger
+  # 根: push 触发无 inputs · secrets fallback 即 secrets 缺则必失
+  # 治: 仅 workflow_dispatch (用户主动) + schedule (cron 自续)
+  # 帛书·四十八「闻道者日损 · 损之又损 · 以至于无为」
 
 permissions:
   contents: read
