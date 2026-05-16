@@ -149,18 +149,20 @@ node cli.js daemons --gist abc123 --pat ghp_xxx --json
 
 ---
 
-## 五 · 与印 96 (dao-fleet.yml) 之对比
+## 五 · 演化志 · 印 96 → 印 95 → 印 115
 
-| 维 | 印 96 (dao-fleet) | **印 95 (dao-fleet-cloud)** |
-|---|---|---|
-| token 源 | 主公本机 WAM 桥 (公网 cf URL) | **gist (主公私 gist)** |
-| 触发条件 | workflow_dispatch + 主公 WAM URL | workflow_dispatch + cron 5h + push trigger.txt |
-| PC 依 | ★ 必开 (WAM 桥) | **0 依** |
-| token 漂移 | 30 min 重拉 WAM 桥 | 30 min 重拉 gist |
-| daemon URL 报 | POST /report-daemon-url 回 WAM 桥 | **PATCH gist · daemons[]** |
-| Web UI 见 | 桥 dashboard / cf URL 直访 | **gist 读 · 显多 URL 表** |
-| 多并发 | 多 run 各报覆盖 | **多 run 各 host 入表 · 不覆** |
-| 单点故障 | WAM 桥 cf tunnel 死 → 全死 | **0 单点 · gist 永真** |
+> *大曰逝 · 逝曰远 · 远曰反* — 帛书 廿五
+
+| 印 | workflow | 角 | 状 |
+|---|---|---|---|
+| 96 | `dao-fleet.yml` | 依本机 WAM 桥 · cf tunnel 上报 daemon URL | **已损** (yin117 · 2026-05-16 · git history 存古) |
+| **95** | `dao-fleet-cloud.yml` | gist 主源 · GH Actions 跑 fleet_vm_unit · 0 PC 依 (本包之路) | **活** · onboarding 自走 (用户 fork inputs 一笔自举) |
+| **115** | `dao-fleet-devin-cloud.yml` | GH Actions 仅 deployer · 反代核心移 Devin VM · 鸡犬相闻 | **活** · 主公手动/cron · 真本源底层 |
+
+**一阴一阳之谓道** (yin117 主公诏):
+- **阳** · 印 95 cloud-only: 用户 fork onboarding 老路稳 · web UI 一笔即举
+- **阴** · 印 115 devin-cloud: 主公手动/cron · Devin VM 自管自家 token 池 · 民至老死不相往来
+- **不强求归一** · 二路并存 · 各为其用
 
 ---
 

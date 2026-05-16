@@ -309,10 +309,10 @@ node 印92_太上_pilot/pilot.js        # :11446 · playwright 操 app.devin.ai
 │   ├── dao-devin-vm/  (6  · 177K) # ★ 印 115 反者道之动 · GH Actions deployer + Devin VM dao_proxy
 │   └── wam/           (27 · 491K) # WAM 切号 (Windsurf VSIX · v2.7.0)
 ├── scripts/
-│   ├── devin-bootstrap.sh        # 一行起 unit + tunnel
-│   └── devin-bootstrap-fleet.sh  # 印 96 fleet workflow
-├── tests/                        # 15 件 smoke (~25s · 0 deps · 印 64-115 守门)
-└── .github/workflows/            # deploy-pages + dao-fleet + dao-fleet-cloud + dao-fleet-keepalive + dao-fleet-devin-cloud (★印 115) + ci + test-core
+│   ├── devin-bootstrap.sh        # 一行起 unit + tunnel (单账号 · 任 Linux VM)
+│   └── devin-bootstrap-fleet.sh  # 多账号一 VM 模式 (任 Linux VPS / EC2)
+├── tests/                        # 14 件 smoke (~18s · 0 deps · 印 64-115 守门)
+└── .github/workflows/            # deploy-pages + dao-fleet-cloud (印 95) + dao-fleet-keepalive + dao-fleet-devin-cloud (★印 115) + ci + test-core
 ```
 
 ---
@@ -346,11 +346,11 @@ node 印92_太上_pilot/pilot.js        # :11446 · playwright 操 app.devin.ai
 - ★ **印 115 · Devin VM 反代核心** · [`./packages/dao-devin-vm/`](packages/dao-devin-vm/) (6 件 · 177K · deployer + payload + spawner + installer)
 - 印 100 自举模块 · `./web/dao_bootstrap.js` (22K · 浏览器纯 JS · oneShot 9 步)
 - 印 101 视图层 · `web/dao_app.js` (renderMineV101 + 顶栏 + 用区 3 tab + 抽屉 4 节)
-- 守门 · `node tests/run_all.cjs` (14 件 · ~24s · 0 deps · 印 101 守 86/86)
+- 守门 · `node tests/run_all.cjs` (14 件 · ~18s · 0 deps · 印 101 守 86/86 + 印 115 守 28/0)
 - 印 115 守门 · `node tests/_seal115_smoke.cjs` (28 项 · 件齐 + syntax + yaml + endpoint + fallback)
 - 部署 workflow · `./.github/workflows/deploy-pages.yml`
-- 云端 daemon workflow · `./.github/workflows/dao-fleet-cloud.yml` (印 100 解锁 · 任 fork 自跑) + `dao-fleet-keepalive.yml`
-- ★ **印 115 反代 workflow** · `./.github/workflows/dao-fleet-devin-cloud.yml` (cron 5h + 5min poll keepalive)
+- 云端 daemon workflow · `./.github/workflows/dao-fleet-cloud.yml` (印 95 · onboarding 自走) + `dao-fleet-keepalive.yml`
+- ★ **印 115 反代 workflow** · `./.github/workflows/dao-fleet-devin-cloud.yml` (cron 5h · 主公手动/池)
 
 ---
 
@@ -376,3 +376,47 @@ node 印92_太上_pilot/pilot.js        # :11446 · playwright 操 app.devin.ai
 | `packages/wam/README.md` | 补三清导航首章 (失而复得 · 修 _three_pure_smoke 失项) |
 
 验: `node tests/run_all.cjs` 全套 13/13 · 0 regression (原 14 - _web_static_audit + 印115 _seal115 = 14 件 · cleanup 后含印 115 守).
+
+---
+
+## 八 · 阴阳合一 · 用户无感 · yin117 + cleanup-2026-05-16.ii
+
+> *大曰逝 · 逝曰远 · 远曰反* — 帛书 廿五
+> *一阴一阳之谓道* — 易传 系辞上
+
+承印 117 主公诏「鸡犬相闻 · 民至老死不相往来」 + 印 116 「慎终若始」 · 续清理未尽:
+
+### 阴 (cron · 隐 · 系统自动)
+
+| 件 | 操 | 理 |
+|---|---|---|
+| `.github/workflows/dao-fleet.yml` | **损** (yin117) | 印 96 旧 · 依本机 WAM 桥 · 0 外引 · 印 95+印 115 已 supersede |
+| `.github/workflows/_enable_pages_once.yml` | **损** (此次) | 一次性自启 Pages · 注释自言「跑一次成功后 workflow 可删」· TODO 落定 |
+| `trigger.txt` | **损** (此次) | 印 95 第三触发钥 · 印 100 dao_bootstrap web UI 自 dispatch 已 supersede |
+| `dao-fleet-cloud.yml` (push paths) | **修** (此次) | 去 `trigger.txt` 项 · 注释清 |
+| `dao-fleet-devin-cloud.yml` (push) | **修** (yin117) | 去 on.push 触发 · 仅 dispatch + cron · 防 secrets 缺时 push 必败 |
+
+### 阳 (dispatch · 显 · 用户主动)
+
+| 件 | 操 | 理 |
+|---|---|---|
+| `_findings/README.md` | **立** (yin117) | 明 `_findings/acp/` 为印 92 ACP smoke fixture · 防误损 |
+| `packages/dao-pool/README.md` § 五 | **改** (此次) | 印 96 vs 印 95 对比表 → 印 96→95→115 演化志 |
+| `INDEX_GUIZONG.md` § 八 (此节) | **立** (此次) | 阴阳合一总图 |
+
+### 二路并存 (yin117 主公诏)
+
+| 印 | workflow | 阳/阴 | 用 |
+|---|---|---|---|
+| **95** | `dao-fleet-cloud.yml` | 阳 (onboarding 老路稳) | 用户 fork 自走 · web UI 一笔即举 |
+| **115** | `dao-fleet-devin-cloud.yml` | 阴 (新源新路) | 主公手动 / cron 5h · Devin VM 自管 |
+
+**不强求归一** · 二路并存 · 各为其用 · 鸡犬相闻 · 民至老死不相往来.
+
+### 验
+
+```
+node tests/run_all.cjs  →  14/14 ✓ · 0 regression (含印 115 守 28/0)
+```
+
+*居其实而不居其华 · 居其厚而不居其薄 · 为道日损 · 损而无伤 · 功遂身芮 · 天之道也.*

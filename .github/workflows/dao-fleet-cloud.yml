@@ -23,9 +23,9 @@ name: dao-fleet-cloud
 #   → keep alive 350 min · 30 min 重拉 gist 自适新号
 #
 # 触发:
-#   ① workflow_dispatch (主公手动/Web UI 一键)
+#   ① workflow_dispatch (主公手动/Web UI 一键 · 印 100 dao_bootstrap 即此径)
 #   ② schedule cron · 每 5h · 自续 (主公关机时仍真活)
-#   ③ push trigger.txt · 印 99 之路 (echo + commit + push 即触)
+#   (旧三径 push trigger.txt · cleanup-2026-05-16 损 · 印 100 已 supersede)
 #
 # 必设 GitHub repo secrets:
 #   - DAO_POOL_GIST_ID  (主公一次 cli.js init 后输出)
@@ -74,9 +74,10 @@ on:
     # 每 5 小时一次 · 自续 (UTC · 凡 0/5/10/15/20 时)
     - cron: '0 */5 * * *'
   push:
+    branches: [main]   # cleanup-2026-05-16.ii · 仅 main · 防 feature/PR 分支 push 触发 daemon (省 ACU)
     paths:
       - '.github/workflows/dao-fleet-cloud.yml'
-      - 'trigger.txt'
+      # (trigger.txt cleanup-2026-05-16 损 · 印 100 dao_bootstrap 已 supersede 此径)
 
 permissions:
   contents: read
