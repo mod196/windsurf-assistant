@@ -95,6 +95,13 @@ tests/_*.err.txt
 **/_*_unit.out
 **/_*_unit.err
 
+# 印 134 · 根级一键脚本临时重定向件 (dao_run_all.cjs 等 stdout/stderr)
+# 帛书六十四「为之于其未有 · 治之于其未乱」
+/_runall.out
+/_runall.err
+/_runall.*.out
+/_runall.*.err
+
 # cleanup-2026-05-16 · 损之件不再立 · 防再误入
 05-文档_docs/
 **/SEAL_yin*.md
