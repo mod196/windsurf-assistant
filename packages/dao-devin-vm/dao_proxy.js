@@ -4,6 +4,7 @@
  * 末改 · 印 122 (sp_observe+SP 7 态) · 印 123 (web 二清对齐) · 印 124 (vendor/外接api 一身两轨)
  *      · 印 128 (一气化三清整体真本源治) · 印 129 (真本源切号 /admin/signin/windsurf)
  *      · 印 130 (真本源接入闭环 /admin/keys/{add,list,remove} · 登→入池→用 一线到底)
+ *      · 印 133 (反者道之动 · WAM 本地真本源桥 /admin/wam/{local,use} · 知 ~/.wam 之真号)
  * ════════════════════════════════════════════════════════════════════════
  *
  * 主公印 101 诏 (2026-05-14 · UTC+08):
@@ -115,12 +116,13 @@ try {
 // ════════════════════════════════════════════════════════════════════════
 // § 0 · 元 · 版 · WebSocket 检
 // ════════════════════════════════════════════════════════════════════════
-const VERSION = "0.4.2";
-// 印 122 立 SEAL · 印 125 加 sp-dryrun · 印 130 加 admin-keys+signin (居实不居华) · 印号承续
+const VERSION = "0.4.3";
+// 印 122 立 SEAL · 印 125 加 sp-dryrun · 印 130 加 admin-keys+signin · 印 ∞.2 加 /dc/* B 路 (居实不居华) · 印号承续
 //   帛书·廿二「圣人执一·以为天下牧」: SEAL 一字反映实功 · 不滞后于注释首行 · 不滞后于 router
+//   帛书·二「美与恶 之相生」 A 路智能分流 + B 路显式 devin cloud · 双反代之实
 const SEAL =
-  "印 122/125/130 · 双池+SP七态+wss-observe+silk双源 · auth gate · sp-dryrun · admin-keys + signin · 反者道之动";
-const SEAL_AT = "2026-05-17T18:43+08:00";
+  "印 122/125/130/∞.2 · 双池+SP七态+wss-observe+silk双源 · auth gate · sp-dryrun · admin-keys+signin · /dc/* B 路双反代 · 反者道之动";
+const SEAL_AT = "2026-05-17T20:10+08:00";
 
 let WebSocketImpl;
 if (typeof WebSocket !== "undefined") {
@@ -1242,9 +1244,17 @@ async function handleAdminKeysAdd(req, res) {
       hint: "POST /admin/keys/add { apiKey: 'ws-*', srvUrl?, email? }",
     });
   }
-  // 印 130 · 真本源验 · ws-* key 格 (windsurf 真本源 prefix)
-  //   不强 · 仅警 (允 mock 测时用 mock-* 之类)
+  // 印 130 · 真本源验 · windsurf register API 之 api_key 格
+  //   印 ∞.3 道动测发现 · 真 windsurf API ③ register 返之 api_key 是
+  //     `devin-session-token$<JWT>` 格式 · 非旧文档之 ws-* (老 wam-bundle hint)
+  //   实证: 13/13 真 auth1 → ②③ 链 → 全返 devin-session-token$ 前缀
+  //   故验 兼三型 (帛书六十四「图难于其易」「为大于其细」):
+  //     · devin-session-token$<JWT>  ← windsurf register 真返 (主路 · 印 ∞.3 治)
+  //     · ws-*                        ← 旧 wam-bundle alias (兼容)
+  //     · 其他                        ← warn (允 mock 测)
+  const isDevinSession = apiKey.startsWith("devin-session-token$");
   const isWs = apiKey.startsWith("ws-");
+  const isReal = isDevinSession || isWs;
   // 去重 · 帛书六十四「为之于其未有也」 — 已存即幂等返
   const dup = WS_POOL_STATE.keys.find((k) => k.apiKey === apiKey);
   if (dup) {
@@ -1273,14 +1283,23 @@ async function handleAdminKeysAdd(req, res) {
   // 印 130 · 池由空转为有 · loaded 立 · err 清
   WS_POOL_STATE.loaded = true;
   WS_POOL_STATE.err = null;
+  // 印 ∞.3 · 真 prefix 标 (主路 = devin-session-token$ · 别 = ws- · 余 = mock)
+  const prefixKind = isDevinSession
+    ? "devin-session"
+    : isWs
+      ? "ws-"
+      : "mock-or-other";
   console.log(
-    `[admin/keys/add] ✓ ${_maskKey(apiKey)} email=${email || "?"} pool=${WS_POOL_STATE.keys.length}${isWs ? "" : " (warn:non-ws-prefix)"}`,
+    `[admin/keys/add] ✓ ${_maskKey(apiKey)} email=${email || "?"} pool=${WS_POOL_STATE.keys.length} prefix=${prefixKind}${isReal ? "" : " (warn:non-real-prefix)"}`,
   );
   return sendJson(res, 200, {
     ok: true,
     apiKey: _maskKey(apiKey),
     count: WS_POOL_STATE.keys.length,
-    warn: isWs ? null : "key does not start with 'ws-'",
+    prefix: prefixKind, // 印 ∞.3 升 · 客可知前缀类
+    warn: isReal
+      ? null
+      : "key prefix not real (expected: devin-session-token$ or ws-)",
   });
 }
 
@@ -1314,6 +1333,542 @@ async function handleAdminKeysRemove(req, res) {
     removed,
     apiKey: _maskKey(apiKey),
     count: WS_POOL_STATE.keys.length,
+  });
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// § 印 133 · 反者道之动 · WAM 本地真本源桥 · 大曰逝逝曰远远曰反
+// ════════════════════════════════════════════════════════════════════════
+//   帛书廿五: 「道大 · 大曰逝 · 逝曰远 · 远曰反」
+//   帛书四十: 「反者 · 道之动也; 弱者 · 道之用也」
+//   帛书四十八:「损之又损 · 以至于无为 · 无为而无不为」
+//
+//   主公诏 (2026-05-17 20:08 · UTC+08):
+//     「重新解构最初本源提示词 · 解构所有底层需求
+//      C:\Users\Administrator\.wam\accounts.md 带入用户一切 ·
+//      测试使用一切 · 利用所有之资 · 推进到底 · 实践到底」
+//
+//   反观 · 印 1-132 已立 26/26 守门 · 但皆 mock · 未触主公真号库:
+//     - ~/.wam/accounts.md 之 179 件真号一件未导
+//     - ~/.wam/wam-state.json 96K 健康表 dao_proxy 不知
+//     - _kernel/wam_bridge + admin_server :7870 已立印 49 9 路 · 但不通 :17890
+//
+//   远曰反 · 立公网 dao_proxy 知 ~/.wam (仅主公本机起时有效):
+//     GET  /admin/wam/local      返 179 件解析表 (脱密 + 健康注入)
+//     POST /admin/wam/use        单件入池 (token-direct / email-login)
+//
+//   守隐 (帛书五十六「塞其闷 · 闭其门」· 三十六「邦利器不可以视人」):
+//     ✗ 不返完整密 (仅 fingerprint 12 字 + 长度)
+//     ✗ 不返完整 token (仅 mask 前 12+后 4 字 + fingerprint)
+//     ✗ 不返完整邮 (仅 j***a@gmail.com 风格 · raw=1 + localhost 强守可见)
+//     ✓ /admin/wam/use 仅本机 (127.0.0.1/::1/localhost · 即使 DAO_AUTH_TOKEN 校亦)
+//     ✓ token 由 server 端读真直入池 · web 不经手 (帛书三十六)
+//
+//   零依赖 (帛书廿八「为天下式 · 恒德不贰」):
+//     - 不引 _kernel · 不引 wam_bridge.js (单源守不破)
+//     - 自带 _wam133_parseAccountsMd (复 wam_bridge.parseAccountText 之精 · ~70 行)
+//     - fs.existsSync 探测 · Devin VM 端无 ~/.wam 即透返 available=false
+//
+//   流 (一线到底 · 闭环六门 · 圆主公诏):
+//     ① web 'browse 真本源 .wam' → GET /admin/wam/local        (印 133)
+//     ② 表渲 179 件 + 健康/Trial/credits/auth1 着色
+//     ③ 主公点某行 ⇄ → POST /admin/wam/use {index, mode}       (印 133)
+//        · auto: token > password 自辨
+//        · token-direct: auth1_xxx 直入池 (跳登 · 帛书四十八)
+//        · email-login: email+pwd → /admin/signin/windsurf (印 129) → 入池
+//     ④ 池立 ws-* key (印 130 接入)
+//     ⑤ /v1/chat/completions 真转 (印 105 反代核心)
+//     ⑥ 主公真号真用 · 物归原主 (此印之极)
+// ════════════════════════════════════════════════════════════════════════
+
+const _WAM133_HOME = require("os").homedir();
+const _WAM133_DIR = require("path").join(_WAM133_HOME, ".wam");
+const _WAM133_ACCOUNTS_MD = require("path").join(_WAM133_DIR, "accounts.md");
+const _WAM133_STATE_JSON = require("path").join(_WAM133_DIR, "wam-state.json");
+
+// 印 133 · 测试 hook · 守门可注入 fixture 路径 (生产时 null)
+let __WAM133_OVERRIDE = null;
+function __setWam133Override(paths) {
+  __WAM133_OVERRIDE = paths || null;
+}
+
+function _wam133_paths() {
+  if (__WAM133_OVERRIDE) {
+    return {
+      accountsMd: __WAM133_OVERRIDE.accountsMd || _WAM133_ACCOUNTS_MD,
+      stateJson: __WAM133_OVERRIDE.stateJson || _WAM133_STATE_JSON,
+    };
+  }
+  return { accountsMd: _WAM133_ACCOUNTS_MD, stateJson: _WAM133_STATE_JSON };
+}
+
+// 印 133 · 邮验 (复 wam_bridge 之精 · 0 deps)
+function _wam133_isEmail(s) {
+  if (!s || typeof s !== "string") return false;
+  return /^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/.test(s.trim());
+}
+
+// 印 133 · token 类辨 (auth1 / jwt / devin-session / sk-ws / ws-key / opaque)
+const _WAM133_RE_AUTH1 = /^auth1_[a-z0-9]{20,}$/i;
+const _WAM133_RE_JWT = /^eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+$/;
+const _WAM133_RE_DEVIN_SESSION = /^devin-session-token\$/i;
+const _WAM133_RE_SK_WS = /^sk-ws-/i;
+const _WAM133_RE_WS_PREFIX = /^ws-/i;
+function _wam133_tokenKind(s) {
+  if (!s) return null;
+  if (_WAM133_RE_AUTH1.test(s)) return "auth1";
+  if (_WAM133_RE_JWT.test(s)) return "jwt";
+  if (_WAM133_RE_DEVIN_SESSION.test(s)) return "devin-session";
+  if (_WAM133_RE_SK_WS.test(s)) return "sk-ws";
+  if (_WAM133_RE_WS_PREFIX.test(s)) return "ws-key";
+  if (s.length >= 60 && /^[A-Za-z0-9_\-\.\$\/+=]+$/.test(s)) return "opaque";
+  return null;
+}
+
+// 印 133 · 脱密 fingerprint (12 hex · sha256 前 12 字 · 帛书五十六)
+function _wam133_fp(s) {
+  if (!s) return "";
+  return require("crypto")
+    .createHash("sha256")
+    .update(String(s), "utf8")
+    .digest("hex")
+    .slice(0, 12);
+}
+
+// 印 133 · 脱邮 mask (j***a@gmail.com 保 domain · 隐 local)
+function _wam133_maskEmail(e) {
+  if (!e || typeof e !== "string") return "";
+  const at = e.indexOf("@");
+  if (at < 1) return "***";
+  const local = e.slice(0, at);
+  const domain = e.slice(at);
+  if (local.length <= 2) return local[0] + "*" + domain;
+  return local[0] + "***" + local.slice(-1) + domain;
+}
+
+// 印 133 · token mask (前 12 + … + 后 4)
+function _wam133_maskToken(t) {
+  if (!t) return "";
+  if (t.length <= 16) return t.slice(0, 4) + "…";
+  return t.slice(0, 12) + "…" + t.slice(-4);
+}
+
+// 印 133 · parseAccountsMd · 复 wam_bridge.parseAccountText 之精 (0 deps)
+//   返 { items: [{line, kind, ...}], rawCount }
+//   kind ∈ { email_password, email_token, token, ignored }
+//   opts.includeRaw=true 时 _password / _token 字段携真 (仅 /admin/wam/use 内部用)
+function _wam133_parseAccountsMd(content, opts) {
+  opts = opts || {};
+  const items = [];
+  if (!content || typeof content !== "string") {
+    return { items, rawCount: 0 };
+  }
+  const lines = content.split(/\r?\n/);
+  let lineNo = 0;
+  for (const raw of lines) {
+    lineNo++;
+    const ln = raw.trim();
+    if (!ln) continue;
+    if (ln.startsWith("#") || ln.startsWith("//")) continue;
+    // 单 token (无 @ · 仅一串)
+    if (!ln.includes("@")) {
+      const tk = _wam133_tokenKind(ln);
+      if (tk) {
+        items.push({
+          line: lineNo,
+          kind: "token",
+          tokenKind: tk,
+          tokenMasked: _wam133_maskToken(ln),
+          tokenFp: _wam133_fp(ln),
+          tokenLen: ln.length,
+          _token: opts.includeRaw ? ln : undefined,
+        });
+        continue;
+      }
+    }
+    // 邮密对 / 邮 token 对 · 多分隔符
+    let email = null;
+    let password = null;
+    let token = null;
+    function tryPair(a, b) {
+      a = (a || "").trim();
+      b = (b || "").trim();
+      if (!a || !b) return false;
+      const aIsEmail = _wam133_isEmail(a);
+      const bIsEmail = _wam133_isEmail(b);
+      if (aIsEmail) {
+        email = a;
+        const bTok = _wam133_tokenKind(b);
+        if (bTok) token = b;
+        else password = b;
+        return true;
+      }
+      if (bIsEmail) {
+        email = b;
+        password = a; // a 不会是 token (token regex 排了 @)
+        return true;
+      }
+      return false;
+    }
+    let matched = false;
+    if (/----+/.test(ln)) {
+      const i = ln.search(/----+/);
+      const m = ln.substring(i).match(/^----+/);
+      matched = tryPair(ln.substring(0, i), ln.substring(i + m[0].length));
+    }
+    if (!matched && ln.includes("\t")) {
+      const i = ln.indexOf("\t");
+      matched = tryPair(ln.substring(0, i), ln.substring(i + 1));
+    }
+    if (!matched && !/^https?:\/\//i.test(ln)) {
+      const ci = ln.search(/[:：=＝]/);
+      if (ci !== -1) {
+        matched = tryPair(ln.substring(0, ci), ln.substring(ci + 1));
+      }
+    }
+    if (!matched && ln.includes("|")) {
+      const i = ln.indexOf("|");
+      matched = tryPair(ln.substring(0, i), ln.substring(i + 1));
+    }
+    if (!matched) {
+      const ws = ln.match(/^(\S+)\s+(\S.*?)\s*$/);
+      if (ws) matched = tryPair(ws[1], ws[2]);
+    }
+    if (matched && email && (password || token)) {
+      const item = {
+        line: lineNo,
+        kind: token ? "email_token" : "email_password",
+        email,
+        emailMasked: _wam133_maskEmail(email),
+      };
+      if (password) {
+        item.passwordFp = _wam133_fp(password);
+        item.passwordLen = password.length;
+        if (opts.includeRaw) item._password = password;
+      }
+      if (token) {
+        item.tokenKind = _wam133_tokenKind(token);
+        item.tokenMasked = _wam133_maskToken(token);
+        item.tokenFp = _wam133_fp(token);
+        item.tokenLen = token.length;
+        if (opts.includeRaw) item._token = token;
+      }
+      items.push(item);
+      continue;
+    }
+    items.push({
+      line: lineNo,
+      kind: "ignored",
+      sampleMasked: ln.length > 20 ? ln.slice(0, 8) + "…" : ln,
+      length: ln.length,
+    });
+  }
+  return { items, rawCount: lines.length };
+}
+
+// 印 133 · 健康注入 (合 wam-state.health[email_lower] → item.health + item.usable)
+function _wam133_attachHealth(items, healthMap) {
+  if (!items || !healthMap) return items;
+  for (const it of items) {
+    if (it.kind !== "email_password" && it.kind !== "email_token") continue;
+    const key = (it.email || "").toLowerCase();
+    const h = healthMap[key];
+    if (!h) continue;
+    it.health = {
+      plan: h.plan || null,
+      daily: typeof h.daily === "number" ? h.daily : null,
+      weekly: typeof h.weekly === "number" ? h.weekly : null,
+      daysLeft: typeof h.daysLeft === "number" ? h.daysLeft : null,
+      planEnd: h.planEnd || null,
+      lastChecked: h.lastChecked || null,
+      checked: !!h.checked,
+    };
+    // 综合可用 (复 wam_bridge.isClaudeAvailable)
+    const p = (h.plan || "").toLowerCase();
+    let usable = !!h.checked;
+    if (/^free$|^waitlist/i.test(p)) usable = false;
+    if (
+      /trial|free/i.test(p) &&
+      h.planEnd > 0 &&
+      Date.now() > h.planEnd &&
+      (h.daily || 0) <= 0 &&
+      (h.weekly || 0) <= 0
+    )
+      usable = false;
+    it.usable = usable;
+  }
+  return items;
+}
+
+// 印 133 · GET /admin/wam/local · 主公本机起时知 ~/.wam · Devin VM 端透返 available=false
+async function handleAdminWamLocal(req, res) {
+  try {
+    const url = new URL(req.url, "http://x");
+    const includeRaw = url.searchParams.get("raw") === "1";
+    const ra = (req.socket && req.socket.remoteAddress) || "";
+    const isLocal = /^(127\.|::1$|::ffff:127\.|localhost)/i.test(ra);
+    if (includeRaw && !isLocal) {
+      return sendJson(res, 403, {
+        ok: false,
+        error: "raw_only_localhost",
+        hint: "?raw=1 仅本机访 · 帛书三十六『邦利器不可以视人』",
+      });
+    }
+    const paths = _wam133_paths();
+    const fs = require("fs");
+    if (!fs.existsSync(paths.accountsMd)) {
+      return sendJson(res, 200, {
+        ok: true,
+        available: false,
+        pathHint: "~/.wam/accounts.md",
+        hint: "~/.wam/accounts.md 不存 · 非主公本机起 dao_proxy · 或 WAM 扩展未装",
+      });
+    }
+    const md = fs.readFileSync(paths.accountsMd, "utf8");
+    const parsed = _wam133_parseAccountsMd(md, { includeRaw: false });
+    let stateAvailable = false;
+    let stateMeta = null;
+    if (fs.existsSync(paths.stateJson)) {
+      try {
+        const raw = JSON.parse(fs.readFileSync(paths.stateJson, "utf8"));
+        const health = raw.health || {};
+        _wam133_attachHealth(parsed.items, health);
+        stateAvailable = true;
+        stateMeta = {
+          version: raw.version,
+          savedAt: raw.savedAt,
+          healthCount: Object.keys(health).length,
+          activeEmail: raw.activeEmail || null,
+          switches: raw.switches || 0,
+        };
+      } catch (e) {
+        stateMeta = { error: "parse: " + e.message };
+      }
+    }
+    let countEmailPw = 0,
+      countEmailToken = 0,
+      countToken = 0,
+      countIgnored = 0;
+    let countHealthy = 0,
+      countDirectUsable = 0,
+      countAuth1 = 0;
+    for (const it of parsed.items) {
+      if (it.kind === "email_password") countEmailPw++;
+      else if (it.kind === "email_token") countEmailToken++;
+      else if (it.kind === "token") countToken++;
+      else if (it.kind === "ignored") countIgnored++;
+      if (it.usable === true) countHealthy++;
+      if (it.kind === "token" || it.kind === "email_token") countDirectUsable++;
+      if (it.tokenKind === "auth1") countAuth1++;
+    }
+    return sendJson(res, 200, {
+      ok: true,
+      available: true,
+      pathHint: "~/.wam/accounts.md",
+      stateAvailable,
+      state: stateMeta,
+      rawLines: parsed.rawCount,
+      counts: {
+        total: parsed.items.length,
+        emailPassword: countEmailPw,
+        emailToken: countEmailToken,
+        tokenOnly: countToken,
+        ignored: countIgnored,
+        healthy: countHealthy,
+        directUsable: countDirectUsable,
+        auth1: countAuth1,
+      },
+      items: parsed.items,
+    });
+  } catch (e) {
+    return sendJson(res, 500, {
+      ok: false,
+      error: "wam_local_read_failed",
+      message: e.message,
+    });
+  }
+}
+
+// 印 133 · POST /admin/wam/use {index, mode} · 单件入池 · server 端读真直推 (web 不经手)
+async function handleAdminWamUse(req, res) {
+  let body;
+  try {
+    body = await readJson(req);
+  } catch (e) {
+    return sendJson(res, 400, {
+      ok: false,
+      error: "bad_json",
+      message: e.message,
+    });
+  }
+  const index = parseInt(body && body.index, 10);
+  if (!Number.isInteger(index) || index < 0) {
+    return sendJson(res, 400, {
+      ok: false,
+      error: "index_required",
+      hint: "POST /admin/wam/use { index: 0+, mode?: 'auto'|'token-direct'|'email-login' }",
+    });
+  }
+  const reqMode = (body && body.mode) || "auto";
+  // 守: 仅本机 (帛书三十六『邦利器不可以视人』· token 不离本机)
+  const ra = (req.socket && req.socket.remoteAddress) || "";
+  const isLocal = /^(127\.|::1$|::ffff:127\.|localhost)/i.test(ra);
+  if (!isLocal) {
+    return sendJson(res, 403, {
+      ok: false,
+      error: "wam_use_localhost_only",
+      hint: "/admin/wam/use 仅本机访 · 帛书三十六『邦利器不可以视人』",
+    });
+  }
+  const paths = _wam133_paths();
+  const fs = require("fs");
+  if (!fs.existsSync(paths.accountsMd)) {
+    return sendJson(res, 404, {
+      ok: false,
+      error: "wam_md_not_found",
+      pathHint: "~/.wam/accounts.md",
+    });
+  }
+  const md = fs.readFileSync(paths.accountsMd, "utf8");
+  const parsed = _wam133_parseAccountsMd(md, { includeRaw: true });
+  if (index >= parsed.items.length) {
+    return sendJson(res, 404, {
+      ok: false,
+      error: "index_out_of_range",
+      max: parsed.items.length - 1,
+    });
+  }
+  const item = parsed.items[index];
+  if (!item || item.kind === "ignored") {
+    return sendJson(res, 400, {
+      ok: false,
+      error: "item_not_usable",
+      kind: item ? item.kind : "missing",
+    });
+  }
+  let mode = reqMode;
+  if (mode === "auto") {
+    if (item._token || item.kind === "token" || item.kind === "email_token") {
+      mode = "token-direct";
+    } else if (item._password && item.kind === "email_password") {
+      mode = "email-login";
+    } else {
+      return sendJson(res, 400, {
+        ok: false,
+        error: "auto_resolve_failed",
+        kind: item.kind,
+      });
+    }
+  }
+  // ─ 路 A · token-direct (auth1_xxx 直入池 · 跳登 · 帛书四十八「损之又损」)
+  if (mode === "token-direct") {
+    const rawTok = item._token;
+    if (!rawTok) {
+      return sendJson(res, 400, {
+        ok: false,
+        error: "token_not_resolvable",
+        kind: item.kind,
+      });
+    }
+    const dup = WS_POOL_STATE.keys.find((k) => k.apiKey === rawTok);
+    if (dup) {
+      return sendJson(res, 200, {
+        ok: true,
+        duplicate: true,
+        mode: "token-direct",
+        apiKey: _maskKey(rawTok),
+        count: WS_POOL_STATE.keys.length,
+      });
+    }
+    WS_POOL_STATE.keys.push({
+      apiKey: rawTok,
+      srvUrl: "https://server.codeium.com",
+      email: item.email || "",
+      ok: 0,
+      err: 0,
+      lastUsedAt: 0,
+      lastErrAt: 0,
+      cooldownUntil: 0,
+      plan: (item.health && item.health.plan) || null,
+      addedAt: Date.now(),
+    });
+    WS_POOL_STATE.loaded = true;
+    WS_POOL_STATE.err = null;
+    console.log(
+      `[admin/wam/use:token-direct] ✓ idx=${index} kind=${item.tokenKind || "?"} ${_maskKey(rawTok)} email=${item.email || "?"} pool=${WS_POOL_STATE.keys.length}`,
+    );
+    return sendJson(res, 200, {
+      ok: true,
+      mode: "token-direct",
+      action: "pool.push",
+      apiKey: _maskKey(rawTok),
+      tokenKind: item.tokenKind || _wam133_tokenKind(rawTok),
+      email: item.email || "",
+      count: WS_POOL_STATE.keys.length,
+    });
+  }
+  // ─ 路 B · email-login (三步登 印 129 · 出 ws-* · 入池)
+  if (mode === "email-login") {
+    if (!item._password) {
+      return sendJson(res, 400, {
+        ok: false,
+        error: "password_not_resolvable",
+        kind: item.kind,
+      });
+    }
+    try {
+      const out = await _signin_orchestrate(item.email, item._password, "");
+      if (!out.ok) {
+        return sendJson(
+          res,
+          401,
+          Object.assign({ mode: "email-login", email: item.email }, out),
+        );
+      }
+      const apiKey = out.apiKey;
+      const dup = WS_POOL_STATE.keys.find((k) => k.apiKey === apiKey);
+      if (!dup) {
+        WS_POOL_STATE.keys.push({
+          apiKey,
+          srvUrl: out.apiServerUrl || "https://server.codeium.com",
+          email: item.email,
+          ok: 0,
+          err: 0,
+          lastUsedAt: 0,
+          lastErrAt: 0,
+          cooldownUntil: 0,
+          plan: null,
+          addedAt: Date.now(),
+        });
+        WS_POOL_STATE.loaded = true;
+        WS_POOL_STATE.err = null;
+      }
+      console.log(
+        `[admin/wam/use:email-login] ✓ idx=${index} ${item.email} ${_maskKey(apiKey)} pool=${WS_POOL_STATE.keys.length}`,
+      );
+      return sendJson(res, 200, {
+        ok: true,
+        mode: "email-login",
+        action: dup ? "pool.duplicate" : "pool.push",
+        email: item.email,
+        apiKey: _maskKey(apiKey),
+        ms: out.ms,
+        count: WS_POOL_STATE.keys.length,
+      });
+    } catch (e) {
+      return sendJson(res, 500, {
+        ok: false,
+        mode: "email-login",
+        stage: "crash",
+        error: e.message,
+      });
+    }
+  }
+  return sendJson(res, 400, {
+    ok: false,
+    error: "unknown_mode",
+    mode,
+    hint: "mode ∈ {auto, token-direct, email-login}",
   });
 }
 
@@ -1966,7 +2521,8 @@ function newId(prefix) {
 
 // ───── OpenAI 兼容 · POST /v1/chat/completions ─────
 // 印 104: 智能路由 — model 含 windsurf/swe/cascade/sonnet/opus → windsurf; 否则 → devin
-async function handleOpenAI(req, res) {
+// 印 ∞.2 · 加 forceEngine 参 · "devin" 显式跳智能分流 · 走 /dc/* B 路 (弱者道之用)
+async function handleOpenAI(req, res, forceEngine) {
   recReq("openai");
   const t0 = Date.now();
   let body;
@@ -1985,7 +2541,8 @@ async function handleOpenAI(req, res) {
 
   // 印 106 · 路由 · model 含 windsurf-/MODEL_SWE/MODEL_CASCADE 走 windsurf ConnectRPC
   // (双池真分: Devin token (WSS) vs Windsurf api-key (HTTPS) · 不混)
-  if (isWindsurfModel(model)) {
+  // 印 ∞.2 · forceEngine="devin" 时跳此判 · 显式走 devin cloud (B 路 · 显式不智能)
+  if (forceEngine !== "devin" && isWindsurfModel(model)) {
     logI(
       `openai → windsurf 路 · model=${C.B(model)} · ws-pool=${WS_POOL_STATE.keys.length}`,
     );
@@ -2505,6 +3062,50 @@ function handleModels(req, res) {
   });
 }
 
+// ════════════════════════════════════════════════════════════════════════
+// § 9b · 印 ∞.2 · B 路 · /dc/* 显式 devin cloud 反代 (双反代之实)
+// ════════════════════════════════════════════════════════════════════════
+//   主公本源诏 (2026-05-17 5:33PM): 「devin vm 双反代 windsurf + devin cloud」
+//   帛书·七十八「天下莫柔弱于水 · 而攻坚强者莫之能胜也」弱者道之用
+//   帛书·二「美与恶 之相生 · 物之两面同一道」A 路智能 + B 路显式 同一反代
+//
+//   A 路 · /v1/* · 智能分流 (model 含 ws/cascade/sonnet → ws · 否则 → devin)
+//   B 路 · /dc/* · 显式 devin cloud (跳分流 · 即使 cascade 亦走 devin · 调试/绕道)
+//   两路同一 dao_proxy · 同一 pool · 同一 SP 态 · 物无非彼物无非是
+function handleDcHealth(req, res) {
+  sendJson(res, 200, {
+    ok: true,
+    route: "B",
+    engine: "devin-cloud",
+    seal: SEAL,
+    version: VERSION,
+    upstream: CFG.wssUrl,
+    pool: {
+      total: POOL_STATE.pool.length,
+      cursor: POOL_STATE.cursor,
+      ok_count: POOL_STATE.pool.filter((t) => t.ok).length,
+    },
+    sp: {
+      strategy: SP_STATE.strategy,
+      customSpLen: (SP_STATE.customSp || "").length,
+    },
+    note: "B 路 · 显式 devin cloud · 跳智能分流 · 印 ∞.2",
+    timestamp: Date.now(),
+  });
+}
+function handleDcModels(req, res) {
+  sendJson(res, 200, {
+    object: "list",
+    data: MODELS.map((m) => ({
+      id: m,
+      object: "model",
+      created: Math.floor(METRICS.startedAt / 1000),
+      owned_by: "devin-cloud",
+    })),
+    x_dao: { route: "B", engine: "devin-cloud", seal: "印 ∞.2" },
+  });
+}
+
 async function handleSpGet(req, res) {
   sendJson(res, 200, {
     strategy: SP_STATE.strategy,
@@ -2878,6 +3479,21 @@ const server = http.createServer(async (req, res) => {
   if (method === "POST" && p.startsWith("/v1beta/models/"))
     return handleGemini(req, res, p);
 
+  // 印 ∞.2 · B 路 · /dc/* 显式 devin cloud 反代 (双反代之实 · 弱者道之用)
+  //   主公本源诏「devin vm 双反代 windsurf + devin cloud」之 B 路落地
+  //   /dc/health · /dc/v1/models · /dc/v1/chat/completions (forceEngine=devin)
+  //   /dc/v1/messages · /dc/v1beta/models/X:generateContent
+  //   皆显式跳智能分流 · 即使 model 含 cascade 亦走 devin · 物无非彼物无非是
+  if (method === "GET" && p === "/dc/health") return handleDcHealth(req, res);
+  if (method === "GET" && p === "/dc/v1/models")
+    return handleDcModels(req, res);
+  if (method === "POST" && p === "/dc/v1/chat/completions")
+    return handleOpenAI(req, res, "devin");
+  if (method === "POST" && p === "/dc/v1/messages")
+    return handleAnthropic(req, res);
+  if (method === "POST" && p.startsWith("/dc/v1beta/models/"))
+    return handleGemini(req, res, p.slice(3)); // 剥 /dc 前缀
+
   // 印 104 · windsurf 专用路 (status/quota 真转 · chat 待协议研)
   if (method === "POST" && p === "/windsurf/chat")
     return handleWindsurfChat(req, res); // 501 not_implemented (诚)
@@ -2911,11 +3527,19 @@ const server = http.createServer(async (req, res) => {
   if (method === "POST" && p === "/admin/keys/remove")
     return handleAdminKeysRemove(req, res);
 
+  // 印 133 · 反者道之动 · WAM 本地真本源桥 (主公本机起时知 ~/.wam · Devin VM 端透返 available=false)
+  //   GET  /admin/wam/local · 179 件解析表 (脱密 + 健康注入 · 来自 ~/.wam/{accounts.md,wam-state.json})
+  //   POST /admin/wam/use   · 单件入池 (mode: auto / token-direct / email-login · 仅本机访)
+  if (method === "GET" && p === "/admin/wam/local")
+    return handleAdminWamLocal(req, res);
+  if (method === "POST" && p === "/admin/wam/use")
+    return handleAdminWamUse(req, res);
+
   // 404
   sendJson(res, 404, {
     error: "not found",
     path: p,
-    hint: "GET / · /health · /v1/models · POST /v1/chat/completions · /v1/messages · /v1beta/models/X:generateContent · GET/POST /v1/system/prompt · POST /v1/system/sp-dryrun · GET /v1/system/wss-observe · GET /windsurf/status · /windsurf/status/all · /windsurf/quota · /windsurf/models · POST /windsurf/chat (501) · POST /admin/signin/windsurf (印 129) · POST /admin/keys/add · GET /admin/keys/list · POST /admin/keys/remove (印 130 · 真本源接入闭环)",
+    hint: "GET / · /health · /v1/models · POST /v1/chat/completions · /v1/messages · /v1beta/models/X:generateContent · GET/POST /v1/system/prompt · POST /v1/system/sp-dryrun · GET /v1/system/wss-observe · GET /windsurf/status · /windsurf/status/all · /windsurf/quota · /windsurf/models · POST /windsurf/chat (501) · POST /admin/signin/windsurf (印 129) · POST /admin/keys/add · GET /admin/keys/list · POST /admin/keys/remove (印 130 · 真本源接入闭环) · GET /admin/wam/local · POST /admin/wam/use (印 133 · WAM 本地真本源桥) · GET /dc/health · /dc/v1/models · POST /dc/v1/chat/completions · /dc/v1/messages · /dc/v1beta/models/X:generateContent (印 ∞.2 · B 路 · 显式 devin cloud · 双反代之实)",
   });
 });
 

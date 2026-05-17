@@ -102,3 +102,6 @@ tests/_*.err.txt
 # 例外 · packages/wam/账号库.example.md (脱敏 example · 主公私产真账号由 .gitignore 屏蔽)
 !packages/wam/账号库.example.md
 
+_real_*.json
+_test_*_real.cjs
+_real_*.cjs

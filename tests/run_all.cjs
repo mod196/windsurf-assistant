@@ -51,6 +51,7 @@ const TESTS = [
   "_seal131_chinese_path_spawn_smoke", // 印 131 · 中文路径子进程承双旗 (圣人执一 · run_all 双旗 + 5 守门 spawn 一致 · ENOENT 治本)
   "_seal132_client_id_loader_smoke", // 印 132 · OAuth client_id 4 源智能加载 (URL > localStorage > window_global > DEFAULT) · 弱者道之用 · 帛书七十八
   "_seal_inf_parallel_smoke", // 印 ∞ · 对照 tab + A/B 双路 + WAM 无感切号 · 物无非彼 物无非是 · 庄子齐物论
+  "_seal_inf2_dc_routes_smoke", // 印 ∞.2 · B 路 /dc/* 显式 devin cloud 反代 · 双反代之实 · 弱者道之用 · 帛书七十八
 ];
 
 let allOk = true;

@@ -357,6 +357,7 @@ const expectedSmokes = [
   "_seal131_chinese_path_spawn_smoke",
   "_seal132_client_id_loader_smoke",
   "_seal_inf_parallel_smoke",
+  "_seal_inf2_dc_routes_smoke",
 ];
 const runAllSrc = readSafe(path.join(TESTS, "run_all.cjs"));
 let allInRunAll = true;
