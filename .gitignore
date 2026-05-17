@@ -117,3 +117,11 @@ _real_*.cjs
 _real_ws_keys.json
 _real_*_keys.json
 _test_auth*_real.cjs
+
+# 印 142 · 根级守门测临时重定向件 (run_all.cjs node stdout/stderr 转 .txt/.err)
+# 帛书六十四「治之于其未乱」 · 帛书四十八「损之又损」
+/_yin*_runall*.txt
+/_yin*_runall*.err
+/_yin*_runall.log
+/_yin*_final.log
+/_seal*_final.log
