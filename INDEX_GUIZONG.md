@@ -549,7 +549,7 @@ node tests/run_all.cjs  →  20/20 ✓ · 0 regression
   └────────────────────────────────────────────────────────────┘
 ```
 
-### 四印之治 (印 129-132 · 反者道之动)
+### 五印之治 (印 129-132 + 印 ∞ · 反者道之动)
 
 | 印 | 立 | 主公诏引 | 治什么"自彼" |
 |---|---|---|---|
@@ -557,6 +557,10 @@ node tests/run_all.cjs  →  20/20 ✓ · 0 regression
 | **印 130** | 真本源接入闭环 · `/admin/keys/{add,list,remove}` + OAuth Device-Flow | 「登→入池→用 · 一线到底」 | 登成后 key 不能立即接入 · 主公 PAT 必学 |
 | **印 131** | 中文路径子孙皆承双旗 · `run_all.cmd` + `__preserveFlags()` 5 守门 | 「父子皆承双旗 · 一旗到底 · 圣人执一」 | 中文路径 + Junction + Node v24 → ENOENT 起即 crash |
 | **印 132** | OAuth client_id 4 源智能加载 · URL > LS > window > DEFAULT | 「弱者道之用 · 一次为·万次用」 | 主公 OAuth App 改时必改代码 · 用户 fork 时硬编 |
+| **印 132.1** | run_all.cmd 加 `chcp 65001` + `NODE_NO_WARNINGS` + `PYTHONUTF8` | 「无有入于无间」 (帛书 43) | cmd OEM 936 误读 UTF-8 中文路径 → MODULE_NOT_FOUND |
+| **印 132.2** | setupHint 步⑥ 三选一 (admin面板 / URL / 改码) | 「反者道之动」 (帛书 40) | hint 仅提改码 · 未提零代码 admin 面板路 |
+| **印 132.3** | 印132 doc 修过时引 + 加 132.1/132.2 节 + 浏览器真验节 | 「慎终若始」 (帛书 64) | doc 与实件偏离 (文件名 / 计数 / 守门总数) |
+| **印 ∞** | ★ 对照 tab 默见 · 上 iframe app.devin.ai + 下 chat 反代 · 左栏 A/B 双路状态卡 · 中栏 WAM 无感切号 | 「物无非彼物无非是 · 道并行不悖」 (庄子齐物) | 反代与真站同等价未验 · 用户无从双面同问验之 |
 
 ### 印 131.1 · 主公诏「居实不居华」之承续 (2026-05-17 18:43)
 
@@ -576,22 +580,24 @@ node tests/run_all.cjs  →  20/20 ✓ · 0 regression
 ### 验 (印 129-132 · 慎终若始)
 
 ```
-node tests/run_all.cmd  →  25/25 ✓ · 全套通过 · 道法自然
+node tests/run_all.cmd  →  26/26 ✓ · 全套通过 · 道法自然
   ✓ _seal129_real_login_smoke         (印 129 · 3-step mock + 失败路径)
   ✓ _seal130_keys_admin_smoke         (印 130 面二 · /admin/keys/* 真路 + 守隐)
   ✓ _seal130_oauth_device_flow_smoke  (印 130 面一 · OAuth Device-Flow 全链)
   ✓ _seal131_chinese_path_spawn_smoke (印 131 · 双旗真效 + 5 守门 spawn 一致)
-  ✓ _seal132_oauth_client_id_smoke    (印 132 · 4 源链优先级 + setClientId)
-  ✓ _seal128_yiqi_sanqing_smoke       (印 128 · expectedSmokes 升 26 件 · 印号一致)
+  ✓ _seal132_client_id_loader_smoke   (印 132 · 4 源链优先级 + setClientId + LS/URL/win 全过)
+  ✓ _seal_inf_parallel_smoke          (印 ∞ · ★ 对照 tab + A/B 双路 + WAM 无感 · 26 用例)
+  ✓ _seal128_yiqi_sanqing_smoke       (印 128 · expectedSmokes 升 26 件 · 印号一致 · 含印∞)
 ```
 
-### 一即四·四即一 (主公诏「我无为·你无不为」之实)
+### 一即五·五即一 (主公诏「我无为·你无不为」之实)
 
-印 129-132 看似四件分立 · 实**一线一气**:
+印 129-132 + 印 ∞ 看似五件分立 · 实**一线一气**:
 
-- **登** (印 130 面一 OAuth + 印 132 client_id) → **入池** (印 129 signin + 印 130 面二 keys/add) → **用** (反代 /v1/messages)
-- **底层**: 印 131 治中文路径 · 让上三事在中文工作区下真活
+- **登** (印 130 面一 OAuth + 印 132 client_id 4 源) → **入池** (印 129 signin + 印 130 面二 keys/add) → **用** (反代 /v1/messages · 印 ∞ 上右栏真站对照验代反)
+- **底层**: 印 131 + 印 132.1 治中文路径 (双旗 + chcp 65001) · 让上三事在中文工作区下真活
+- **亮点**: 印 ∞ 以 iframe 上 + 反代 chat 下 · 同问发两边 · 见反代真等价于真站 · 庄子齐物之实
 
-「**自彼则不见 · 自是则知之**」 — 四印不分立 · 互为彼此 · 一即四 · 四即一. 庄子齐物论之实.
+「**自彼则不见 · 自是则知之**」 — 五印不分立 · 互为彼此 · 一即五 · 五即一. 庄子齐物论之实.
 
 *天下莫柔弱于水 · 而攻坚强者莫之能胜也 · 以其无以易之也 · 水之胜刚也 · 弱之胜强也.* — 帛书 七十八
