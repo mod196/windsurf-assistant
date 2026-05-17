@@ -143,7 +143,17 @@
       memo.me = await daoSync.whoami();
       setText("hdr-login", "@" + memo.me.login);
     } catch (e) {
+      // 印 ∞.1 (2026-05-17 道动测后修): 401 时宽容
+      //   帛书·六十七「我恒有三葆之：一曰兹，二曰俭，三曰不敢为天下先」
+      //   GitHub 网偶通偶断 · 401 偶现 (Bad credentials/Rate limit)
+      //   若 cache 存 · 用 cache (不轻清宝物) · 联网 OK 后用户可重粘
+      //   仅 cache 不存时才清 (真无据可用)
       if (e.status === 401) {
+        const cache = daoSync.getCache();
+        if (cache) {
+          toast("PAT 401 · 暂用 cache · 联网 OK 后可重粘新 PAT", "warn");
+          return renderOffline();
+        }
         daoSync.clearPat();
         toast("PAT 失效 · 请重粘", "err");
         return renderGate();
@@ -643,15 +653,28 @@
   }
 
   // ═══ Offline 态 (网不通 · 用 cache) ════════════════════════════════════
+  // 印 ∞.1 (2026-05-17 道动测): BUG 修 · 不再苛求 gistId
+  //   帛书·七十六「坚强者死之徒·柔弱微细生之徒」苛求即坚·宽容即柔
+  //   旧: 必需 cache && st.gistId 才入 mine — 测试/首装离线时卡 gate
+  //   新: 有 cache 即入 mine (无 gistId 仅不能同步·但可看可改 · 网恢复自然 fallback)
+  //   此符主公诏「弱者道之用」「无为而无不为」
   function renderOffline() {
     hide("state-gate");
     hide("state-onboarding");
     const cached = daoSync.getCache();
     const st = daoSync.getState();
-    if (cached && st.gistId) {
+    if (cached) {
       memo.data = cached;
-      memo.gistId = st.gistId;
-      setText("hdr-gist", "⚠ 离线 (cache)");
+      memo.gistId = st.gistId || ""; // 无 gistId 亦容 · 仅不同步
+      // 印 ∞.1 · 离线时仍以 cache 中 state.me 显号 (修 BUG #3)
+      if (st.me && st.me.login) {
+        memo.me = st.me;
+        setText("hdr-login", "@" + st.me.login + " (离线)");
+      }
+      setText(
+        "hdr-gist",
+        st.gistId ? "⚠ 离线 (cache)" : "⚠ 离线 (仅 cache · 无 Gist)",
+      );
       return enterMine(true);
     }
     // 无 cache → 仍显 gate 但带 hint
@@ -3151,7 +3174,11 @@
       ],
     );
     wrap.appendChild(ifrHead);
-    // ─── 上 · iframe 真站 ───
+    // ─── 印 ∞.1 (2026-05-17 道动测后修): 永显 CSP hint bar · 不探测不判 ───
+    //   帛书·四十八「为道者日损 · 损之又损 · 以至于无为」
+    //   探测难且不稳 (跨源 contentDocument 总 null · clientHeight 不定)
+    //   故: 永显一行 hint bar 在 iframe 上 · 不动态判 · 无为而无不为
+    //   主公诏: 「无感使用」· 永远显说明 = 用户秒知 = 真无感
     const ifr = el("iframe", {
       src: url,
       class: "v101-parallel-iframe",
@@ -3160,6 +3187,39 @@
       allow: "clipboard-read; clipboard-write",
     });
     wrap.appendChild(ifr);
+    // 永显 CSP 说明 bar (不挡 iframe · 仅 1 行 hint + ↗ 新窗按钮)
+    wrap.appendChild(
+      el("div", { class: "v101-parallel-csp-bar" }, [
+        el("span", { class: "v101-parallel-csp-bar-icon" }, ["🛡"]),
+        el("span", { class: "v101-parallel-csp-bar-text" }, [
+          "真站设 frame-ancestors CSP · 若白屏 →",
+        ]),
+        el(
+          "button",
+          {
+            class: "btn tiny",
+            onclick: () => window.open(url, "_blank", "noopener"),
+          },
+          ["↗ 新窗开"],
+        ),
+        el(
+          "button",
+          {
+            class: "btn tiny ghost",
+            onclick: () => {
+              D.iframeSite = site === "devin" ? "windsurf" : "devin";
+              markDirty();
+              const c = $("v101-use-content");
+              if (c) renderUseTabContent(c);
+            },
+          },
+          ["⇄ 切站"],
+        ),
+        el("span", { class: "v101-parallel-csp-bar-tail" }, [
+          "或下方 chat 反代实证 (物无非彼物无非是)",
+        ]),
+      ]),
+    );
     // ─── 中 · 道线 hint (物无非彼 物无非是) ───
     wrap.appendChild(
       el("div", { class: "v101-parallel-hint" }, [
@@ -3416,11 +3476,15 @@
   }
 
   // v101 chat 发 (沿用 sendChat 但重渲 v101 内容)
+  // 印 ∞.1 (2026-05-17 道动测后修): parallel tab 亦重渲
+  //   原仅 __useTab === "chat" 时重渲 · parallel 时漏 · 印 ∞ 之实漏
+  //   主公诏「无为而无不为」— 一函数透两 tab (chat 大屏 + parallel 下半)
   async function sendChatV101() {
     await sendChat();
-    // sendChat 内部调 renderRight() · v101 下需重渲 use tab chat
     const c = $("v101-use-content");
-    if (c && __useTab === "chat") renderUseTabContent(c);
+    if (c && (__useTab === "chat" || __useTab === "parallel")) {
+      renderUseTabContent(c);
+    }
   }
 
   // 用区 · iframe tab (移自旧 renderRight 之 iframe 段)
@@ -3719,6 +3783,18 @@
     if (content) renderDrawerContent(content, id);
     // 重渲抽屉 tab bar 以更新 active
     refreshDrawerTabs();
+    // ─── 印 ∞.1 (2026-05-17 道动测后修): v128 模式兜底 ───
+    //   帛书·廿二「圣人执一·以为天下牧」— 一函数透 v128 三栏 + v101 抽屉
+    //   v128 无 v101-drawer 元素 (三栏永显·无需抽屉) · openDrawer 此前空转
+    //   故 onclick → markDirty + openDrawer(...) 之 state 改后 UI 不刷
+    //   修: v128 模式下重渲对应栏 (acct/sp → 左+中 · endpt → 左 · test → 右)
+    if (!drawer) {
+      const mineV128 = $("mine-v128");
+      if (mineV128 && mineV128.style.display !== "none") {
+        // 全栏重渲 (简 · 因 state 改可能跨栏 · markDirty 已记 · 重渲不致重发请求)
+        if (typeof renderMineV128 === "function") renderMineV128();
+      }
+    }
   }
 
   function closeDrawer() {
