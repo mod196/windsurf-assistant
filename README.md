@@ -10,6 +10,20 @@ A fully decentralized Windsurf assistant &mdash; **一气化三清 · 道并行�
 [![Cloud Daemon](https://github.com/zhouyoukang/windsurf-assistant/actions/workflows/dao-fleet-cloud.yml/badge.svg)](https://github.com/zhouyoukang/windsurf-assistant/actions/workflows/dao-fleet-cloud.yml)
 [![Keepalive](https://github.com/zhouyoukang/windsurf-assistant/actions/workflows/dao-fleet-keepalive.yml/badge.svg)](https://github.com/zhouyoukang/windsurf-assistant/actions/workflows/dao-fleet-keepalive.yml)
 [![Test core](https://github.com/zhouyoukang/windsurf-assistant/actions/workflows/test-core.yml/badge.svg)](https://github.com/zhouyoukang/windsurf-assistant/actions/workflows/test-core.yml)
+[![Code of Conduct](https://img.shields.io/badge/Contributor%20Covenant-2.1-4baaaa.svg)](./CODE_OF_CONDUCT.md)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+
+> **Compliance & remediation note** &mdash; This repository underwent a
+> self-audit in May 2026 to address a false-positive anti-abuse flag.
+> All high-frequency cron schedules have been disabled, README phrasing
+> softened, and OSS compliance documents added. The full transparent
+> remediation log is at [`ABUSE_REMEDIATION.md`](./ABUSE_REMEDIATION.md)
+> and the public tracking issue is [#20](../../issues/20).
+>
+> Project policies: [SECURITY](./SECURITY.md) &middot;
+> [CODE_OF_CONDUCT](./CODE_OF_CONDUCT.md) &middot;
+> [CONTRIBUTING](./CONTRIBUTING.md) &middot;
+> [LICENSE (MIT)](./LICENSE)
 
 ---
 

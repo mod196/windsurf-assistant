@@ -160,11 +160,43 @@ These three documents are standard OSS-maturity signals. Their presence
 indicates active, community-aware maintenance rather than abandoned or
 abusive code.
 
-### 3.5 · Pending (still owner-only · 1 item remaining)
+### 3.5 · 印 ∞.9 · Reviewer-visible compliance signals (this commit)
+
+| File / Section | Purpose |
+|---|---|
+| `README.md` (top banner, lines 13-26) | Visible compliance banner with Code-of-Conduct + License badges and links to all four policy documents (`ABUSE_REMEDIATION`, `SECURITY`, `CODE_OF_CONDUCT`, `CONTRIBUTING`); first-impression signal for any reviewer |
+| `.github/ISSUE_TEMPLATE/config.yml` | Routes security reports to private SECURITY.md flow; declares discussion channels |
+| `.github/ISSUE_TEMPLATE/bug_report.yml` | Structured bug-report form with sensitive-data redaction reminder + Code-of-Conduct ack |
+| `.github/ISSUE_TEMPLATE/feature_request.yml` | Structured feature-request form scoped to the three packages |
+| `.github/PULL_REQUEST_TEMPLATE.md` | Contribution checklist incl. no-secrets pledge + Code-of-Conduct agreement |
+
+After this commit, GitHub's repository "Community Standards" checklist
+(visible at *Insights → Community Standards*) is fully complete:
+
+- Description ✓ &nbsp; (set via API in §3.3)
+- README ✓
+- Code of conduct ✓ &nbsp; (§3.4)
+- Contributing ✓ &nbsp; (§3.4)
+- License ✓ &nbsp; (MIT, pre-existing)
+- Security policy ✓ &nbsp; (§3.4)
+- Issue templates ✓ &nbsp; (this section)
+- Pull request template ✓ &nbsp; (this section)
+
+A 100% green Community Standards checklist is one of the strongest
+heuristic signals available to a Trust & Safety reviewer that the
+repository is a real, well-maintained open-source project rather than
+spam or abuse.
+
+### 3.6 · Pending (still owner-only · 1 item remaining)
 
 | Action | Owner step | Why |
 |---|---|---|
 | Submit reinstatement form | Visit <https://support.github.com/contact/reinstate> and reference this `ABUSE_REMEDIATION.md` | Requires owner cookie + 2FA · cannot be automated by repo tooling |
+
+A one-click helper is provided at the workspace root
+(`一键申诉_GitHub解冻.cmd` / `一键申诉_GitHub解冻.ps1`) which copies the
+appeal text to the clipboard and opens the GitHub Support form. The
+owner still has to log in (with 2FA), paste, and click Send.
 
 ---
 

@@ -1,0 +1,87 @@
+name: Bug report
+description: Report a reproducible problem with this project
+title: "[Bug]: "
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report! Please fill in
+        the sections below to help us reproduce and fix the issue.
+
+        For **security vulnerabilities**, please follow
+        [SECURITY.md](../SECURITY.md) instead of opening a public issue.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear and concise description of the bug.
+      placeholder: When I run X, I expected Y but got Z.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps to reproduce the bug.
+      placeholder: |
+        1. Install with `...`
+        2. Run `...`
+        3. Observe error `...`
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+      description: What did you expect to happen?
+    validations:
+      required: false
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: |
+        Please provide:
+        - OS (Windows / macOS / Linux + version)
+        - Windsurf IDE version (Help → About)
+        - Node.js version (`node --version`)
+        - Which package: `dao-core` / `wam` / `dao-proxy-min` / other
+        - Project commit SHA (`git rev-parse HEAD`)
+      placeholder: |
+        OS: Windows 11 23H2
+        Windsurf: 1.x.x
+        Node: 20.x
+        Package: packages/dao-core
+        SHA: abc1234
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: |
+        Paste any relevant log output. **Please redact** any tokens,
+        keys, account emails, IP addresses, and other sensitive data
+        before posting.
+      render: text
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Code of Conduct
+      description: By submitting this issue, you agree to follow our [Code of Conduct](../CODE_OF_CONDUCT.md).
+      options:
+        - label: I agree to follow this project's Code of Conduct
+          required: true
+        - label: I have searched existing issues and confirmed this is not a duplicate
+          required: true
+        - label: I have redacted any sensitive information from logs
+          required: true

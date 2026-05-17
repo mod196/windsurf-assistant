@@ -1,0 +1,60 @@
+name: Feature request
+description: Suggest an idea or improvement for this project
+title: "[Feature]: "
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting an improvement! Please describe the
+        problem first, then your proposed solution.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the use case or pain point.
+      placeholder: As a user of X, I want to do Y but currently can't because Z.
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: How would you like this to work?
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Any workarounds or alternative approaches you've considered?
+    validations:
+      required: false
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Which package?
+      multiple: true
+      options:
+        - packages/dao-core (反代 API · cloud reverse-proxy)
+        - packages/wam (切号 WAM · account-rotation extension)
+        - packages/dao-proxy-min (提示词反代 · prompt reverse-proxy)
+        - tooling / scripts / docs
+        - other / unsure
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Code of Conduct
+      description: By submitting this issue, you agree to follow our [Code of Conduct](../CODE_OF_CONDUCT.md).
+      options:
+        - label: I agree to follow this project's Code of Conduct
+          required: true
+        - label: I have searched existing issues and confirmed this is not a duplicate
+          required: true
