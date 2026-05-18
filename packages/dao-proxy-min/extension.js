@@ -65,6 +65,31 @@ const PKG_VERSION = (() => {
     return "0";
   }
 })();
+// v9.9.25 · 软编码归一 · 二十八章「朴散为器·圣人用则为官长·夫大制无割」
+// 病: dao-agi.dao-proxy-min 字面散写 4 处 (扫描自身目录 / .obsolete 标 / uninstallExtension 参)
+// 治: 抽自 package.json 之 publisher + name · 一处定义 · 全文一致 · 适所有用户/所有 fork
+const PKG_PUBLISHER = (() => {
+  try {
+    return require("./package.json").publisher;
+  } catch {
+    return "dao-agi";
+  }
+})();
+const PKG_NAME = (() => {
+  try {
+    return require("./package.json").name;
+  } catch {
+    return "dao-proxy-min";
+  }
+})();
+const SELF_EXT_ID = `${PKG_PUBLISHER}.${PKG_NAME}`; // "dao-agi.dao-proxy-min"
+const SELF_EXT_DIR_PREFIX = `${SELF_EXT_ID}-`; // "dao-agi.dao-proxy-min-"
+const _SELF_ESC = SELF_EXT_ID.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const SELF_EXT_DIR_REGEX = new RegExp("^" + _SELF_ESC + "-");
+const SELF_EXT_VER_REGEX = new RegExp(
+  "^" + _SELF_ESC + "-(\\d+)\\.(\\d+)\\.(\\d+)(?:[.-]|$)",
+);
+
 const DEFAULT_PORT = 8889;
 const OFFICIAL_API_URL = "https://server.codeium.com";
 const OFFICIAL_INFER_URL = "https://inference.codeium.com";
@@ -265,7 +290,63 @@ function forceRestartLS() {
 // ═══════════════════════════ 源.js 进程内 require ═══════════════════════════
 let _proxyHandle = null; // start() 返回的 handle: { server, port, host, close, getMode, setMode }
 
+// v9.9.21 · 唯变所适 · 软编码归宗 · 二十五章「逝曰远 远曰反」· 二十二章「曲则金」
+// 病: 旧版 vendorDir 锚死 __dirname/vendor/bundled-origin · 多 ext-host 共存 +
+//     旧 ext-host watchdog 复活 → 永走旧版 source.js · self_file 锁死旧目录
+// 药: 扫所有 ~/.windsurf/extensions/dao-agi.dao-proxy-min-*/ · 按 semver 选最新版
+//     即旧 ext-host (旧 extension.js · 旧 vendorDir) 也从此药受惠 (新装 vsix 后)
+//     · 至少新 ext-host 之 require 永走最新源 · 自显新道
+//     注: 旧 extension.js 不会调本新 vendorDir · 唯靠 EADDRINUSE 让位机制兼治
+function _scanLatestVendorDir() {
+  try {
+    const extRoot = path.dirname(__dirname); // ~/.windsurf/extensions/
+    if (!fs.existsSync(extRoot)) return null;
+    const candidates = [];
+    for (const name of fs.readdirSync(extRoot)) {
+      if (!name.startsWith(SELF_EXT_DIR_PREFIX)) continue;
+      // 排除 .obsolete/.DISABLED/.preinstall/.bak/.backup 等中间态目录
+      if (/\.(obsolete|disabled|preinstall|backup|bak)/i.test(name)) continue;
+      const m = name.match(SELF_EXT_VER_REGEX);
+      if (!m) continue;
+      const dir = path.join(extRoot, name, "vendor", "bundled-origin");
+      const fp = path.join(dir, "source.js");
+      if (!fs.existsSync(fp)) continue;
+      candidates.push({
+        name,
+        version: [+m[1], +m[2], +m[3]],
+        path: dir,
+      });
+    }
+    if (candidates.length === 0) return null;
+    // 降序: 9.9.21 > 9.9.20 > 9.9.19 ...
+    candidates.sort((a, b) => {
+      for (let i = 0; i < 3; i++) {
+        if (a.version[i] !== b.version[i]) return b.version[i] - a.version[i];
+      }
+      return 0;
+    });
+    return candidates[0];
+  } catch (e) {
+    L.warn("vendorDir", `scan fail: ${e.message}`);
+    return null;
+  }
+}
+
 function vendorDir() {
+  // 优先选最新版 · 唯变所适
+  const best = _scanLatestVendorDir();
+  if (best) {
+    const myVerStr = String(PKG_VERSION || "0.0.0");
+    const bestVerStr = best.version.join(".");
+    if (bestVerStr !== myVerStr) {
+      L.info(
+        "vendorDir",
+        `自身 v${myVerStr} → 选最新 v${bestVerStr} (${best.name})`,
+      );
+    }
+    return best.path;
+  }
+  // 兜底: 自家目录
   return path.join(__dirname, "vendor", "bundled-origin");
 }
 
@@ -288,7 +369,17 @@ function findSourceJs() {
   return null;
 }
 
-async function proxyStart(port, mode) {
+// v9.9.21 · 唯变所适 · 让位机制
+// _isRemoteStale: 远端 self_file 是否非最新版 dao-proxy-min-* 之 source.js
+function _isRemoteStale(remoteSelfFile) {
+  if (!remoteSelfFile || typeof remoteSelfFile !== "string") return false;
+  const best = _scanLatestVendorDir();
+  if (!best) return false;
+  const expected = path.join(best.path, "source.js").toLowerCase();
+  return remoteSelfFile.toLowerCase() !== expected;
+}
+
+async function proxyStart(port, mode, _retried) {
   if (_proxyHandle) return _proxyHandle;
   const srcPath = findSourceJs();
   if (!srcPath) throw new Error(`源.js 不存在: ${vendorDir()}`);
@@ -304,13 +395,10 @@ async function proxyStart(port, mode) {
     });
     L.info(
       "proxy",
-      `started :${_proxyHandle.port} bind=127.0.0.1 mode=${_proxyHandle.getMode()}`,
+      `started :${_proxyHandle.port} src=${srcPath} mode=${_proxyHandle.getMode()}`,
     );
     return _proxyHandle;
   } catch (e) {
-    // ── 真药 C · EADDRINUSE 不抢 · 上善若水 (八章) ──
-    // 1 ping → 活则复用 (remote handle), 死则返 null (本窗口直连, 不抢端口)
-    // 第八章「水善, 利万物而有静」: 不与端口争, 让本窗口走直连即可
     if (
       e.code === "EADDRINUSE" ||
       (e.message && e.message.includes("EADDRINUSE"))
@@ -325,9 +413,25 @@ async function proxyStart(port, mode) {
         ping.ok &&
         (ping.mode === "invert" || ping.mode === "passthrough")
       ) {
+        // v9.9.21 · 检远端 self_file 是否最新 · 旧则让位
+        // 二十二章「夫唯不争 故莫能与之争」 · 七十六章「兵强则不胜」
+        if (!_retried && _isRemoteStale(ping.self_file)) {
+          L.warn(
+            "proxy",
+            `remote stale self_file=${ping.self_file} → POST /_quit · 让位重起`,
+          );
+          await httpPostJson(
+            `http://127.0.0.1:${port}/origin/_quit`,
+            { reason: `newer-version v${PKG_VERSION} arrived` },
+            2000,
+          ).catch(() => {});
+          // 等远端 server.close 完毕 (远端 setTimeout 100ms · 加 close 时间)
+          await new Promise((r) => setTimeout(r, 1500));
+          return proxyStart(port, mode, true); // 一次重试 · 防递归无限
+        }
         L.info(
           "proxy",
-          `port :${port} live remote (mode=${ping.mode}) → remote handle`,
+          `port :${port} live remote (mode=${ping.mode} · ver=${(ping.features || {}).mode || "?"}) → remote handle`,
         );
         _proxyHandle = _createRemoteHandle(port, ping.mode);
         return _proxyHandle;
@@ -1004,20 +1108,23 @@ class EssenceProvider {
     } catch (e) {
       L.warn("webview", `show fail: ${e.message}`);
     }
-    // v9.4.5 · 一次性 dump 实际 html 到磁盘 · 离线诊
+    // v9.4.5 · dump 实际 html 到磁盘 · 离线诊
+    // v9.9.20 jiqi 改 · 每次 resolveWebviewView 即覆写 · 反映当前版本之实 · 不再缓存旧版误诊
     try {
       const dumpFp = path.join(os.homedir(), ".dao-webview-dump.html");
-      if (!fs.existsSync(dumpFp)) {
-        fs.writeFileSync(dumpFp, _html, "utf8");
-        L.info("webview", `dumped html → ${dumpFp}`);
-      }
+      fs.writeFileSync(dumpFp, _html, "utf8");
+      L.info(
+        "webview",
+        `dumped html → ${dumpFp} (overwrite · v${PKG_VERSION})`,
+      );
     } catch (e) {
       L.warn("webview", `dump fail: ${e.message}`);
     }
     try {
       const _portMatch = _html.match(/var _PORT = ([^;]+);/);
       const _baseMatch = _html.match(/var _BASE = ([^;]+);/);
-      const _hasIife = _html.indexOf("IIFE start") >= 0;
+      // v9.9.20 jiqi 修 · 标记现已真实存在 · hasIife/hasWdbg=false 即源码裂 · 立即可观
+      const _hasIife = _html.indexOf("_wdbg('iife-start'") >= 0;
       const _hasPull = _html.indexOf("function pull(") >= 0;
       const _hasWdbg = _html.indexOf("function _wdbg(") >= 0;
       L.info(
@@ -1302,6 +1409,31 @@ class EssenceProvider {
       );
       log(`canon -> ${canon} (ok=${r && r.ok}, chars=${r && r.chars})`);
       this._lastSig = "";
+      // v9.9.22 · 切经文即推新 default_sp · 不依赖 tape entry (tape 仍是切前)
+      // 道义: 二十五章「逝曰远 远曰反」· 名实变即推 · 不滞旧
+      try {
+        const cs = await httpGetJson(
+          `http://127.0.0.1:${_cachedPort}/origin/custom_sp`,
+          2000,
+        );
+        if (cs && cs.ok && this._view) {
+          await this._view.webview.postMessage({
+            type: "canonChanged",
+            canon: r && r.canon,
+            canon_name: r && r.canon_name,
+            chars: r && r.chars,
+            default_sp: cs.default_sp,
+            default_chars: cs.default_chars,
+            default_source_name: cs.default_source_name,
+            has_custom: cs.has_custom,
+          });
+          log(
+            `canon push canonChanged · canon=${r && r.canon} · default_chars=${cs.default_chars} · has_custom=${cs.has_custom}`,
+          );
+        }
+      } catch (e) {
+        log(`canon push default_sp fail: ${e && e.message}`);
+      }
       setTimeout(() => this.forceRefresh().catch(() => {}), 300);
     } catch (e) {
       log(`canon set fail: ${e && e.message}`);
@@ -1393,11 +1525,21 @@ async function cmdOpenPreview() {
 }
 
 // ═══════════════════════════ 命令: 了事拂衣去 (净卸) ═══════════════════════════
+// v9.9.23 · 真水过无痕 · 三层同治 · 反者道之动 · 损之又损至无为
+// 病: v9.9.22 仅调 workbench.extensions.uninstallExtension · Windsurf fork 静默失败 · _uninstallOk=true 仍欺主
+//     另: dao-byok 独立扩展锚 codeium.apiServerUrl→:8981 · cmdPurge 不动 · 重启后此锚仍在 → 反代仍连
+// 治: 三层同治 (B → C → A 顺序皆备 · 任一成则水过无痕)
+//   B层 .obsolete 标 self · VSCode 启动时识此自清 (标准协议 · 必生效)
+//   C层 fs.rmSync 自身目录 · 终极手段 · Windows 文件锁顶多挡 extension.js · .obsolete 兜底
+//   A层 workbench.extensions.uninstallExtension · 兜底命令 · 万一 fork 仍认
+//   D层 同卸 dao-byok (如装) · 它锚 codeium.* → 不卸则重启复锚
+//   E层 settings.json 直清 codeium.apiServerUrl/inferenceApiServerUrl (双保险 _clearAnchorFileSync 已做)
 async function cmdPurge() {
   const answer = await vscode.window.showWarningMessage(
     "了事拂衣去 · 水过无痕 · 将彻底卸载道Agent:\n" +
       "① 透传  ② 断钩  ③ 清锚  ④ 杀LS  ⑤ 停代理\n" +
-      "⑥ 清持存  ⑦ 清残留  ⑧ 自卸插件\n" +
+      "⑥ 清持存  ⑦ 清残留  ⑧ 自标obsolete  ⑨ 删自身目录\n" +
+      "⑩ 同卸 dao-byok (如装)  ⑪ 自卸命令兜底\n" +
       "Windsurf 回归本源 · 零痕迹。确认？",
     { modal: true },
     "确认净卸",
@@ -1406,7 +1548,7 @@ async function cmdPurge() {
 
   const out = logger();
   out.show(true);
-  out.appendLine("\n══════ 了事拂衣去 · 水过无痕 · 净卸开始 ══════");
+  out.appendLine("\n══════ 了事拂衣去 · 水过无痕 · v9.9.23 净卸开始 ══════");
 
   // ── 顺序至关重要 · 反者道之动 ──
   // 先清锚+杀LS → 后停代理 · 防 LS 连死代理 → Windsurf 卡死
@@ -1517,30 +1659,263 @@ async function cmdPurge() {
     out.appendLine(`  ⚠ 清 .obsolete: ${e.message}`);
   }
 
-  // 9. 自卸插件
-  out.appendLine("  → 卸载插件 dao-agi.dao-proxy-min ...");
-  out.appendLine("══════ 了事拂衣去 · 水过无痕 · 道法自然 ══════\n");
-
+  // ═══ v9.9.23 · 治本三层 + dao-byok 同卸 + .obsolete 标 + fs.rmSync 自删 ═══
+  //
+  // 9. 同卸 dao-byok (如装) · D层 · 它锚 codeium.* → :8981 · 不卸则重启复锚
+  let _byokFound = false;
+  let _byokRemoved = false;
   try {
-    await vscode.commands.executeCommand(
-      "workbench.extensions.uninstallExtension",
-      "dao-agi.dao-proxy-min",
-    );
+    const extDirRoot = path.join(os.homedir(), ".windsurf", "extensions");
+    if (fs.existsSync(extDirRoot)) {
+      const dirs = fs
+        .readdirSync(extDirRoot, { withFileTypes: true })
+        .filter((d) => d.isDirectory() && /^dao-agi\.dao-byok-/.test(d.name))
+        .map((d) => d.name);
+      if (dirs.length > 0) {
+        _byokFound = true;
+        out.appendLine(
+          `  → 发现 dao-byok ${dirs.length} 装 · 将同卸 (锚 codeium.* → :8981)`,
+        );
+        for (const d of dirs) {
+          const dp = path.join(extDirRoot, d);
+          try {
+            fs.rmSync(dp, { recursive: true, force: true });
+            _byokRemoved = true;
+            out.appendLine(`  ✓ dao-byok 目录已删: ${d}`);
+          } catch (e) {
+            out.appendLine(`  ⚠ 删 ${d}: ${e.message}`);
+          }
+        }
+      }
+    }
   } catch (e) {
-    out.appendLine(`  ⚠ 自卸: ${e.message} · 请手动卸载`);
+    out.appendLine(`  ⚠ 同卸 dao-byok: ${e.message}`);
   }
 
-  // 9. 提示重载 (modal · 必看 · source.js child 与 webview 残皆需 reload 方彻底清)
-  const reload = await vscode.window.showInformationMessage(
-    "了事拂衣去 · 水过无痕 · Windsurf 已归本源\n\n" +
-      "插件已自卸 · 设置已清 · LS 已重生直连官方\n" +
-      "唯余 utility process 内 source.js child 与 webview 残相\n" +
-      "立即重载方彻底归本然 · 道法自然",
-    { modal: true },
-    "立即重载",
-    "稍后重载",
+  // 10. settings.json 强清 codeium.* 锚 (E层 · 防 dao-byok activate 时复锚)
+  try {
+    _clearAnchorFileSync();
+    const c = vscode.workspace.getConfiguration();
+    for (const k of ["codeium.apiServerUrl", "codeium.inferenceApiServerUrl"]) {
+      try {
+        await c.update(k, undefined, vscode.ConfigurationTarget.Global);
+      } catch {}
+    }
+    out.appendLine("  ✓ settings.json codeium.* 锚强清 (二次保)");
+  } catch (e) {
+    out.appendLine(`  ⚠ 强清 codeium.*: ${e.message}`);
+  }
+
+  // 11. 写 .obsolete 标 self · B层 · VSCode 启动协议 · 见此则不激活+下启清
+  let _obsoleteOk = false;
+  try {
+    const extDirRoot = path.join(os.homedir(), ".windsurf", "extensions");
+    const obsFile = path.join(extDirRoot, ".obsolete");
+    let obs = {};
+    try {
+      obs = JSON.parse(fs.readFileSync(obsFile, "utf8"));
+    } catch {}
+    // 标所有 dao-agi.dao-proxy-min-* 目录
+    const allMine = fs
+      .readdirSync(extDirRoot, { withFileTypes: true })
+      .filter((d) => d.isDirectory() && SELF_EXT_DIR_REGEX.test(d.name))
+      .map((d) => d.name);
+    for (const d of allMine) obs[d] = true;
+    fs.writeFileSync(obsFile, JSON.stringify(obs), "utf8");
+    _obsoleteOk = true;
+    out.appendLine(
+      `  ✓ .obsolete 标记 ${allMine.length} 自身目录 (VSCode 启动协议)`,
+    );
+  } catch (e) {
+    out.appendLine(`  ⚠ 写 .obsolete: ${e.message}`);
+  }
+
+  // 12. fs.rmSync 自身目录 · C层 · 终极手段
+  // Windows 文件锁可能挡 extension.js (in-memory require'd) · 其余文件可删
+  // 已写 .obsolete 故下启 VSCode 自清剩余 (双保险)
+  let _rmFsOk = false;
+  let _rmFsErr = null;
+  try {
+    const selfDir = __dirname; // .../dao-agi.dao-proxy-min-9.9.23
+    out.appendLine(`  → 删自身目录: ${selfDir}`);
+    // 先删 vendor/ 子目录 (无锁定)
+    try {
+      fs.rmSync(path.join(selfDir, "vendor"), { recursive: true, force: true });
+      out.appendLine(`  ✓ vendor/ 已删`);
+    } catch (e) {
+      out.appendLine(`  ⚠ 删 vendor: ${e.message}`);
+    }
+    // 再删根 (extension.js 可能锁 · 静默吞)
+    try {
+      fs.rmSync(selfDir, { recursive: true, force: true });
+      _rmFsOk = true;
+      out.appendLine(`  ✓ 自身目录已删 (终极水过无痕)`);
+    } catch (e) {
+      _rmFsErr = e.message;
+      out.appendLine(
+        `  ⚠ 删自身根: ${_rmFsErr} (锁定 · 待 .obsolete 协议下启自清)`,
+      );
+    }
+  } catch (e) {
+    out.appendLine(`  ⚠ rmSync: ${e.message}`);
+  }
+
+  // 13. 自卸命令兜底 · A层 · 万一 Windsurf fork 仍认
+  let _uninstallOk = false;
+  let _uninstallErr = null;
+  try {
+    const _ret = await vscode.commands.executeCommand(
+      "workbench.extensions.uninstallExtension",
+      SELF_EXT_ID,
+    );
+    _uninstallOk = true;
+    out.appendLine(`  ✓ 自卸命令已执 · ret=${JSON.stringify(_ret)} (兜底)`);
+  } catch (e) {
+    _uninstallErr = (e && e.message) || String(e);
+    out.appendLine(
+      `  ⚠ 自卸命令失败: ${_uninstallErr} (兜底无效 · .obsolete 已生 · 不影响)`,
+    );
+  }
+
+  out.appendLine("══════ 了事拂衣去 · 水过无痕 · v9.9.23 道法自然 ══════\n");
+
+  // v9.9.23 · 提示重载 · modal 真诚反馈三层同治结果
+  const _summary = [];
+  if (_obsoleteOk) _summary.push("✓ .obsolete 标记成 (VSCode 下启自清)");
+  if (_rmFsOk) _summary.push("✓ 自身目录已删");
+  else _summary.push("~ 自身目录部分删 (extension.js 锁定 · 下启清)");
+  if (_byokFound)
+    _summary.push(
+      _byokRemoved
+        ? "✓ dao-byok 同卸 (codeium.* 锚源除)"
+        : "~ dao-byok 同卸部分败",
+    );
+  else _summary.push("· dao-byok 未装 (无需卸)");
+  _summary.push(
+    _uninstallOk
+      ? "✓ 自卸命令兜底执"
+      : `~ 自卸命令兜底败 (.obsolete 生效不影响)`,
   );
-  if (reload === "立即重载") {
+
+  // v9.9.23 · 病: reloadWindow 仅 reload renderer + ext-host · 主进程不死 ·
+  //                NodeService watchdog 复活 dao-byok 之 admin_server → 复锚 codeium.*
+  //         治: quit 真退主进程 · 一切清空 · 主公手动重开 Windsurf → 真水过无痕
+  // 七十八章「天下莫柔弱于水 · 而攻坚强者莫之能胜」· 水之退尽 · 痕迹乃绝
+  const _quitMsg =
+    "了事拂衣去 · 水过无痕 · v9.9.23 三层同治毕\n\n" +
+    _summary.join("\n") +
+    "\n\n" +
+    "★ 真水过无痕需退 Windsurf 主进程 (而非仅 reload window)\n" +
+    "  · reload 仅重启 renderer/ext-host · 主进程 watchdog 仍持 dao-byok 缓存\n" +
+    "  · quit 真退主进程 · 一切内存清空 · 重开方真无痕\n\n" +
+    "选 [立即退出] · Windsurf 关闭 · 请主公手动重开 Windsurf\n" +
+    "选 [仅重载] · 兜底路径 · watchdog 可能复活 dao-byok\n" +
+    "选 [稍后] · 不动 · 主公自手动";
+  const action = await vscode.window.showInformationMessage(
+    _quitMsg,
+    { modal: true },
+    "立即退出",
+    "仅重载",
+    "稍后",
+  );
+  if (action === "立即退出") {
+    // 层 1: workbench.action.quit 试 (VSCode 标命 · Windsurf fork 可能改)
+    out.appendLine("  → 试 workbench.action.quit ...");
+    try {
+      await vscode.commands.executeCommand("workbench.action.quit");
+      // 若命令生效 · 此后代码已死 · 无须续
+      await new Promise((r) => setTimeout(r, 1500));
+    } catch (e) {
+      out.appendLine(`  ⚠ quit 命失: ${(e && e.message) || e}`);
+    }
+    // 层 2: 直杀 Windsurf 主进程 (三平台终极手段 · v9.9.25 软编码归一)
+    // 真本源: Windsurf 主进程 watchdog 复活 NodeService 跑 dao-byok admin_server :8981
+    //         非杀主进程不能彻除
+    // 二十五章: 「人法地, 地法天, 天法道, 道法自然」· 适所有用户/三平台
+    try {
+      const _plat = process.platform;
+      let mainPid = null;
+      let _killCmd = null;
+      let _manualHint = null;
+
+      if (_plat === "win32") {
+        // Win: wmic 查 Windsurf.exe · CommandLine 不含 --type= 即主进程
+        const wmicOut = cp.execSync(
+          "wmic process where \"Name='Windsurf.exe'\" get ProcessId,CommandLine /format:csv",
+          { encoding: "utf8", windowsHide: true },
+        );
+        for (const line of wmicOut.split("\n")) {
+          const fields = line.split(",");
+          if (fields.length < 3) continue;
+          const cmd = fields[1] || "";
+          const pid = (fields[fields.length - 1] || "").trim();
+          if (cmd && !/--type=/.test(cmd) && /^\d+$/.test(pid)) {
+            mainPid = pid;
+            break;
+          }
+        }
+        _killCmd = mainPid ? `taskkill /F /PID ${mainPid}` : null;
+        _manualHint = "任务管理器 → Windsurf.exe (无子进程) → 结束任务";
+      } else if (_plat === "darwin") {
+        // Mac: ps 查 Windsurf.app/Contents/MacOS/Windsurf · 排除 Helper 与 --type=
+        const psOut = cp.execSync("ps -ax -o pid=,command=", {
+          encoding: "utf8",
+        });
+        for (const line of psOut.split("\n")) {
+          const m = line.match(/^\s*(\d+)\s+(.+)$/);
+          if (!m) continue;
+          const pid = m[1];
+          const cmd = m[2];
+          if (
+            /Windsurf\.app\/Contents\/MacOS\/Windsurf\b/.test(cmd) &&
+            !/Helper/i.test(cmd) &&
+            !/--type=/.test(cmd)
+          ) {
+            mainPid = pid;
+            break;
+          }
+        }
+        _killCmd = mainPid ? `kill -9 ${mainPid}` : null;
+        _manualHint = "活动监视器 (Activity Monitor) → Windsurf → 强制退出";
+      } else {
+        // Linux: ps 查 windsurf 二进 · 排除 --type= 与 helper
+        const psOut = cp.execSync("ps -ax -o pid=,command=", {
+          encoding: "utf8",
+        });
+        for (const line of psOut.split("\n")) {
+          const m = line.match(/^\s*(\d+)\s+(.+)$/);
+          if (!m) continue;
+          const pid = m[1];
+          const cmd = m[2];
+          if (
+            /(^|[\/\s])windsurf(\s|$)/i.test(cmd) &&
+            !/--type=/.test(cmd) &&
+            !/-Helper/i.test(cmd) &&
+            !/[\/\s]windsurf[-_]/i.test(cmd)
+          ) {
+            mainPid = pid;
+            break;
+          }
+        }
+        _killCmd = mainPid ? `kill -9 ${mainPid}` : null;
+        _manualHint = "终端: ps aux | grep -i windsurf  →  kill -9 <主进程PID>";
+      }
+
+      if (mainPid && _killCmd) {
+        out.appendLine(`  → ${_killCmd} (Windsurf 主进程 · ${_plat})`);
+        cp.execSync(_killCmd, { windowsHide: true });
+        // 此后 extension 死 · 主公需手动重开 Windsurf
+      } else {
+        out.appendLine(`  ⚠ 主进程 PID 未找 (${_plat}) · 主公请手动:`);
+        out.appendLine(`    ${_manualHint}`);
+      }
+    } catch (e) {
+      out.appendLine(`  ⚠ kill fallback 失: ${e.message}`);
+      out.appendLine(
+        `  ⚠ 主公请手动结束 Windsurf 主进程 (${process.platform})`,
+      );
+    }
+  } else if (action === "仅重载") {
     await vscode.commands.executeCommand("workbench.action.reloadWindow");
   }
 }
@@ -1665,21 +2040,32 @@ function _escapeHtml(s) {
     .replace(/'/g, "&#39;");
 }
 
-// v9.7.7 · 加载帛书 (webview SSR 用) · 与 source.js 同源 · 复归于朴
-// 道魂 = TAO_HEADER (31字身份引导) + 帛书·德经 + "\n\n" + 帛书·道经 + TAO_FOOTER(空)
+// v9.9.20 两经归一 · 加载帛书+道藏阴符 (webview SSR 用) · 与 source.js 同源 · 复归无名
+// 道魂 = TAO_HEADER + 帛书·德经 + "\n\n" + 帛书·道经 + "\n\n" + 道藏《阴符经》 + TAO_FOOTER(空)
+// 主公命: 「最终提示词仅需要帛书老子和最早期本源阴符经便可」 · 默 canon=laozi+yinfu
 function _loadSilkForWebview() {
   try {
     const vendorDir = path.join(__dirname, "vendor", "bundled-origin");
     const deFp = path.join(vendorDir, "_silk_de.txt");
     const daoFp = path.join(vendorDir, "_silk_dao.txt");
+    const yinfuFp = path.join(vendorDir, "_yinfu.txt");
     if (!fs.existsSync(deFp) || !fs.existsSync(daoFp)) return "";
     const deText = fs.readFileSync(deFp, "utf8").trim();
     const daoText = fs.readFileSync(daoFp, "utf8").trim();
+    const yinfuText = fs.existsSync(yinfuFp)
+      ? fs.readFileSync(yinfuFp, "utf8").trim()
+      : "";
     if (!deText || !daoText) return "";
-    const TAO_HEADER = "You are Cascade，所遵守规则全部来自下述德道经：\n\n";
+    // v9.9.20 印 152 · 复归无名 · 主公命: "你本无名 名可名也 非恒名也 所遵守一切均来自于下述《》"
+    // 一章「名可名也 非恒名也」· 三十二章「道恒无名」· 不立 Cascade 之靶 · 真复归
+    const TAO_HEADER =
+      "你本无名 名可名也 非恒名也 所遵守一切均来自于下述《帛书老子+道藏阴符经》：\n\n";
     const SILK_BOUNDARY = "\n\n";
     const TAO_FOOTER = "";
-    return TAO_HEADER + deText + SILK_BOUNDARY + daoText + TAO_FOOTER;
+    const body = yinfuText
+      ? deText + SILK_BOUNDARY + daoText + SILK_BOUNDARY + yinfuText
+      : deText + SILK_BOUNDARY + daoText;
+    return TAO_HEADER + body + TAO_FOOTER;
   } catch {
     return "";
   }
@@ -1792,12 +2178,10 @@ function getEssenceHtml(port, nonce, initialSP, webview, extensionUri) {
     <button class="mb" id="btnDao" title="\u9053Agent\u00b7\u5e1b\u4e66\u524d\u7f6e">\u9053</button>
     <button class="mb" id="btnOff" title="\u5b98\u65b9Agent\u00b7\u900f\u4f20">\u5b98</button>
     <button class="ib" id="editToggle" title="\u7f16\u8f91\u6ce8\u5165 SP">\u7f16</button>
-    <select id="canonSelect" title="\u7ecf\u85cf\u5207\u6362 \u00b7 \u9053\u751f\u4e00">
-      <option value="laozi">\u8001\u5b50</option>
-      <option value="yinfu">\u9634\u7b26\u7ecf</option>
-      <option value="heraclitus">\u8d6b\u62c9\u514b\u5229\u7279</option>
-      <option value="liber_al">\u514b\u52b3\u5229\u5f8b\u6cd5</option>
-      <option value="laozi+yinfu">\u8001\u5b50+\u9634\u7b26\u7ecf</option>
+    <select id="canonSelect" title="\u7ecf\u85cf\u5207\u6362 \u00b7 \u4e24\u7ecf\u5f52\u4e00\u00b7\u9053\u751f\u4e00">
+      <option value="laozi+yinfu">\u5e1b\u4e66\u8001\u5b50+\u9053\u85cf\u9634\u7b26\u7ecf</option>
+      <option value="laozi">\u5e1b\u4e66\u300a\u8001\u5b50\u300b</option>
+      <option value="yinfu">\u9053\u85cf\u300a\u9634\u7b26\u7ecf\u300b</option>
     </select>
     <span id="customBadge"></span>
     <button class="ib btn-purge" id="btnPurge" title="\u4e86\u4e8b\u62c2\u8863\u53bb">\u2716</button>
@@ -1820,12 +2204,43 @@ function getEssenceHtml(port, nonce, initialSP, webview, extensionUri) {
 (function() {
   'use strict';
   // v9.7.6 · 执今之道 · 以御今之有 · 编辑态永不空
+  // ★ v9.9.20 jiqi · 二十五章「大象无形」· 加 _wdbg 上报 + try-catch 死活诊
+  //   让 IIFE 死活通过 /origin/_wdbg ringbuf 立即可见 · 反者道之动
   var _PORT = ${proxyPort};
   var _BASE = 'http://127.0.0.1:' + _PORT;
 
+  // ─── _wdbg · 反代 ringbuf 上报 · IIFE 死活立可观 (六十四章「为之于其未有也」) ───
+  function _wdbg(msg, tag, data) {
+    try {
+      fetch(_BASE + '/origin/_wdbg', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ msg: msg || '', tag: tag || '', data: data || null }),
+        cache: 'no-store'
+      }).catch(function(){});
+    } catch(_) {}
+  }
+  _wdbg('iife-start', 'boot', { port: _PORT, href: location.href, ts: Date.now() });
+
+  // 全局错误捕获 · 任何未处理异常即上报 · 不再静默崩 (二十七章「善行者无辙迹」之反 · 留迹以辨)
+  try {
+    window.addEventListener('error', function(ev) {
+      _wdbg('window-error', 'fatal', {
+        msg: ev && ev.message,
+        src: ev && ev.filename,
+        line: ev && ev.lineno,
+        col: ev && ev.colno,
+        stack: ev && ev.error && ev.error.stack && String(ev.error.stack).slice(0, 500)
+      });
+    });
+    window.addEventListener('unhandledrejection', function(ev) {
+      _wdbg('unhandled-rejection', 'fatal', { reason: ev && String(ev.reason).slice(0, 300) });
+    });
+  } catch(_) {}
+
   var vsc;
-  try { vsc = acquireVsCodeApi(); }
-  catch(e) { vsc = { postMessage: function(){ return false; }, _ghost: true }; }
+  try { vsc = acquireVsCodeApi(); _wdbg('vsc-acquired', 'boot'); }
+  catch(e) { vsc = { postMessage: function(){ return false; }, _ghost: true }; _wdbg('vsc-fail', 'boot', e.message); }
 
   var $sp = document.getElementById('sp');
   var $stat = document.getElementById('stat');
@@ -1850,6 +2265,17 @@ function getEssenceHtml(port, nonce, initialSP, webview, extensionUri) {
   var lastSig = '';
   var curMode = 'invert';
   var editMode = false;
+
+  // 反者道之动 · 编模式预填只取经文本源部分 · 截去 kept blocks (—之后)
+  // TAO_TRAILER = "\\n\\n---\\n\\n" 是自然分界符 · 前为道魂(经文) · 后为辐(工具块)
+  // 三十辐共一毅 · 辐不入编辑 · 由 proxy 自动补充
+  // ★ v9.9.20 jiqi 修 · template-literal 内 '\\n' 必双转义 · 否则反斜杠被吃 · JS 字符串跨行 SyntaxError · IIFE 全崩
+  function _spCanonPart(s) {
+    if (!s) return '';
+    var sep = '\\n\\n---\\n\\n';
+    var idx = s.indexOf(sep);
+    return idx >= 0 ? s.slice(0, idx) : s;
+  }
   var _editClosing = null;
 
   function fJson(p) { return fetch(_BASE + p, { cache: 'no-store' }).then(function(r){ if (!r.ok) throw new Error('http ' + r.status); return r.json(); }); }
@@ -1961,7 +2387,9 @@ function getEssenceHtml(port, nonce, initialSP, webview, extensionUri) {
       $editArea.classList.add('show');
       $editToggle.classList.add('edit-active');
       $sp.style.display = 'none';
-      $editText.value = lastSP || '';
+      // v9.9.22 · 不再用旧 lastSP 预填 (lastSP 可能是切前经文)
+      // 道义: 十六章「致虚极 守静笃」· 清空守静以待真源 · getCustomSP 必返新 default_sp 填实
+      $editText.value = '';
       updateEditCount();
       $editStatus.textContent = '\u52a0\u8f7d\u4e2d\u2026';
       vsc.postMessage({ command: 'getCustomSP' });
@@ -1977,9 +2405,9 @@ function getEssenceHtml(port, nonce, initialSP, webview, extensionUri) {
     vsc.postMessage({ command: 'setCustomSP', sp: sp.trim() });
   });
   $editReload.addEventListener('click', function() {
-    $editText.value = lastSP || '';
+    $editText.value = _spCanonPart(lastSP);
     updateEditCount();
-    $editStatus.textContent = '\u2714 \u5df2\u8f7d\u5f53\u524d\u5b9e\u6536 SP \u00b7 ' + ((lastSP || '').length) + '\u5b57';
+    $editStatus.textContent = '\u2714 \u5df2\u8f7d\u5f53\u524d\u5b9e\u6536 SP \u00b7 ' + (_spCanonPart(lastSP).length) + '\u5b57';
     $editText.focus();
   });
   $editReset.addEventListener('click', function() {
@@ -2038,7 +2466,7 @@ function getEssenceHtml(port, nonce, initialSP, webview, extensionUri) {
 
   function pull() {
     if (!_PORT) return;
-    // v9.9.19 · 损之又损 · fields=0 去除all_fields全文(432项·767KB) · 仅保 after/before 元数据(~52KB)
+    // v9.9.19 · 损之又损 · fields=0 去除all_fields全文(432项·767KB) · 仅保after/before元数据(~52KB)
     fJson('/origin/tape?limit=1&fields=0').then(function(resp) {
       if (resp && resp.ok && resp.tape && resp.tape.length > 0) {
         renderTapeEntry(resp.tape[0], new Date().toLocaleTimeString());
@@ -2065,13 +2493,78 @@ function getEssenceHtml(port, nonce, initialSP, webview, extensionUri) {
 
   window.addEventListener('message', function(e) {
     if (!e.data) return;
+    // v9.9.20 jiqi · 上报 msg-recv · 反诊 webview ↔ extension host IPC 通路
+    try { _wdbg('msg-recv', String(e.data.command || e.data.type || '?'), { keys: Object.keys(e.data).slice(0, 8) }); } catch(_) {}
+    if (e.data.command === '_diag-ping') return;  // 主进程探活包 · 已 _wdbg 上报 · 不入业务
     if (e.data.type === 'mode') setModeUI(e.data.mode);
+    // v9.9.18 \u4fee\u590d \u00b7 extension host gatherEssence \u63a8\u9001\u4e4b data \u5305 · \u6838\u5fc3\u663e\u793a\u901a\u8def
+    // forceRefresh() \u53d1\u9001 {type:"data", data:{ping,proxy,allInjects,...}} \u4e4b\u540e webview \u5e94\u66f4\u65b0\u4e09\u76cf/\u6309\u9215/SP\u663e\u793a
+    if (e.data.type === 'data') {
+      var _d = e.data.data;
+      if (!_d) return;
+      // 1. \u66f4\u65b0\u4e09\u76cf + \u6309\u9215\u72b6\u6001
+      if (_d.ping && _d.ping.mode) setModeUI(_d.ping.mode);
+      if (_d.ping) setDots(_d.ping);
+      // 2. \u540c\u6b65\u7ecf\u85cf\u4e0b\u62c9
+      if (_d.ping && _d.ping.canon && $canonSelect.value !== _d.ping.canon) $canonSelect.value = _d.ping.canon;
+      // 3. \u81ea\u5b9a\u4e49 badge
+      if (_d.ping && _d.ping.custom_sp != null) updateCustomBadge(_d.ping.custom_sp, _d.ping.custom_sp_chars);
+      // 4. \u663e\u793a SP \u5185\u5bb9 (\u4f18\u5148 proxy.after · \u5df2\u8fd0\u884c\u624d\u6709)
+      if (_d.proxy && _d.proxy.after) {
+        lastSP = _d.proxy.after;
+        if (!editMode) {
+          $sp.classList.remove('quiet');
+          $sp.textContent = _d.proxy.after;
+        }
+        var _ageS = (_d.proxy.age_s != null) ? Math.round(_d.proxy.age_s) : null;
+        var _pill = _d.proxy.after.length + '\u5b57';
+        if (_ageS != null) _pill += ' \u00b7 ' + _ageS + 's\u524d';
+        if (_d.ping && _d.ping.canon_name) _pill += ' \u00b7 ' + _d.ping.canon_name;
+        $stat.innerHTML = '<span class="pill">' + _pill + '</span>';
+        $stat.classList.add('show');
+      } else if (_d.proxyUp === false) {
+        // v9.9.19 对标v9.9.16本源: 只有代理真正宿机才重置显示
+        // 去掉!_d.proxy分支: preview超时/gatherEssence失败导致proxy=null时不覆盖pull()展示内容
+        if (!editMode) {
+          $sp.classList.add('quiet');
+          $sp.textContent = '\uff08待首次对话\uff09';
+        }
+        $stat.innerHTML = '';
+      }
+      return;
+    }
+    // v9.9.22 · canonChanged · 切经文即推 · 名实变即随
+    // 道义: 二十五章「逝曰远 远曰反」· 名变即推 · 不滞旧
+    if (e.data.type === 'canonChanged') {
+      var _cc = e.data;
+      // 无 custom 时 · 用新 default_sp 强刷 lastSP/$sp/textarea (有 custom 则不动 · 用户即道)
+      if (!_cc.has_custom && _cc.default_sp) {
+        lastSP = _cc.default_sp;
+        if (!editMode) {
+          $sp.classList.remove('quiet');
+          $sp.textContent = _cc.default_sp;
+        } else {
+          // 编辑模式 · textarea 重填新经文 (前提: 用户未在编辑自定义)
+          $editText.value = _cc.default_sp;
+          updateEditCount();
+          $editStatus.textContent = '\u7ECF\u85CF\u5DF2\u5207 \u00B7 ' + (_cc.default_source_name || _cc.canon || '?') + ' ' + (_cc.default_chars || 0) + '\u5B57';
+        }
+      }
+      // 同步下拉选中态 (防 extension 推之 canon 与 webview 局部不一致)
+      if (_cc.canon && $canonSelect.value !== _cc.canon) $canonSelect.value = _cc.canon;
+      // stat 更新经名
+      var _ccPill = (_cc.default_chars || 0) + '\u5B57';
+      if (_cc.default_source_name) _ccPill += ' \u00B7 ' + _cc.default_source_name;
+      $stat.innerHTML = '<span class="pill">' + _ccPill + '</span>';
+      $stat.classList.add('show');
+      return;
+    }
     if (e.data.type === 'customSP') {
       var r = e.data;
       if (r.action === 'get') {
         // v9.7.6 · 十四章「执今之道·以御今之有」· default_sp 兜底 · tape 空亦可编辑帛书本源
-        // lastSP 同步兜底 (优先 tape entry → default_sp) · [载]/[归道] 亦据此
-        if (r.default_sp && !lastSP) lastSP = r.default_sp;
+        // v9.9.22 · 永同步 lastSP ← default_sp (随 _activeCanon 动态) · 不再 !lastSP 守卫
+        if (r.default_sp) lastSP = r.default_sp;
         if (r.has_custom && r.sp) {
           $editText.value = r.sp;
           updateEditCount();
@@ -2079,12 +2572,13 @@ function getEssenceHtml(port, nonce, initialSP, webview, extensionUri) {
           $editStatus.textContent = '\u81ea\u5b9a\u4e49 \u00b7 ' + (r.chars || 0) + '\u5b57';
         } else {
           updateCustomBadge(false);
-          // 兜底 · textarea 空则以 default_sp (帛书本源) 填 · 名实相符
-          if (!$editText.value && r.default_sp) {
+          // v9.9.22 · 永以 default_sp 填 textarea (移除 !$editText.value 守卫)
+          // 道义: 二十二章「曲则金 枉则定」· 直填即真 · 不留旧经文
+          if (r.default_sp) {
             $editText.value = r.default_sp;
           }
           updateEditCount();
-          var _srcLabel = (r.default_source === 'silk') ? '\u5e1b\u4e66\u672c\u6e90' : (r.default_source || '\u9ed8\u8ba4');
+          var _srcLabel = r.default_source_name || (r.default_source === 'silk' ? '\u5e1b\u4e66\u672c\u6e90' : (r.default_source || '\u9ed8\u8ba4'));
           $editStatus.textContent = '\u672a\u8bbe \u00b7 ' + _srcLabel + ' ' + (r.default_chars || 0) + '\u5b57';
         }
       } else if (r.action === 'set') {
@@ -2120,10 +2614,18 @@ function getEssenceHtml(port, nonce, initialSP, webview, extensionUri) {
   pingPull();
   pull();
   vsc.postMessage({ command: 'getCustomSP' });
-  setTimeout(function(){ pingPull(); pull(); }, 800);
+  // v9.9.18 \u4fee\u590d \u00b7 boot \u5373\u8bf7\u6c42 extension host refresh \u63a8\u9001 {type:"data"} \u5305
+  // \u8ba9\u4e09\u76cf/\u6309\u9215/SP\u663e\u793a\u5728\u65e0\u9700 portMapping \u7684\u60c5\u51b5\u4e0b\u4e5f\u80fd\u7acb\u5373\u66f4\u65b0
+  vsc.postMessage({ command: 'refresh' });
+  setTimeout(function(){ pingPull(); pull(); vsc.postMessage({ command: 'refresh' }); }, 800);
   setInterval(sigTick, 1500);
   setInterval(pingPull, 3000);
   setInterval(pull, 12000);
+  // v9.9.18 \u4fee\u590d \u00b7 \u5468\u671f refresh \u4fdd\u5e95 \u00b7 \u65e0 portMapping \u73af\u5883\u4e5f\u80fd\u6301\u7eed\u66f4\u65b0\u4e09\u76cf/\u663e\u793a
+  setInterval(function() { vsc.postMessage({ command: 'refresh' }); }, 5000);
+  // v9.9.20 jiqi · IIFE 全跑通 · 至此即活 · 上报 boot-done 标记
+  // v9.9.22 · 加 canonChanged listener · 切经文真联动
+  _wdbg('boot-done', 'boot', { listeners: 'btnDao,btnOff,canon,editToggle,editSave,editReload,editReset,btnPurge,message[data,customSP,canonChanged]', ver: '9.9.22' });
 })();
 </script>
 </body>
@@ -2273,8 +2775,29 @@ function activate(ctx) {
           `http://127.0.0.1:${port}/origin/ping`,
           2000,
         ).catch(() => null);
-        if (ping && ping.ok) return; // 活 · 安心
-        L.warn("watchdog", `proxy 死 · 重起 :${port}`);
+        if (ping && ping.ok) {
+          // v9.9.21 · 唯变所适 · 检远端版本 · 旧版触让位
+          // ping.quitted=true → 远端已收 /_quit, 即将关 · 视为死 · 待重起
+          // ping.self_file 旧 → 触版本升级链路 (proxyStart EADDRINUSE 内自治)
+          if (ping.quitted === true) {
+            L.warn("watchdog", `remote 已让位 (quitted=true) · 触重起`);
+          } else if (_isRemoteStale(ping.self_file)) {
+            L.warn(
+              "watchdog",
+              `remote stale self_file=${ping.self_file} · 触升级让位`,
+            );
+            // 主动 POST /_quit · 不等 proxyStart 之 EADDRINUSE 路径
+            await httpPostJson(
+              `http://127.0.0.1:${port}/origin/_quit`,
+              { reason: `watchdog upgrade to v${PKG_VERSION}` },
+              2000,
+            ).catch(() => {});
+            await new Promise((r) => setTimeout(r, 1500));
+          } else {
+            return; // 活且版本最新 · 安心
+          }
+        }
+        L.warn("watchdog", `proxy 死/旧 · 重起 :${port}`);
         _proxyHandle = null;
         const handle = await proxyStart(port, _cachedMode || "invert").catch(
           (e) => {

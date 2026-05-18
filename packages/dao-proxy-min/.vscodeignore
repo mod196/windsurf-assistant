@@ -21,9 +21,34 @@ vsc-extension-quickstart.md
 *.vsix
 .vsixmanifest
 
+# v9.9.4 备份/损版不入包 (反者道之动 · 损版只留工作目录为戒)
+*.bak
+**/*.bak
+*.v9.9.2-MN-bak
+**/*.v9.9.2-MN-bak
+# v9.9.21 · timestamp 后缀备份 (例 .vsix.bak_20260518_180850 / .vsix.bak_jiqi_only_xxx)
+*.bak_*
+**/*.bak_*
+*.vsix.bak*
+**/*.vsix.bak*
+
+# v9.9.21 · 历史验证脚本 (verify_v9913.cjs 等) 不属运行时
+verify_v*.cjs
+**/verify_v*.cjs
+verify_v*.js
+**/verify_v*.js
+
 # dev harness / 部署脚本 / 探针 / 日志 / 缓存 · 一律 _ 前缀 → 全排
 _*
 **/_*
+
+# 散 log / 散 dump · 不以 _ 起首 (e.g. e2e_*.log)
+*.log
+**/*.log
+*.dump.html
+*.dump.json
+*.dump.txt
+**/*.dump.*
 
 # 守保密 · 配文与凭证文件明排 (即便不带 _ 前缀)
 _审视/_dao.env.json
@@ -34,6 +59,11 @@ _审视/_dao.env.json
 # 白名单 · 帛书《老子》二文是运行时本源 · 必入包
 !vendor/bundled-origin/_silk_de.txt
 !vendor/bundled-origin/_silk_dao.txt
+# 经藏多门 · 五新经文 · 必入包 (v9.9.18 印126)
+!vendor/bundled-origin/_yinfu.txt
+!vendor/bundled-origin/_heraclitus.txt
+!vendor/bundled-origin/_liber_al.txt
+!vendor/bundled-origin/_dao_yuan_jing.txt
 
 # 历史本源导出 (v9.1.2-dao 对照)
 _origin_v912/**
@@ -65,3 +95,24 @@ _审视/**
 # v9.4.6 · 正本清源 · external webview-app.js 已废 (inline IIFE in extension.js)
 # 道义: 四十八章 "为道日损 · 损之又损 · 以至于无为"
 media/webview-app.js
+
+# v9.9.12 · 部署脚本 (装毕辅) 不入 vsix · 留工作目录供主公调用
+# 道义: 五十一章 "生而弗有, 长而弗宰" · 部署脚本不属插件运行时
+install.ps1
+install.sh
+remote_deploy.ps1
+DEPLOY.md
+
+# v9.9.13 · 净增补 (反者道之动 · 第十回 · 不属运行时之物全排)
+audit_p9_full.ps1
+build_vsix.ps1
+fix_remote_extjson.ps1
+INDEX.md
+FINAL_TRUTH_*.md
+_archive/**
+**/_archive/**
+**/_archive
+*.ps1
+*.sh
+*.md
+!readme.md

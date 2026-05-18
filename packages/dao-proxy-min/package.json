@@ -1,8 +1,8 @@
 {
   "name": "dao-proxy-min",
   "displayName": "道Agent · 反者道之动 · 弱者道之用",
-  "description": "v9.9.19 · 印 151 · 损之又损 · IPC过载根治 (preview 872KB→52KB · tape 767KB→52KB · postMessage 1.7MB→22KB) · 承 v9.9.17 经藏多门 (4十二章「道生一」·五经藏下拉·老子/阴符经/赫拉克利特/克劳利律法 4单+老子+阴符经 1融·_CANON_MAP·持存) · 守大常: invertSP/modifySPProto/modifyRawSP/modifyAnyInferenceSP/deepInvertProto/照观体系 字符级不变.",
-  "version": "9.9.19",
+  "description": "v9.9.25 软编码归一·适所有用户·三平台主进程退 (二十八章「朴散为器·圣人用则为官长·夫大制无割」). 治本两味: ①抽 SELF_EXT_ID 自 package.json (publisher+name) · 软编码归一 · 适所有 fork/重命名/重发布; ②cmdPurge F 层主进程退三平台兜底 (Win=wmic+taskkill / Mac=ps+kill -9 / Linux=ps+kill -9) · 不再 Win-only · 适所有用户. 承 v9.9.24 (五层同治+主进程退) + v9.9.22 (三诉同治) + v9.9.21 (软编码 vendorDir). 反者道之动 · 损之又损至无为.",
+  "version": "9.9.25",
   "publisher": "dao-agi",
   "license": "Apache-2.0",
   "engines": {

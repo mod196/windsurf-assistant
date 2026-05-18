@@ -2,6 +2,60 @@
 
 > 反也者, 道之动也; 弱也者, 道之用也. —— 帛书《老子》德经
 
+## v9.9.25 — 软编码归一 · 适所有用户 · 三平台主进程退 (2026-05-19)
+
+> **朴散为器, 圣人用则为官长, 夫大制无割.** —— 帛书《老子》二十八章
+>
+> **人法地, 地法天, 天法道, 道法自然.** —— 帛书《老子》二十五章
+
+### 主公命
+
+「**软编码一切 · 适配所有用户 · 所有用户均可用一切 · 推送发布最新之版本于 github 当前主账号 zhouyoukang 和子账号 zhouyoukang1234-spec 双同步推送一切**」
+
+### 治本两味
+
+| 改 | 损/守 | 道义 |
+|---|---|---|
+| 抽 `SELF_EXT_ID` 常量自 `package.json` (publisher + name) · 全文一致 (3 处 `dao-agi.dao-proxy-min` 字面散写归一: `_scanLatestVendorDir` 之 `startsWith` + `match` 正则, `cmdPurge` step 11 `.obsolete` 标 filter, step 13 `uninstallExtension` 参) | +1 抽常量块 / -10 行硬写 / +0 行净 (规整) | 二十八章「朴散为器·圣人用则为官长·夫大制无割」· 主公若 fork 改 publisher/name · 改一处即净 · 全文承之 |
+| `cmdPurge` F 层主进程退三平台兜底: Win=`wmic`+`taskkill /F /PID` / Mac=`ps -ax`+`kill -9 Windsurf.app/Contents/MacOS/Windsurf` / Linux=`ps -ax`+`kill -9 windsurf` (`--type=` / `Helper` 排除) | +60 行 (Mac/Linux 等价) / Win 既路守不变 | 二十五章「人法地, 地法天, 天法道, 道法自然」· 三平台一视同仁 · 不再 Win-only · Mac/Linux 主公诉 cmdPurge 时同得真水过无痕 |
+
+### 软编码全谱 (v9.9.25 后实证 · 适所有用户)
+
+| 维 | 适法 | 位 |
+|---|---|---|
+| 用户名 | `os.userInfo().username` 动态 | `forceRestartLS` USERNAME 过滤 |
+| home 目录 | `os.homedir()` 跨平台 | settings 路径 / .obsolete / .windsurf/extensions |
+| 配置基目录 | Win=`%APPDATA%` / Mac=`~/Library/Application Support` / Linux=`$XDG_CONFIG_HOME` 或 `~/.config` | `_settingsJsonPath()` |
+| 端口分配 | `default: 0` · per-user **FNV-1a hash** · 8889..8988 · 多账号自然隔离 | package.json + extension.js |
+| 平台 LS 杀 | Win=`taskkill /F /FI IMAGENAME` / Mac+Linux=`pkill -f` (含 `-u $uid`) | `forceRestartLS` |
+| 平台主进程退 (v9.9.25 新) | Win=`wmic`+`taskkill /F /PID` / Mac=`ps`+`kill -9` / Linux=`ps`+`kill -9` | `cmdPurge` F 层 |
+| OS 限制 | `package.json.os = ""` · 不限平台 | package.json |
+| 扩展 ID 自识 (v9.9.25 新) | `SELF_EXT_ID` 抽自 `publisher + "." + name` | extension.js 常量 |
+| 引擎 | `engines.vscode = ^1.85.0` · 通用 | package.json |
+
+### 兼容
+
+- v9.9.24 之五层同治 (B `.obsolete` / C `fs.rmSync` / A `workbench.extensions.uninstallExtension` / D 同卸 dao-byok / E `settings.json` 直清 codeium.*) 全字节级守不变
+- v9.9.22 三诉同治 (cmdInvert/cmdPassthrough/cmdToggle 软切提示) 不动
+- v9.9.21 软编码 vendorDir (per-user 最新版扫描) 不动
+- source.js 字节级 = v9.9.18+ (123104 B · 印 126 经藏多门)
+- 帛书《老子》道经+德经 + 道藏《阴符经》三文字节级守
+
+### 主公装 v9.9.25 三步
+
+```text
+① 主公先关 Windsurf
+② 主公启 Windsurf · UI 卸旧版 (若装)
+③ 主公装 dao-proxy-min-9.9.25.vsix
+   activate 自动: proxyStart :8889..8988 (per-user FNV) + setAnchor + spawn-hook 挂
+   主公开新对话 → invertSP 自动注帛书《老子》+ 道藏《阴符经》
+   「本源观照」面板三 dot 全亮
+```
+
+「**朴散为器, 圣人用则为官长, 夫大制无割.**」(二十八章) — v9.9.25 抽常量归一 · 一处定义, 万法承之 · 适所有用户 · 所有用户均可用一切.
+
+---
+
 ## v9.9.0 — 印 124 · 第一细药 · 外接 api 归一 (2026-05-17)
 
 > **图难于其易也，为大于其细也。天下之难作于易，天下之大作于细。是以圣人终不为大，故能成其大.** —— 帛书《老子》六十三章
