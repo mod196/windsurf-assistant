@@ -683,6 +683,31 @@ function pickToken() {
   t.lastUsedAt = now;
   return t;
 }
+// 印 151 · header 之 token override (反 Layer 6 · VM 公网部署 · token 在调用方)
+//   X-Devin-Token / X-Dao-Devin-Token header 中之 token 优先于池
+//   主公本机 dao_proxy 用池 · VM 公网 dao_proxy 不持 token (调用方 header 带)
+//   帛书四十一「道隐无名 · 夫唯道善始且善成」
+function pickTokenWithHeader(req) {
+  const h =
+    (req &&
+      req.headers &&
+      (req.headers["x-devin-token"] || req.headers["x-dao-devin-token"])) ||
+    "";
+  if (h) {
+    return {
+      token: _normalizeToken(h),
+      raw: h,
+      source: "header:x-devin-token",
+      ok: 0,
+      err: 0,
+      lastUsedAt: Date.now(),
+      lastErrAt: 0,
+      cooldownUntil: 0,
+    };
+  }
+  return pickToken();
+}
+
 // 印 105 · 错分类 (反者道之动 · 不一刀切)
 // out_of_quota / billing → 长冷却 10min (账户级问题 · 短期不复)
 // rate_limit / 429       → 中冷却 2min  (节流 · 等就好)
@@ -2703,7 +2728,7 @@ async function handleOpenAI(req, res, forceEngine) {
   });
   const { sysPrompt, userText } = flattenForPrompt(messages);
 
-  const tokenObj = pickToken();
+  const tokenObj = pickTokenWithHeader(req);
   if (!tokenObj) {
     recErr();
     return sendJson(res, 503, {
@@ -2711,7 +2736,7 @@ async function handleOpenAI(req, res, forceEngine) {
     });
   }
   logI(
-    `openai ${stream ? "stream" : "non-stream"} · model=${C.B(model)} · sp=${C.Y(meta.strategy)} · sys=${meta.finalSpLen}B · usr=${userText.length}B · tok=${mask(tokenObj.token)}`,
+    `openai ${stream ? "stream" : "non-stream"} · model=${C.B(model)} · sp=${C.Y(meta.strategy)} · sys=${meta.finalSpLen}B · usr=${userText.length}B · tok=${mask(tokenObj.token)} · src=${tokenObj.source}`,
   );
 
   const reqId = newId("chatcmpl");
@@ -2851,7 +2876,7 @@ async function handleAnthropic(req, res) {
   const { messages, meta } = processMessages(msgs, { model, account });
   const { sysPrompt, userText } = flattenForPrompt(messages);
 
-  const tokenObj = pickToken();
+  const tokenObj = pickTokenWithHeader(req);
   if (!tokenObj) {
     recErr();
     return sendJson(res, 503, {
@@ -2860,7 +2885,7 @@ async function handleAnthropic(req, res) {
     });
   }
   logI(
-    `anthropic ${stream ? "stream" : "non-stream"} · model=${C.B(model)} · sp=${C.Y(meta.strategy)}`,
+    `anthropic ${stream ? "stream" : "non-stream"} · model=${C.B(model)} · sp=${C.Y(meta.strategy)} · src=${tokenObj.source}`,
   );
 
   const msgId = newId("msg");
@@ -3012,13 +3037,13 @@ async function handleGemini(req, res, urlPath) {
   const { messages, meta } = processMessages(msgs, { model, account });
   const { sysPrompt, userText } = flattenForPrompt(messages);
 
-  const tokenObj = pickToken();
+  const tokenObj = pickTokenWithHeader(req);
   if (!tokenObj) {
     recErr();
     return sendJson(res, 503, { error: { message: "no token", code: 503 } });
   }
   logI(
-    `gemini ${stream ? "stream" : "non-stream"} · model=${C.B(model)} · sp=${C.Y(meta.strategy)}`,
+    `gemini ${stream ? "stream" : "non-stream"} · model=${C.B(model)} · sp=${C.Y(meta.strategy)} · src=${tokenObj.source}`,
   );
 
   if (!stream) {
