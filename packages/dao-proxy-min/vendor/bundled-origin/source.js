@@ -85,7 +85,7 @@ const zlib = require("zlib");
 const PORT = parseInt(process.env.ORIGIN_PORT || "8889", 10);
 // v9.6.1 · 反者道之动 · 远曰反 · 回归 v9.1.2 之全前端按钮 (七按钮: 道/官/实/原/编/复/卸 + dots/customBadge)
 // 以 v9.1.2 本源哲学为锚 · 守大常不动 · 五细节皆成: isAlreadyInverted · _rawTape+all_fields · INFER_STRIP 挂 modifyAnyInferenceSP · 部署不 kill · 前端按钮回归
-const ORIGIN_VERSION_BASE = "v9.9.22"; // webview title/banner/footer 均读此 · v9.9.22 三诉同治
+const ORIGIN_VERSION_BASE = "v9.9.26"; // webview title/banner/footer 均读此 · v9.9.26 强标 .obsolete+自动 reload (真治)
 // 印 153 · 唯变所适 · 软编码归宗 · 二十五章「逝曰远 远曰反」· 七十六章「兵强则不胜」
 // 病: 多 ext-host 共端口 :8937 · 旧版 in-process proxy 持续 listen · self_file 锁死旧版目录
 //     → 即便装毕新版 vsix · /ping 仍返 v9.9.19/v9.9.20 之 self_file · canon_name 走旧映射

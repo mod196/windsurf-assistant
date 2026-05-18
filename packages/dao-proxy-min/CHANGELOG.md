@@ -2,6 +2,51 @@
 
 > 反也者, 道之动也; 弱也者, 道之用也. —— 帛书《老子》德经
 
+## v9.9.26 — 真治 · 全自动卸再起 · 主公无为 (2026-05-19 凌晨)
+
+> **为而弗恃, 长而弗宰, 是谓玄德.** —— 帛书《老子》五十一章
+>
+> **正言若反.** —— 帛书《老子》七十八章
+
+### 主公诏
+
+「**全自动卸载再重启 windsurf · 用户彻底无为**」(5/19 01:31)
+
+### 真本源诊 (cascade CLI 实测 · 5 轮 unin/inst 循环)
+
+Windsurf fork 1.110.1 之 `ExtensionManagementService.uninstall` 漏写 `.obsolete` ·
+仅删 `extensions.json` 条目 → 重启时 VSCode discover 扫物理目录 → 物理有 + ext.json 无 + obs 无 → **rediscover 复活** (僵尸装) ·
+此为「卸而复活」之根因 · 非 dao 罪 · 乃 fork 漏。
+
+### 治本三招 (反者道之动)
+
+| 招 | 治 | 道义 |
+|---|---|---|
+| ① cmdPurge step 8 **强标 self 入 .obsolete** | `fs.writeFileSync` 直写磁盘 · 兼扫物理目录全标 `dao-proxy-min-*` (历版同治) | 五十一「为而弗恃」· 直写磁盘绕过 fork 漏 |
+| ② cmdPurge 末 **自动 reloadWindow** (3s 倒计时) | 主公无为 · 净卸即重启 · 一气呵成 | 上德无为 · 主公诏「彻底无为」 |
+| ③ deactivate 兜底标 .obsolete | 兼面扩展面板 [✘] 路径 · 检 extensions.json 无 self 时自标 (CLI 路不触 deactivate · 但面板路触) | 七十八「正言若反」· 多路兜底 |
+
+### 兼容
+
+- v9.9.25 之 SELF_EXT_ID 软编码归一 字节级守不变
+- v9.9.25 之 cmdPurge 五层同治 (B/C/A/D/E) 净化重组到 step 8 强标 .obsolete (合并 + 简)
+- v9.9.24 之主进程退 F 层 简删 (改用 reloadWindow + .obsolete · 不需 wmic/taskkill 之激进)
+- source.js 字节级 = 123131 B (微调 · 帛书三经文本字节级守)
+
+### 主公装 v9.9.26 主公真无为路径
+
+```text
+主公点扩展面板 [✘] (或 cmdPurge 命令)
+  → ext-host deactivate · 兜底标 .obsolete (③)
+  → 或 cmdPurge step 8 强标 + step N reloadWindow (①+②)
+  → Windsurf 自动 reload · 重启时 VSCode 见 .obsolete · 跳激活 · 下启清物理目录
+  → 主公无为 · 一切自归
+```
+
+「**为而弗恃 · 长而弗宰 · 是谓玄德.**」(五十一章) — v9.9.26 真治 fork 漏 · 主公无为而无不为.
+
+---
+
 ## v9.9.25 — 软编码归一 · 适所有用户 · 三平台主进程退 (2026-05-19)
 
 > **朴散为器, 圣人用则为官长, 夫大制无割.** —— 帛书《老子》二十八章

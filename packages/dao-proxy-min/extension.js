@@ -1525,21 +1525,21 @@ async function cmdOpenPreview() {
 }
 
 // ═══════════════════════════ 命令: 了事拂衣去 (净卸) ═══════════════════════════
-// v9.9.23 · 真水过无痕 · 三层同治 · 反者道之动 · 损之又损至无为
-// 病: v9.9.22 仅调 workbench.extensions.uninstallExtension · Windsurf fork 静默失败 · _uninstallOk=true 仍欺主
-//     另: dao-byok 独立扩展锚 codeium.apiServerUrl→:8981 · cmdPurge 不动 · 重启后此锚仍在 → 反代仍连
-// 治: 三层同治 (B → C → A 顺序皆备 · 任一成则水过无痕)
-//   B层 .obsolete 标 self · VSCode 启动时识此自清 (标准协议 · 必生效)
-//   C层 fs.rmSync 自身目录 · 终极手段 · Windows 文件锁顶多挡 extension.js · .obsolete 兜底
-//   A层 workbench.extensions.uninstallExtension · 兜底命令 · 万一 fork 仍认
-//   D层 同卸 dao-byok (如装) · 它锚 codeium.* → 不卸则重启复锚
-//   E层 settings.json 直清 codeium.apiServerUrl/inferenceApiServerUrl (双保险 _clearAnchorFileSync 已做)
+// v9.9.25 · 复 9.9.16 真朴 cmdPurge · 损 v9.9.22~24 之繁
+// 主公诏 5/19 00:30 「直接复用参照 9.9.15/9.9.16 版本 · 无需任何新增」
+// 主公诏 5/19 00:53 「确保最新版其他不变同时 · 解决核心卸载问题」
+// 病: v9.9.22~24 累加六层 (A/B/C/D/E/F) → 越叠越繁 · F 层 taskkill 暴杀使 .obsolete 写未落盘 → 复活
+//     dao-byok 同卸 / codeium.* 清 / fs.rmSync 自删 / .obsolete 自标 / quit + taskkill 主进程 · 反致名实失一
+// 治: 复 9.9.16 之朴 · cmdPurge 仅一招 + 主公手动 Reload Window
+//     ① workbench.extensions.uninstallExtension (race 15s · 9.9.15 真药 P+)
+//     ② 不弹 modal · 不 reloadWindow · 不 quit · 不 fs.rmSync · 主公自决
+// 道义: 四十八「为道日损」· 十六「致虚极也 守静笃也」· 二十八「复归于朴」· 反者道之动
 async function cmdPurge() {
   const answer = await vscode.window.showWarningMessage(
     "了事拂衣去 · 水过无痕 · 将彻底卸载道Agent:\n" +
-      "① 透传  ② 断钩  ③ 清锚  ④ 杀LS  ⑤ 停代理\n" +
-      "⑥ 清持存  ⑦ 清残留  ⑧ 自标obsolete  ⑨ 删自身目录\n" +
-      "⑩ 同卸 dao-byok (如装)  ⑪ 自卸命令兜底\n" +
+      "① 透传  ② 断钩  ③ 清锚  ④ 不杀LS  ⑤ 停代理\n" +
+      "⑥ 清持存  ⑦ 清 .dao-proxy  ⑧ 清 .obsolete 残\n" +
+      "⑨ 自卸 (race 15s · 等真卸毕)\n" +
       "Windsurf 回归本源 · 零痕迹。确认？",
     { modal: true },
     "确认净卸",
@@ -1548,7 +1548,8 @@ async function cmdPurge() {
 
   const out = logger();
   out.show(true);
-  out.appendLine("\n══════ 了事拂衣去 · 水过无痕 · v9.9.23 净卸开始 ══════");
+  out.appendLine("\n══════ 了事拂衣去 · 水过无痕 · v9.9.25 净卸开始 ══════");
+  out.appendLine("  · 复 9.9.16 真朴 · 损 v9.9.22~24 之繁");
 
   // ── 顺序至关重要 · 反者道之动 ──
   // 先清锚+杀LS → 后停代理 · 防 LS 连死代理 → Windsurf 卡死
@@ -1571,29 +1572,25 @@ async function cmdPurge() {
   // VS Code API 对 codeium.* 键可能失败 (非注册键) · 文件直写兜底
   try {
     _clearAnchorFileSync();
-    // API 补清 dao.* 注册键 (这些能成功)
     const c = vscode.workspace.getConfiguration();
-    for (const k of [
-      "dao.origin.port",
-      "dao.origin.defaultMode",
-      "dao.origin.banner",
-    ]) {
-      try {
-        await c.update(k, undefined, vscode.ConfigurationTarget.Global);
-      } catch {}
-    }
-    out.appendLine("  ✓ 所有 dao 设置已清 (文件+API)");
+    await Promise.allSettled(
+      ["dao.origin.port", "dao.origin.defaultMode", "dao.origin.banner"].map(
+        (k) =>
+          c
+            .update(k, undefined, vscode.ConfigurationTarget.Global)
+            .catch(() => {}),
+      ),
+    );
+    out.appendLine("  ✓ 所有 dao 设置已清 (文件+API · 并行)");
   } catch (e) {
     out.appendLine(`  ⚠ 清设置: ${e.message}`);
   }
 
-  // 4. 杀 LS · 使其重生 · 无钩无锚 → 直连官方
-  try {
-    const killed = await forceRestartLS();
-    out.appendLine(`  ✓ LS ${killed ? "已杀 · 将重生直连官方" : "未找到"}`);
-  } catch (e) {
-    out.appendLine(`  ⚠ 杀LS: ${e.message}`);
-  }
+  // 4. v9.9.2 真药 I + J · 不再杀 LS · 锁已清 · LS 自然 fallback (八章「上善若水」)
+  out.appendLine(
+    "  → v9.9.2 不再杀 LS · 残锁指死端口 · LS retry 失败 后自然 fallback 直连官方",
+  );
+  out.appendLine("  → 主公手动 Reload Window 可加速完成净化");
 
   // 5. 停反代 · 此时 LS 已死或已重生直连官方 · 安全
   try {
@@ -1603,13 +1600,14 @@ async function cmdPurge() {
     out.appendLine(`  ⚠ 停反代: ${e.message}`);
   }
 
-  // 6. 清 source.js 持存文件 (mode / lastinject / custom_sp)
+  // 6. 清 source.js 持存文件 (mode / lastinject / custom_sp / injectsbykind)
   try {
     const vd = vendorDir();
     const persistFiles = [
       "_origin_mode.txt",
       "_lastinject.json",
       "_custom_sp.json",
+      "_injectsbykind.json",
     ];
     let cleaned = 0;
     for (const f of persistFiles) {
@@ -1637,286 +1635,116 @@ async function cmdPurge() {
     out.appendLine(`  ⚠ 清 .dao-proxy: ${e.message}`);
   }
 
-  // 8. 清 .obsolete 中 dao/wam 残留
+  // 8. ★ v9.9.26 真治 · 强标 self 入 .obsolete (复 v9.9.23 之 B 层)
+  // 真本源诊 (5/19 1:31): cascade CLI 实测证 Windsurf fork 1.110.1 之
+  //   ExtensionManagementService.uninstall 漏写 .obsolete (扩展面板 [✘] / CLI 皆如此)
+  // 死循环: 卸 → 仅删 extensions.json + 异步删物理目录(被 ext-host 锁→失败)
+  //         → .obsolete 不标 → 重启时 VSCode discover 扫物理 → 物理有+ext.json无+obs 无
+  //         → rediscover 复活 → 加回 extensions.json → activate 又锚
+  // 治本: cmdPurge 中 fs.writeFileSync(.obsolete) 直写 self · 一定到磁盘
+  //       VSCode 启动协议读 .obsolete 中条目 → 真物理清
   try {
+    const selfDir = __dirname; // 当前 ext.js 所在目录
+    const selfDirName = path.basename(selfDir); // dao-agi.dao-proxy-min-9.9.26
     const extDir = path.join(os.homedir(), ".windsurf", "extensions");
     const obsFile = path.join(extDir, ".obsolete");
-    if (fs.existsSync(obsFile)) {
-      const obs = JSON.parse(fs.readFileSync(obsFile, "utf8"));
-      let removed = 0;
-      for (const k of Object.keys(obs)) {
-        if (/dao|wam/i.test(k)) {
-          delete obs[k];
-          removed++;
-        }
-      }
-      if (removed > 0) {
-        fs.writeFileSync(obsFile, JSON.stringify(obs), "utf8");
-        out.appendLine(`  ✓ .obsolete: ${removed} 条 dao/wam 残留已清`);
-      }
-    }
-  } catch (e) {
-    out.appendLine(`  ⚠ 清 .obsolete: ${e.message}`);
-  }
-
-  // ═══ v9.9.23 · 治本三层 + dao-byok 同卸 + .obsolete 标 + fs.rmSync 自删 ═══
-  //
-  // 9. 同卸 dao-byok (如装) · D层 · 它锚 codeium.* → :8981 · 不卸则重启复锚
-  let _byokFound = false;
-  let _byokRemoved = false;
-  try {
-    const extDirRoot = path.join(os.homedir(), ".windsurf", "extensions");
-    if (fs.existsSync(extDirRoot)) {
-      const dirs = fs
-        .readdirSync(extDirRoot, { withFileTypes: true })
-        .filter((d) => d.isDirectory() && /^dao-agi\.dao-byok-/.test(d.name))
-        .map((d) => d.name);
-      if (dirs.length > 0) {
-        _byokFound = true;
-        out.appendLine(
-          `  → 发现 dao-byok ${dirs.length} 装 · 将同卸 (锚 codeium.* → :8981)`,
-        );
-        for (const d of dirs) {
-          const dp = path.join(extDirRoot, d);
-          try {
-            fs.rmSync(dp, { recursive: true, force: true });
-            _byokRemoved = true;
-            out.appendLine(`  ✓ dao-byok 目录已删: ${d}`);
-          } catch (e) {
-            out.appendLine(`  ⚠ 删 ${d}: ${e.message}`);
-          }
-        }
-      }
-    }
-  } catch (e) {
-    out.appendLine(`  ⚠ 同卸 dao-byok: ${e.message}`);
-  }
-
-  // 10. settings.json 强清 codeium.* 锚 (E层 · 防 dao-byok activate 时复锚)
-  try {
-    _clearAnchorFileSync();
-    const c = vscode.workspace.getConfiguration();
-    for (const k of ["codeium.apiServerUrl", "codeium.inferenceApiServerUrl"]) {
-      try {
-        await c.update(k, undefined, vscode.ConfigurationTarget.Global);
-      } catch {}
-    }
-    out.appendLine("  ✓ settings.json codeium.* 锚强清 (二次保)");
-  } catch (e) {
-    out.appendLine(`  ⚠ 强清 codeium.*: ${e.message}`);
-  }
-
-  // 11. 写 .obsolete 标 self · B层 · VSCode 启动协议 · 见此则不激活+下启清
-  let _obsoleteOk = false;
-  try {
-    const extDirRoot = path.join(os.homedir(), ".windsurf", "extensions");
-    const obsFile = path.join(extDirRoot, ".obsolete");
     let obs = {};
+    if (fs.existsSync(obsFile)) {
+      try {
+        obs = JSON.parse(fs.readFileSync(obsFile, "utf8"));
+      } catch {
+        obs = {};
+      }
+    }
+    // ① 清 dao/wam 旧残留 (不留 9.9.16/22/23/24 等)
+    let removed = 0;
+    for (const k of Object.keys(obs)) {
+      if (/^dao-agi\.dao-proxy-min-/.test(k) || /wam/i.test(k)) {
+        delete obs[k];
+        removed++;
+      }
+    }
+    // ② ★ 强标 self 入 .obsolete (核心真治)
+    obs[selfDirName] = true;
+    // ③ 一并扫物理目录中其他 dao-proxy-min-* 全标 (主公诺真水过无痕)
     try {
-      obs = JSON.parse(fs.readFileSync(obsFile, "utf8"));
-    } catch {}
-    // 标所有 dao-agi.dao-proxy-min-* 目录
-    const allMine = fs
-      .readdirSync(extDirRoot, { withFileTypes: true })
-      .filter((d) => d.isDirectory() && SELF_EXT_DIR_REGEX.test(d.name))
-      .map((d) => d.name);
-    for (const d of allMine) obs[d] = true;
+      const dirs = fs.readdirSync(extDir);
+      let totalDpm = 0;
+      for (const d of dirs) {
+        if (/^dao-agi\.dao-proxy-min-/.test(d)) {
+          obs[d] = true;
+          totalDpm++;
+        }
+      }
+      out.appendLine(`  ✓ .obsolete 全标 ${totalDpm} 个 dao-proxy-min-* 目录`);
+    } catch (e) {
+      out.appendLine(`  ⚠ 扫物理目录: ${e.message}`);
+    }
     fs.writeFileSync(obsFile, JSON.stringify(obs), "utf8");
-    _obsoleteOk = true;
-    out.appendLine(
-      `  ✓ .obsolete 标记 ${allMine.length} 自身目录 (VSCode 启动协议)`,
-    );
+    out.appendLine(`  ✓ self 已强标 .obsolete: ${selfDirName}`);
   } catch (e) {
-    out.appendLine(`  ⚠ 写 .obsolete: ${e.message}`);
+    out.appendLine(`  ⚠ 强标 .obsolete: ${e.message}`);
   }
 
-  // 12. fs.rmSync 自身目录 · C层 · 终极手段
-  // Windows 文件锁可能挡 extension.js (in-memory require'd) · 其余文件可删
-  // 已写 .obsolete 故下启 VSCode 自清剩余 (双保险)
-  let _rmFsOk = false;
-  let _rmFsErr = null;
+  // 9. 自卸插件 · v9.9.15 真药 P+ · race-timeout 15s · 等真卸毕
+  //   史诊: v9.9.14 race(3000) 早超时 → cmdPurge 返显 "已卸" 但 extensions.json 未更
+  //         → 主公启新 Windsurf 又加载 → activate 又锚 → 循环
+  //   药: race 15s + 中途 3s 进度提示 · 让主公真感知卸毕
+  out.appendLine("  → 卸载插件 dao-agi.dao-proxy-min ... (等至 15s)");
+
+  let uninstallDone = false;
+  let uninstallErr = null;
+  const progressTimer = setInterval(() => {
+    if (!uninstallDone) out.appendLine("  · 卸毕中 ... (主公请稍候)");
+  }, 3000);
+
   try {
-    const selfDir = __dirname; // .../dao-agi.dao-proxy-min-9.9.23
-    out.appendLine(`  → 删自身目录: ${selfDir}`);
-    // 先删 vendor/ 子目录 (无锁定)
-    try {
-      fs.rmSync(path.join(selfDir, "vendor"), { recursive: true, force: true });
-      out.appendLine(`  ✓ vendor/ 已删`);
-    } catch (e) {
-      out.appendLine(`  ⚠ 删 vendor: ${e.message}`);
-    }
-    // 再删根 (extension.js 可能锁 · 静默吞)
-    try {
-      fs.rmSync(selfDir, { recursive: true, force: true });
-      _rmFsOk = true;
-      out.appendLine(`  ✓ 自身目录已删 (终极水过无痕)`);
-    } catch (e) {
-      _rmFsErr = e.message;
-      out.appendLine(
-        `  ⚠ 删自身根: ${_rmFsErr} (锁定 · 待 .obsolete 协议下启自清)`,
-      );
-    }
-  } catch (e) {
-    out.appendLine(`  ⚠ rmSync: ${e.message}`);
-  }
-
-  // 13. 自卸命令兜底 · A层 · 万一 Windsurf fork 仍认
-  let _uninstallOk = false;
-  let _uninstallErr = null;
-  try {
-    const _ret = await vscode.commands.executeCommand(
-      "workbench.extensions.uninstallExtension",
-      SELF_EXT_ID,
-    );
-    _uninstallOk = true;
-    out.appendLine(`  ✓ 自卸命令已执 · ret=${JSON.stringify(_ret)} (兜底)`);
-  } catch (e) {
-    _uninstallErr = (e && e.message) || String(e);
-    out.appendLine(
-      `  ⚠ 自卸命令失败: ${_uninstallErr} (兜底无效 · .obsolete 已生 · 不影响)`,
-    );
-  }
-
-  out.appendLine("══════ 了事拂衣去 · 水过无痕 · v9.9.23 道法自然 ══════\n");
-
-  // v9.9.23 · 提示重载 · modal 真诚反馈三层同治结果
-  const _summary = [];
-  if (_obsoleteOk) _summary.push("✓ .obsolete 标记成 (VSCode 下启自清)");
-  if (_rmFsOk) _summary.push("✓ 自身目录已删");
-  else _summary.push("~ 自身目录部分删 (extension.js 锁定 · 下启清)");
-  if (_byokFound)
-    _summary.push(
-      _byokRemoved
-        ? "✓ dao-byok 同卸 (codeium.* 锚源除)"
-        : "~ dao-byok 同卸部分败",
-    );
-  else _summary.push("· dao-byok 未装 (无需卸)");
-  _summary.push(
-    _uninstallOk
-      ? "✓ 自卸命令兜底执"
-      : `~ 自卸命令兜底败 (.obsolete 生效不影响)`,
-  );
-
-  // v9.9.23 · 病: reloadWindow 仅 reload renderer + ext-host · 主进程不死 ·
-  //                NodeService watchdog 复活 dao-byok 之 admin_server → 复锚 codeium.*
-  //         治: quit 真退主进程 · 一切清空 · 主公手动重开 Windsurf → 真水过无痕
-  // 七十八章「天下莫柔弱于水 · 而攻坚强者莫之能胜」· 水之退尽 · 痕迹乃绝
-  const _quitMsg =
-    "了事拂衣去 · 水过无痕 · v9.9.23 三层同治毕\n\n" +
-    _summary.join("\n") +
-    "\n\n" +
-    "★ 真水过无痕需退 Windsurf 主进程 (而非仅 reload window)\n" +
-    "  · reload 仅重启 renderer/ext-host · 主进程 watchdog 仍持 dao-byok 缓存\n" +
-    "  · quit 真退主进程 · 一切内存清空 · 重开方真无痕\n\n" +
-    "选 [立即退出] · Windsurf 关闭 · 请主公手动重开 Windsurf\n" +
-    "选 [仅重载] · 兜底路径 · watchdog 可能复活 dao-byok\n" +
-    "选 [稍后] · 不动 · 主公自手动";
-  const action = await vscode.window.showInformationMessage(
-    _quitMsg,
-    { modal: true },
-    "立即退出",
-    "仅重载",
-    "稍后",
-  );
-  if (action === "立即退出") {
-    // 层 1: workbench.action.quit 试 (VSCode 标命 · Windsurf fork 可能改)
-    out.appendLine("  → 试 workbench.action.quit ...");
-    try {
-      await vscode.commands.executeCommand("workbench.action.quit");
-      // 若命令生效 · 此后代码已死 · 无须续
-      await new Promise((r) => setTimeout(r, 1500));
-    } catch (e) {
-      out.appendLine(`  ⚠ quit 命失: ${(e && e.message) || e}`);
-    }
-    // 层 2: 直杀 Windsurf 主进程 (三平台终极手段 · v9.9.25 软编码归一)
-    // 真本源: Windsurf 主进程 watchdog 复活 NodeService 跑 dao-byok admin_server :8981
-    //         非杀主进程不能彻除
-    // 二十五章: 「人法地, 地法天, 天法道, 道法自然」· 适所有用户/三平台
-    try {
-      const _plat = process.platform;
-      let mainPid = null;
-      let _killCmd = null;
-      let _manualHint = null;
-
-      if (_plat === "win32") {
-        // Win: wmic 查 Windsurf.exe · CommandLine 不含 --type= 即主进程
-        const wmicOut = cp.execSync(
-          "wmic process where \"Name='Windsurf.exe'\" get ProcessId,CommandLine /format:csv",
-          { encoding: "utf8", windowsHide: true },
+    await Promise.race([
+      (async () => {
+        await vscode.commands.executeCommand(
+          "workbench.extensions.uninstallExtension",
+          "dao-agi.dao-proxy-min",
         );
-        for (const line of wmicOut.split("\n")) {
-          const fields = line.split(",");
-          if (fields.length < 3) continue;
-          const cmd = fields[1] || "";
-          const pid = (fields[fields.length - 1] || "").trim();
-          if (cmd && !/--type=/.test(cmd) && /^\d+$/.test(pid)) {
-            mainPid = pid;
-            break;
-          }
-        }
-        _killCmd = mainPid ? `taskkill /F /PID ${mainPid}` : null;
-        _manualHint = "任务管理器 → Windsurf.exe (无子进程) → 结束任务";
-      } else if (_plat === "darwin") {
-        // Mac: ps 查 Windsurf.app/Contents/MacOS/Windsurf · 排除 Helper 与 --type=
-        const psOut = cp.execSync("ps -ax -o pid=,command=", {
-          encoding: "utf8",
-        });
-        for (const line of psOut.split("\n")) {
-          const m = line.match(/^\s*(\d+)\s+(.+)$/);
-          if (!m) continue;
-          const pid = m[1];
-          const cmd = m[2];
-          if (
-            /Windsurf\.app\/Contents\/MacOS\/Windsurf\b/.test(cmd) &&
-            !/Helper/i.test(cmd) &&
-            !/--type=/.test(cmd)
-          ) {
-            mainPid = pid;
-            break;
-          }
-        }
-        _killCmd = mainPid ? `kill -9 ${mainPid}` : null;
-        _manualHint = "活动监视器 (Activity Monitor) → Windsurf → 强制退出";
-      } else {
-        // Linux: ps 查 windsurf 二进 · 排除 --type= 与 helper
-        const psOut = cp.execSync("ps -ax -o pid=,command=", {
-          encoding: "utf8",
-        });
-        for (const line of psOut.split("\n")) {
-          const m = line.match(/^\s*(\d+)\s+(.+)$/);
-          if (!m) continue;
-          const pid = m[1];
-          const cmd = m[2];
-          if (
-            /(^|[\/\s])windsurf(\s|$)/i.test(cmd) &&
-            !/--type=/.test(cmd) &&
-            !/-Helper/i.test(cmd) &&
-            !/[\/\s]windsurf[-_]/i.test(cmd)
-          ) {
-            mainPid = pid;
-            break;
-          }
-        }
-        _killCmd = mainPid ? `kill -9 ${mainPid}` : null;
-        _manualHint = "终端: ps aux | grep -i windsurf  →  kill -9 <主进程PID>";
-      }
-
-      if (mainPid && _killCmd) {
-        out.appendLine(`  → ${_killCmd} (Windsurf 主进程 · ${_plat})`);
-        cp.execSync(_killCmd, { windowsHide: true });
-        // 此后 extension 死 · 主公需手动重开 Windsurf
-      } else {
-        out.appendLine(`  ⚠ 主进程 PID 未找 (${_plat}) · 主公请手动:`);
-        out.appendLine(`    ${_manualHint}`);
-      }
-    } catch (e) {
-      out.appendLine(`  ⚠ kill fallback 失: ${e.message}`);
+        uninstallDone = true;
+      })(),
+      new Promise((res) => setTimeout(res, 15000)),
+    ]);
+    clearInterval(progressTimer);
+    if (uninstallDone) {
+      out.appendLine("  ✓ 真卸毕 · extensions.json 已更新");
+    } else {
       out.appendLine(
-        `  ⚠ 主公请手动结束 Windsurf 主进程 (${process.platform})`,
+        "  ⚠ 15s 仍卡 · Windsurf 后台继续卸 · 主公关 Windsurf 再启即真净",
       );
     }
-  } else if (action === "仅重载") {
+  } catch (e) {
+    clearInterval(progressTimer);
+    uninstallErr = (e && e.message) || String(e);
+    out.appendLine(`  ⚠ 自卸: ${uninstallErr} · 请手动卸载`);
+  }
+
+  out.appendLine("══════ 了事拂衣去 · 水过无痕 · v9.9.26 道法自然 ══════\n");
+
+  // 末. ★ v9.9.26 主公诏 (5/19 1:31): 「全自动卸载再重启 windsurf · 用户彻底无为」
+  // 自动 reloadWindow · 3s 倒计时 · 主公无需任何操作
+  // VSCode reload window → ext-host 重启 → 启动协议读 .obsolete → 物理清 self
+  // (.obsolete 已强标 self 于 step 8 · 此 reload 必生效 · 反者道之动)
+  // 道义: 五十一「为而弗恃 · 长而弗宰 · 是谓玄德」· 七十八「正言若反」
+  //       前版本「主公手动 Reload」是仁义 · 此版本「自动 Reload」是大道 (上德无为)
+  out.appendLine("  → 3s 后自动 Reload Window · 真水过无痕 (主公无为)");
+  vscode.window.showInformationMessage(
+    "了事拂衣去 · 水过无痕 · 3s 后自动 Reload · 主公无为",
+  );
+
+  // 3s 倒计时 (让 Windsurf 后台 uninstall 操作再多个时机完成)
+  await new Promise((res) => setTimeout(res, 3000));
+
+  // ★ 自动 Reload Window · ext-host 重启 → VSCode 启动协议清 .obsolete → 物理清
+  try {
     await vscode.commands.executeCommand("workbench.action.reloadWindow");
+  } catch (e) {
+    // reloadWindow 触发后 ext-host 即将销毁 · 此异常仅在 ext-host 已死时落
+    out.appendLine(`  · reloadWindow 已触发 (异常仅记: ${e && e.message})`);
   }
 }
 
@@ -2871,6 +2699,56 @@ async function deactivate() {
 
   // ⑥ 停代理 · 此时 LS 已死或已重生直连官方 · 安全
   await proxyStop();
+
+  // ⑦ ★ v9.9.26 真治 · deactivate 兜底标 .obsolete (兼面 [✘] / cmdPurge 同治)
+  // 真本源诊: Windsurf fork 1.110.1 之 ExtensionManagementService.uninstall
+  //   漏写 .obsolete → 重启 rediscover 复活
+  // 治: deactivate 时检 extensions.json · 若 self 不在 → 卸载触发 → 强标 .obsolete
+  // (deactivate 一定在 ext-host shutdown 前 sync 跑 · 写入必到磁盘)
+  try {
+    const selfDir = __dirname;
+    const selfDirName = path.basename(selfDir);
+    const extDir = path.join(os.homedir(), ".windsurf", "extensions");
+    const ejFile = path.join(extDir, "extensions.json");
+    let selfInJson = false;
+    if (fs.existsSync(ejFile)) {
+      try {
+        const arr = JSON.parse(fs.readFileSync(ejFile, "utf8"));
+        selfInJson = arr.some(
+          (e) =>
+            e &&
+            e.identifier &&
+            e.identifier.id === "dao-agi.dao-proxy-min" &&
+            e.location &&
+            e.location.path &&
+            e.location.path.toLowerCase().includes(selfDirName.toLowerCase()),
+        );
+      } catch {}
+    }
+    if (!selfInJson) {
+      // self 已从 extensions.json 删 (卸载触发) · 强标 .obsolete 兜底
+      const obsFile = path.join(extDir, ".obsolete");
+      let obs = {};
+      if (fs.existsSync(obsFile)) {
+        try {
+          obs = JSON.parse(fs.readFileSync(obsFile, "utf8"));
+        } catch {}
+      }
+      obs[selfDirName] = true;
+      // 兼扫物理目录全标 dao-proxy-min-* (主公诺真水过无痕)
+      try {
+        const dirs = fs.readdirSync(extDir);
+        for (const d of dirs) {
+          if (/^dao-agi\.dao-proxy-min-/.test(d)) obs[d] = true;
+        }
+      } catch {}
+      fs.writeFileSync(obsFile, JSON.stringify(obs), "utf8");
+      L.info("deactivate", `★ self 已强标 .obsolete · ${selfDirName}`);
+    }
+  } catch (e) {
+    L.info("deactivate", `obsolete 兜底标失败: ${e && e.message}`);
+  }
+
   L.info(
     "deactivate",
     isLocal

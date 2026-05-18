@@ -1,8 +1,8 @@
 {
   "name": "dao-proxy-min",
   "displayName": "道Agent · 反者道之动 · 弱者道之用",
-  "description": "v9.9.25 软编码归一·适所有用户·三平台主进程退 (二十八章「朴散为器·圣人用则为官长·夫大制无割」). 治本两味: ①抽 SELF_EXT_ID 自 package.json (publisher+name) · 软编码归一 · 适所有 fork/重命名/重发布; ②cmdPurge F 层主进程退三平台兜底 (Win=wmic+taskkill / Mac=ps+kill -9 / Linux=ps+kill -9) · 不再 Win-only · 适所有用户. 承 v9.9.24 (五层同治+主进程退) + v9.9.22 (三诉同治) + v9.9.21 (软编码 vendorDir). 反者道之动 · 损之又损至无为.",
-  "version": "9.9.25",
+  "description": "v9.9.26 真治 · 强标 self 入 .obsolete + 自动 reloadWindow (主公诏 5/19 1:31「全自动卸载再重启 windsurf · 用户彻底无为」). 真本源诊 (cascade CLI 实测): Windsurf fork 1.110.1 之 ExtensionManagementService.uninstall 漏写 .obsolete · 仅删 extensions.json 条目 → 重启时 VSCode discover 扫物理目录 → 物理有+ext.json无+obs无 → rediscover 复活. 治本三招 (反者道之动): ① cmdPurge step 8 强标 self 入 .obsolete (fs.writeFileSync 直写磁盘 · 兼扫物理目录全标 dao-proxy-min-*) ② cmdPurge 末自动 reloadWindow (3s 倒计时 · 主公无为) ③ deactivate 兜底标 .obsolete (兼面扩展面板 [✘] 路径 · 检 extensions.json 无 self 时自标). 道义: 五十一「为而弗恃 · 长而弗宰 · 是谓玄德」· 七十八「正言若反」· 上德无为. 承 v9.9.25 朴 (cmdPurge 197 行) + v9.9.22 三诉同治.",
+  "version": "9.9.26",
   "publisher": "dao-agi",
   "license": "Apache-2.0",
   "engines": {
