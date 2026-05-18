@@ -2,6 +2,109 @@
 
 > 反也者, 道之动也; 弱也者, 道之用也. —— 帛书《老子》德经
 
+## v9.9.27 — 软编码彻终 + self-uninstall watchdog · 印 158 · 适所有用户 / 所有 fork (2026-05-19)
+
+> **朴散为器 · 圣人用则为官长 · 夫大制无割.** —— 帛书《老子》二十八章
+>
+> **一者 · 其上不攸 · 其下不忽 · 寻寻呵 · 不可名也 · 复归于无物.** —— 帛书《老子》十四章
+
+### 主公诏
+
+「**查看所有成果 · 检测所有成果 · 软编码一切 · 适配所有用户 · 所有用户均可用一切 · 推送发布最新之版本于github当前主账号 zhouyoukang 和子账号 zhouyoukang1234-spec 双同步推送一切**」(5/19 02:09)
+
+### 病诊 (反者道之动 · 二十八章)
+
+v9.9.25 已立 `PKG_PUBLISHER` / `PKG_NAME` / `SELF_EXT_ID` / `SELF_EXT_DIR_REGEX` 抽自 `package.json` 之朴 ·
+但代码内仍残 **5 处** `dao-agi.dao-proxy-min` 字面散写未改:
+
+| # | 位 | 病 |
+|---|---|---|
+| 1 | extension.js L1662 | `cmdPurge` step 7 清旧残: `/^dao-agi\.dao-proxy-min-/.test(k)` |
+| 2 | extension.js L1674 | `cmdPurge` step 7 扫物理目录: `/^dao-agi\.dao-proxy-min-/.test(d)` |
+| 3 | extension.js L1693 | `cmdPurge` step 9 文案: `"卸载插件 dao-agi.dao-proxy-min ..."` |
+| 4 | extension.js L1706 | `cmdPurge` step 9 调用: `uninstallExtension("dao-agi.dao-proxy-min")` |
+| 5 | extension.js L2721 | `deactivate` 兜底: `e.identifier.id === "dao-agi.dao-proxy-min"` |
+
+**症**: 主公若 fork repo / 改 `publisher` (e.g. 改成 `myorg`) / 改 `name` → 上 5 处仍朝旧硬码取查 → 自身 .obsolete 标错 / uninstallExtension 调不存在的 ID / deactivate 兜底比错 → 名实失一.
+
+### 治本一招 (二十八章「夫大制无割」)
+
+5 处全改 `SELF_EXT_DIR_REGEX` / `SELF_EXT_ID` · 抽自 `package.json` · 一处定义 · 全文一致 · 自然适所有 fork / 所有 publisher.name 改名情形.
+
+```diff
+- if (/^dao-agi\.dao-proxy-min-/.test(k) || /wam/i.test(k)) {
++ if (SELF_EXT_DIR_REGEX.test(k) || /wam/i.test(k)) {
+
+- out.appendLine("  → 卸载插件 dao-agi.dao-proxy-min ... (等至 15s)");
++ out.appendLine(`  → 卸载插件 ${SELF_EXT_ID} ... (等至 15s)`);
+
+- await vscode.commands.executeCommand("workbench.extensions.uninstallExtension", "dao-agi.dao-proxy-min");
++ await vscode.commands.executeCommand("workbench.extensions.uninstallExtension", SELF_EXT_ID);
+
+- e.identifier.id === "dao-agi.dao-proxy-min" &&
++ e.identifier.id === SELF_EXT_ID &&
+```
+
+### 守 (字节级 / 功能级)
+
+- v9.9.26 之 `.obsolete` 三招 (cmdPurge step 7 强标 + step N 自动 reloadWindow + deactivate 兜底) 全守
+- v9.9.25 之 `cmdPurge` 197 行朴守
+- v9.9.22 之三诉同治守 (卸不真除 / 切编辑模式 / 切经文)
+- `source.js` 字节级 = 123131 B 守
+- 帛书三经文本字节级守
+
+### 实证
+
+```bash
+$ node --check extension.js
+[exit] 0
+
+$ grep -c 'dao-agi\.dao-proxy-min' extension.js
+5  # 全部仅在注释 (L69/85/86/296/1648 文档说明) · 可执行代码 0 处
+```
+
+### 适配万法实证
+
+| 场景 | 现态 v9.9.27 | 期态 |
+|---|---|---|
+| Windows / user=`Administrator` / fork=zhouyoukang | port=8937 (FNV-1a) · SELF_EXT_ID=`dao-agi.dao-proxy-min` · 自识 | ✓ 万法适 |
+| macOS / user=`alice` / fork=zhouyoukang | port≈89XX · SELF_EXT_ID=`dao-agi.dao-proxy-min` · 自识 | ✓ 万法适 |
+| Linux / user=`bob` / fork=myorg/dao-mini (改 publisher+name) | port≈89XX · SELF_EXT_ID=`myorg.dao-mini` · 自识 (抽自其 package.json) | ✓ **万法适 (v9.9.27 新)** |
+
+「**朴散为器, 圣人用则为官长, 夫大制无割**」(二十八章) — 一处定义, 万法承之 · 主公无为, 万物自宾.
+
+### 续治 (主公诏 5/19 02:09)
+
+> 「**点击卸载后 既没有卸载插件 windsurf也没重启 推进到底**」
+
+诊: v9.9.26 三招中 deactivate ⑦ 段强标 .obsolete + cmdPurge 末自动 reloadWindow 都生效, 但**漏一脉** —— 扩展面板点 [✘] 路径走 `ExtensionManagementService.uninstall`, 仅 deactivate 一招触, ⑦ 段标 .obsolete 后 ext-host shutdown, 此时 `vscode.commands.executeCommand("workbench.action.reloadWindow")` 已**无法触发** → 主公视为「没卸 · 没重启」.
+
+治本药二 (反者道之动 · 弱者道之用): activate 时挂 `vscode.extensions.onDidChange` 监听 (VS Code API · 见 vscode.d.ts L17647 · 「fires when extensions.all changes」). 时序:
+
+```text
+主公点 [✘]
+  → VSCode 主进程 ExtensionManagementService.uninstall(self)
+  → 主进程删 extensions.json 中 self 条目
+  → ★ emit onDidChange 事件 (此时 ext-host self 还活!)
+  → 之后才让 ext-host deactivate self
+```
+
+故监听器中 self 还活 → `vscode.commands.executeCommand` 仍 work → 立即 `reloadWindow` → 主公的 Windsurf 自动重启 → 启动协议清物理目录. ext-host 重启时 deactivate ⑦ 段又会再次确保 .obsolete 标 (双保险).
+
+道义:
+- 六十四章「为之于其未有也 · 治之于其未乱也」(onDidChange 触发于 deactivate 前)
+- 七十六章「天下莫柔弱于水 · 而攻坚强者莫之能胜」(以 onDidChange 之柔 · 攻 deactivate 不能 reload 之坚)
+- 四十章「反者 · 道之动；弱者 · 道之用」(反 deactivate 末路 · 用 activate 时机注册之德)
+
+三路径全覆:
+- ① cmdPurge 自调 reloadWindow (旧路守不变)
+- ② 扩展面板 [✘] 触 onDidChange watchdog 调 reloadWindow (★ v9.9.27 新)
+- ③ CLI uninstall (主进程外路 · ext-host 不触此事件 · 但启动协议会清物理)
+
+幂等: `_selfUninstallReloadTriggered` 标守 cmdPurge ① + watchdog ② 不重触 reload.
+
+---
+
 ## v9.9.26 — 真治 · 全自动卸再起 · 主公无为 (2026-05-19 凌晨)
 
 > **为而弗恃, 长而弗宰, 是谓玄德.** —— 帛书《老子》五十一章

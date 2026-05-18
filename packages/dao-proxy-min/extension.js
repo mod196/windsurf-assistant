@@ -1656,27 +1656,27 @@ async function cmdPurge() {
         obs = {};
       }
     }
-    // ① 清 dao/wam 旧残留 (不留 9.9.16/22/23/24 等)
+    // ① 清 dao/wam 旧残留 (不留 9.9.16/22/23/24 等) · v9.9.27 软编码 SELF_EXT_DIR_REGEX
     let removed = 0;
     for (const k of Object.keys(obs)) {
-      if (/^dao-agi\.dao-proxy-min-/.test(k) || /wam/i.test(k)) {
+      if (SELF_EXT_DIR_REGEX.test(k) || /wam/i.test(k)) {
         delete obs[k];
         removed++;
       }
     }
     // ② ★ 强标 self 入 .obsolete (核心真治)
     obs[selfDirName] = true;
-    // ③ 一并扫物理目录中其他 dao-proxy-min-* 全标 (主公诺真水过无痕)
+    // ③ 一并扫物理目录中其他 dao-proxy-min-* 全标 (主公诺真水过无痕) · v9.9.27 软编码
     try {
       const dirs = fs.readdirSync(extDir);
       let totalDpm = 0;
       for (const d of dirs) {
-        if (/^dao-agi\.dao-proxy-min-/.test(d)) {
+        if (SELF_EXT_DIR_REGEX.test(d)) {
           obs[d] = true;
           totalDpm++;
         }
       }
-      out.appendLine(`  ✓ .obsolete 全标 ${totalDpm} 个 dao-proxy-min-* 目录`);
+      out.appendLine(`  ✓ .obsolete 全标 ${totalDpm} 个 ${PKG_NAME}-* 目录`);
     } catch (e) {
       out.appendLine(`  ⚠ 扫物理目录: ${e.message}`);
     }
@@ -1690,7 +1690,7 @@ async function cmdPurge() {
   //   史诊: v9.9.14 race(3000) 早超时 → cmdPurge 返显 "已卸" 但 extensions.json 未更
   //         → 主公启新 Windsurf 又加载 → activate 又锚 → 循环
   //   药: race 15s + 中途 3s 进度提示 · 让主公真感知卸毕
-  out.appendLine("  → 卸载插件 dao-agi.dao-proxy-min ... (等至 15s)");
+  out.appendLine(`  → 卸载插件 ${SELF_EXT_ID} ... (等至 15s)`);
 
   let uninstallDone = false;
   let uninstallErr = null;
@@ -1703,7 +1703,7 @@ async function cmdPurge() {
       (async () => {
         await vscode.commands.executeCommand(
           "workbench.extensions.uninstallExtension",
-          "dao-agi.dao-proxy-min",
+          SELF_EXT_ID,
         );
         uninstallDone = true;
       })(),
@@ -1723,18 +1723,22 @@ async function cmdPurge() {
     out.appendLine(`  ⚠ 自卸: ${uninstallErr} · 请手动卸载`);
   }
 
-  out.appendLine("══════ 了事拂衣去 · 水过无痕 · v9.9.26 道法自然 ══════\n");
+  out.appendLine("══════ 了事拂衣去 · 水过无痕 · v9.9.27 道法自然 ══════\n");
 
-  // 末. ★ v9.9.26 主公诏 (5/19 1:31): 「全自动卸载再重启 windsurf · 用户彻底无为」
+  // 末. ★ v9.9.27 主公诏 (5/19 1:31): 「全自动卸载再重启 windsurf · 用户彻底无为」
   // 自动 reloadWindow · 3s 倒计时 · 主公无需任何操作
   // VSCode reload window → ext-host 重启 → 启动协议读 .obsolete → 物理清 self
   // (.obsolete 已强标 self 于 step 8 · 此 reload 必生效 · 反者道之动)
   // 道义: 五十一「为而弗恃 · 长而弗宰 · 是谓玄德」· 七十八「正言若反」
   //       前版本「主公手动 Reload」是仁义 · 此版本「自动 Reload」是大道 (上德无为)
+  // ★ v9.9.27 同时活 self-uninstall watchdog (onDidChange) · cmdPurge / 扩展面板 [✘] / CLI 全路径覆
   out.appendLine("  → 3s 后自动 Reload Window · 真水过无痕 (主公无为)");
   vscode.window.showInformationMessage(
     "了事拂衣去 · 水过无痕 · 3s 后自动 Reload · 主公无为",
   );
+
+  // 标记 watchdog 不再重复触发 (cmdPurge 已自调 reload · watchdog 退让)
+  _selfUninstallReloadTriggered = true;
 
   // 3s 倒计时 (让 Windsurf 后台 uninstall 操作再多个时机完成)
   await new Promise((res) => setTimeout(res, 3000));
@@ -2644,6 +2648,13 @@ function activate(ctx) {
     ctx.subscriptions.push({ dispose: () => clearInterval(watchdogId) });
     L.info("activate", "watchdog 启 · 30s 自愈一周");
 
+    // ── v9.9.27 真治 · self-uninstall watchdog (onDidChange 监听 → 自动 reload) ──
+    // 主公诏 5/19 2:09: 「点击卸载后 既没有卸载插件 windsurf也没重启 推进到底」
+    // 真本源: deactivate 时 ext-host shutdown · 已无法触 reloadWindow
+    // 真治: vscode.extensions.onDidChange 事件 → ext-host 还活时收到 → 调 reload
+    // 三路径全覆: ① cmdPurge 自调 ② 扩展面板 [✘] ③ CLI uninstall (主进程外路 · ext-host 不触此事件 · 但启动协议会清)
+    _setupSelfUninstallWatchdog(ctx);
+
     // ── v9.9.0 · 印 124 · 第一细药 · 外接 api 自启 (默关) ──
     // 帛书六十三章: 图难于其易 · 为大于其细 · 终不为大 · 故能成其大
     // dao.外接api.enabled=true 才启 · 失败不影响 min 反代主体
@@ -2653,6 +2664,86 @@ function activate(ctx) {
   } catch (e) {
     L.error("activate", `FATAL activation error: ${e.stack || e.message}`);
     vscode.window.showErrorMessage(`道Agent 激活失败: ${e.message}`);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// v9.9.27 真治 · self-uninstall watchdog · 大道至简 (反者道之动)
+// ═══════════════════════════════════════════════════════════════════
+// 主公诏 5/19 2:09: 「点击卸载后 既没有卸载插件 windsurf 也没重启 推进到底」
+//
+// 真本源诊 (印 158 · cascade 实证):
+//   v9.9.26 三招中 deactivate ⑦ 段强标 .obsolete 真生效 (zhou .obsolete 含 9.9.26 即证)
+//   v9.9.26 cmdPurge 末自动 reloadWindow 真生效 (走命令面板「了事拂衣去」时)
+//   ★ 但 v9.9.26 漏一脉:扩展面板点 [✘] 路径 · 走 ExtensionManagementService.uninstall
+//     此路径仅 deactivate 一招触 · ⑦ 段标 .obsolete 后 ext-host shutdown
+//     此时 vscode.commands.executeCommand("workbench.action.reloadWindow") 已无法触发
+//     → 主公手动重启 Windsurf 才能清物理目录 → 主公视为「没卸 · 没重启」
+//
+// 真治 (反者道之动 · 弱者道之用):
+//   用 vscode.extensions.onDidChange 事件 (VS Code API · 见 vscode.d.ts L17647):
+//     「An event which fires when extensions.all changes. This can happen
+//      when extensions are installed, uninstalled, enabled or disabled.」
+//   时序 · 主公点 [✘] →
+//     1. VSCode 主进程 ExtensionManagementService.uninstall(self)
+//     2. 主进程删 extensions.json 中 self 条目
+//     3. ★ emit onDidChange 事件 (此时 ext-host self 还活!)
+//     4. 之后才让 ext-host deactivate self
+//   故在 onDidChange 监听器中:
+//     · self 还活 → vscode.commands.executeCommand 仍 work
+//     · 检 vscode.extensions.getExtension(SELF_ID) === undefined → self 已被卸
+//     · → 立即调 reloadWindow → 主公的 Windsurf 自动重启 → 启动协议清物理目录
+//   ext-host 重启时 deactivate ⑦ 段又会再次确保 .obsolete 标 (双保险)
+//
+// 道义:
+//   六十四章「为之于其未有也 · 治之于其未乱也」(onDidChange 触发于 deactivate 前)
+//   二十八章「朴散则为器 · 圣人用则为官长 · 夫大制无割」(用 VS Code 朴 API)
+//   七十六章「天下莫柔弱于水 · 而攻坚强者莫之能胜」(以 onDidChange 之柔 攻 deactivate 不能 reload 之坚)
+//   四十章 「反者 · 道之动；弱者 · 道之用」(反 deactivate 末路 · 用 activate 时机注册之德)
+
+let _selfUninstallReloadTriggered = false; // 幂等标 · cmdPurge 自调 reload 时也设此
+
+function _setupSelfUninstallWatchdog(ctx) {
+  try {
+    const disposable = vscode.extensions.onDidChange(() => {
+      try {
+        if (_selfUninstallReloadTriggered) return; // 幂等 (已触过 · 跳)
+        const stillHere = vscode.extensions.getExtension(SELF_EXT_ID);
+        if (stillHere) return; // self 还在 · 这是别的 ext 变 (如别的卸/装/启/禁)
+        // self 已不在 vscode.extensions.all → ★ 自身被卸触发 ★
+        _selfUninstallReloadTriggered = true;
+        L.info(
+          "selfWatchdog",
+          `★ 检 self (${SELF_EXT_ID}) 已被卸 · 3s 后自动 Reload Window · 真水过无痕`,
+        );
+        try {
+          vscode.window.showInformationMessage(
+            "了事拂衣去 · 水过无痕 · 检测到卸载 · 3s 后自动 Reload · 主公无为",
+          );
+        } catch {}
+        // 3s 倒计时 · 让主进程之 uninstall 操作完成 + 主公看到提示
+        setTimeout(() => {
+          try {
+            vscode.commands.executeCommand("workbench.action.reloadWindow");
+            L.info(
+              "selfWatchdog",
+              "★ reloadWindow 已发 · ext-host 即重启 · 启动协议清物理",
+            );
+          } catch (e) {
+            L.warn("selfWatchdog", `reload 失败: ${e && e.message}`);
+          }
+        }, 3000);
+      } catch (e) {
+        L.warn("selfWatchdog", `onDidChange tick err: ${e && e.message}`);
+      }
+    });
+    ctx.subscriptions.push(disposable);
+    L.info(
+      "selfWatchdog",
+      `★ self-uninstall watchdog 已挂 (vscode.extensions.onDidChange · self=${SELF_EXT_ID})`,
+    );
+  } catch (e) {
+    L.warn("selfWatchdog", `setup fail: ${e && e.message}`);
   }
 }
 
@@ -2718,7 +2809,7 @@ async function deactivate() {
           (e) =>
             e &&
             e.identifier &&
-            e.identifier.id === "dao-agi.dao-proxy-min" &&
+            e.identifier.id === SELF_EXT_ID &&
             e.location &&
             e.location.path &&
             e.location.path.toLowerCase().includes(selfDirName.toLowerCase()),

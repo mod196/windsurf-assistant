@@ -1,12 +1,32 @@
-# 道Agent · dao-proxy-min · **v9.9.25** · 软编码归一 · 适所有用户 · 三平台主进程退
+# 道Agent · dao-proxy-min · **v9.9.27** · 软编码彻终 · 适所有用户 · 适所有 fork
 
 > **朴散为器, 圣人用则为官长, 夫大制无割.** —《二十八章》
+> **一者, 其上不攸, 其下不忽. 寻寻呵, 不可名也, 复归于无物.** —《十四章》
 > **人法地, 地法天, 天法道, 道法自然.** —《二十五章》
-> **致虚极也, 守静笃也. 万物并作, 吾以观其复也.** —《十六章》
 > **反者道之动, 弱者道之用.** —《四十章》
 > **为道日损. 损之又损, 以至于无为, 无为而无不为.** —《四十八章》
 
-## v9.9.25 · 软编码归一 · 适所有用户 (2026-05-19)
+## v9.9.27 · 软编码彻终 · 印 158 (2026-05-19)
+
+**主公诏**: 「**查看所有成果 · 检测所有成果 · 软编码一切 · 适配所有用户 · 所有用户均可用一切 · 推送发布最新之版本于 github 当前主账号 zhouyoukang 和子账号 zhouyoukang1234-spec 双同步推送一切**」
+
+**治本一招** (二十八章「夫大制无割」):
+
+承 v9.9.25 立 `SELF_EXT_ID` / `SELF_EXT_DIR_REGEX` 抽自 `package.json` 之朴 · 续治 `cmdPurge` step 7/9 + `deactivate` 兜底 5 处残硬写 · 全改用 `SELF_EXT_ID` / `SELF_EXT_DIR_REGEX` · 一处定义 · 全文一致 · **适所有 fork / 所有 publisher.name 改名之派生版**.
+
+| 维 | 适法 |
+|---|---|
+| 扩展 ID | `SELF_EXT_ID` 抽自 `package.json.publisher + .name` |
+| 目录前缀 | `SELF_EXT_DIR_REGEX` = `^${SELF_EXT_ID}-` |
+| .obsolete 强标 (cmdPurge step 7) | 用 `SELF_EXT_DIR_REGEX` 扫物理目录全标 |
+| uninstallExtension 调用 (cmdPurge step 9) | 用 `SELF_EXT_ID` |
+| deactivate 兜底 identifier.id 比对 | 用 `SELF_EXT_ID` |
+
+主公若 fork 此 repo · 改 `package.json` 之 `publisher` / `name` (e.g. `myorg.dao-mini`) → 不改一行 .js → 自身 .obsolete 标 / uninstallExtension 调 / deactivate 兜底 全部自适新 ID. 玄同 · 名实终一.
+
+---
+
+## v9.9.25 · 软编码归一 · 适所有用户 (2026-05-19 · 历史)
 
 **主公命**: 「**软编码一切 · 适配所有用户 · 所有用户均可用一切**」
 
