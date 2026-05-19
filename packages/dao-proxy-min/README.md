@@ -1,10 +1,57 @@
-# 道Agent · dao-proxy-min · **v9.9.28** · 根本底层卸自身本体 · detached cleanup spawn · 适所有用户 · 适所有 fork
+# 道Agent · dao-proxy-min · **v9.9.29** · 终端会话池 · 七层污染一招治 · 印 160
 
-> **朴散为器, 圣人用则为官长, 夫大制无割.** —《二十八章》
-> **一者, 其上不攸, 其下不忽. 寻寻呵, 不可名也, 复归于无物.** —《十四章》
-> **人法地, 地法天, 天法道, 道法自然.** —《二十五章》
-> **反者道之动, 弱者道之用.** —《四十章》
+> **反者, 道之动; 弱者, 道之用.** —《四十章》
+> **大邦者, 下流也, 天下之牝也. 牝恒以靓胜牡.** —《六十一章》
+> **朴散则为器, 圣人用则为官长, 夫大制无割.** —《二十八章》
 > **为道日损. 损之又损, 以至于无为, 无为而无不为.** —《四十八章》
+
+## v9.9.29 · 终端会话池 · 七层污染一招治 · 印 160 (2026-05-19)
+
+**主公诏 (5/19 03:11)**: 「**专注于最本源最核心的终端问题 · 反者道之动 · 不依赖任何第三方 · 推进到底 实现一切**」
+
+**七层污染** (均源于「共享一 shell」之设):
+
+| 层 | 病 |
+|---|---|
+| ① OS cwd | 进程单例 |
+| ② OS env | 继承可变 |
+| ③ PTY | 字节流交织 |
+| ④ Shell `%ERRORLEVEL%`/`$?` | 会话单例 |
+| ⑤ IDE 终端池 | 复用 |
+| ⑥ Agent 调用无状态 + 终端有状态 | 错配 |
+| ⑦ 多 agent race | 抢 |
+
+**真治** (反者道之动 · 弱者道之用):
+
+★ 每 agent 一独立 `cmd.exe`/`bash` 子进程 (`cp.spawn /k mode` · OS 进程级隔离) ★
+
+| 关键技术 | 作用 |
+|---|---|
+| `cp.spawn` 子进程 | OS 进程级隔离 · 各自 cwd / env / ERRORLEVEL |
+| stdin pipe 持续写 | 多次 exec 同 sid · shell 不死 · 状态保 |
+| sentinel (RS+UUID) 包夹 | 流切片 · 不同 exec 输出绝不交织 |
+| `ver>nul` 重置 ERRORLEVEL | 上次 errorlevel 不污下次 |
+
+**零第三方** · 全 Node 内置 `child_process` · ~280 行新增 · `_test_v9929_term_pool.js` **15/15 PASS**.
+
+### 三路调
+
+| 路 | 用 | 端 |
+|---|---|---|
+| ① 命令面板 | 主公手控 · GUI | `dao.term.exec` / `dao.term.list` / `dao.term.close` |
+| ② HTTP | agent 远调 · localhost only | `:12780~12829` (per-user FNV) `/term/exec` `/term/list` `/term/close` `/term/ping` |
+| ③ ext.js 内调 | 本扩展自调 | `_ensureTermPool().exec(sid, cmd)` |
+
+**昧 v9.9.28 三治不动**: 治一 source.js process.on · 治二 detached cleanup spawn · 治三 watchdog 四重去抖.
+
+### 道义
+
+- 四十「**反者道之动 · 弱者道之用**」— 反共享一终端 · 用 `child_process` 弱柔
+- 六十一「**大邦下流 · 牝以靓胜牡**」— 每 sid 处下一 shell · 不争一终端
+- 二十八「**朴散为器 · 圣人用则为官长**」— `spawn` 之朴 · 散为多 shell 之器
+- 四十八「**损之又损**」— 零依赖 · 七层一招
+
+---
 
 ## v9.9.28 · detached cleanup spawn · 根本底层卸自身本体 · 印 159 (2026-05-19)
 

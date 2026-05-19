@@ -149,3 +149,11 @@ _logs/
 **/packages/dao-devin-vm/_yin159_console.txt
 **/packages/dao-devin-vm/_yin159_pubtest_out.txt
 **/packages/dao-devin-vm/_yin159_result.json
+
+# 印 161 · 损之又损 · 朴覆所有 _yin*_*.{err,pid,log,url,out} 运行时残件
+# 帛书四十八「为道日损 · 损之又损」 · 一规则覆万种 _yin*_*  残件
+**/packages/dao-devin-vm/_yin*.err
+**/packages/dao-devin-vm/_yin*.pid
+**/packages/dao-devin-vm/_yin*.log
+**/packages/dao-devin-vm/_yin*.url
+**/packages/dao-devin-vm/_yin*.out

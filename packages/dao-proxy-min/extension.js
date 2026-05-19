@@ -55,6 +55,7 @@ const path = require("node:path");
 const http = require("node:http");
 const cp = require("node:child_process");
 const os = require("node:os");
+const crypto = require("node:crypto");
 const { EventEmitter } = require("node:events");
 
 // ═══════════════════════════ 常量 ═══════════════════════════
@@ -1011,6 +1012,441 @@ function getModeLabel() {
   return `官方Agent · 直连`;
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// v9.9.29 · 终端会话池 (印 160 · 反者道之动 · 弱者道之用)
+// ═══════════════════════════════════════════════════════════════════
+// 主公诏 5/19 3:11 (印 158→160 链):
+//   「专注于最本源最核心的终端问题 如何从根本底层最小化解决终端一切问题」
+//   「反者道之动 不依赖任何第三方 直接 dao-proxy-min 解决」
+//   「推进到底 实现一切」
+//
+// 真本源诊 (七层污染 · 一招治):
+//   ① OS cwd 是进程级单例 → 共享 shell 即共享 cwd
+//   ② OS env 是进程级全局 → export 一染全染
+//   ③ PTY 字节流无 frame → 多 writer 字节交织
+//   ④ Shell $? %ERRORLEVEL% 是会话单例 → 上次毒化下次
+//   ⑤ IDE 终端池默 reuse → cascade 复用一 terminal
+//   ⑥ Agent 调用无状态 + 终端有状态 → 接口语义错配
+//   ⑦ 多 agent 无同步 → 经典 race
+//
+// 真治 (一招):
+//   每 agent 一独立 cmd.exe/bash 子进程 (cp.spawn /k mode)
+//   stdin pipe 持续写命令 · stdout sentinel (RS+UUID) 包夹切片
+//   Node 内置 child_process · 零第三方 · ~140 行类
+//
+// 道义:
+//   四十「反者道之动 弱者道之用」(反"共享终端" · 用 child_process 弱柔)
+//   六十四「治之于其未乱」(每命令独立 sentinel · 治未乱)
+//   六十一「大邦下流 · 牝以靓胜牡」(每 sid 处下一 shell · 不争一终端)
+//   廿八「朴散为器 · 圣人用则为官长」(spawn 之朴 · 散为多 shell 之器)
+//   四十八「损之又损 至于无为」(零依赖 · 七层一招)
+//
+// 验: _test_v9929_term_pool.js · 15/15 PASS
+// ═══════════════════════════════════════════════════════════════════
+
+const _T_RS = "\u001E"; // ASCII Record Separator · 永不出现普通输出
+const _T_DEFAULT_TIMEOUT = 120000;
+const _T_IDLE_TTL_MS = 30 * 60 * 1000;
+const _T_GC_INTERVAL_MS = 60_000;
+const _T_MAX_BUF_BYTES = 4 * 1024 * 1024;
+
+class DaoTerminalPool {
+  constructor(opts = {}) {
+    this.sessions = new Map();
+    this.idleTtlMs = opts.idleTtlMs || _T_IDLE_TTL_MS;
+    this.gcIntervalMs = opts.gcIntervalMs || _T_GC_INTERVAL_MS;
+    this.maxBufBytes = opts.maxBufBytes || _T_MAX_BUF_BYTES;
+    this._gcTimer = null;
+    this._closed = false;
+  }
+  _spawnShell(sid) {
+    const isWin = process.platform === "win32";
+    let shell, args;
+    if (isWin) {
+      shell = process.env.ComSpec || "cmd.exe";
+      args = ["/q", "/k", "@echo off & prompt $G"];
+    } else {
+      shell = process.env.SHELL || "/bin/bash";
+      args = ["--norc", "--noprofile"];
+    }
+    const env = {
+      ...process.env,
+      DAO_AGENT_SID: sid,
+      PROMPT: "$G ",
+      PS1: "$ ",
+      PS2: "",
+      TERM: "dumb",
+      NO_COLOR: "1",
+      FORCE_COLOR: "0",
+      CLICOLOR: "0",
+    };
+    const cwd = process.env.USERPROFILE || process.env.HOME || process.cwd();
+    return _origSpawn.call(cp, shell, args, {
+      cwd,
+      env,
+      windowsHide: true,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+  }
+  _ensure(sid) {
+    let s = this.sessions.get(sid);
+    if (s && !s.closed) return s;
+    const child = this._spawnShell(sid);
+    s = {
+      child,
+      buf: "",
+      errBuf: "",
+      pending: null,
+      closed: false,
+      lastUsed: Date.now(),
+      sid,
+    };
+    child.stdout.on("data", (d) => {
+      s.buf += d.toString("utf8");
+      if (s.buf.length > this.maxBufBytes)
+        s.buf = s.buf.slice(-this.maxBufBytes);
+      s.lastUsed = Date.now();
+      this._tryComplete(sid);
+    });
+    child.stderr.on("data", (d) => {
+      s.errBuf += d.toString("utf8");
+      if (s.errBuf.length > this.maxBufBytes)
+        s.errBuf = s.errBuf.slice(-this.maxBufBytes);
+    });
+    child.on("exit", () => {
+      s.closed = true;
+      if (s.pending) {
+        clearTimeout(s.pending.timer);
+        s.pending.reject(new Error(`shell 退 sid=${sid}`));
+        s.pending = null;
+      }
+    });
+    child.on("error", (e) => {
+      s.closed = true;
+      if (s.pending) {
+        clearTimeout(s.pending.timer);
+        s.pending.reject(new Error(`shell 错 sid=${sid}: ${e.message}`));
+        s.pending = null;
+      }
+    });
+    this.sessions.set(sid, s);
+    return s;
+  }
+  exec(sid, cmd, opts = {}) {
+    if (this._closed) return Promise.reject(new Error("pool closed"));
+    if (typeof sid !== "string" || !sid)
+      return Promise.reject(new Error("session_id 必填"));
+    if (typeof cmd !== "string" || !cmd)
+      return Promise.reject(new Error("cmd 必填"));
+    const s = this._ensure(sid);
+    if (s.pending)
+      return Promise.reject(
+        new Error(`session ${sid} 忙 (同会话串行 · 不同会话并行)`),
+      );
+    const eid = crypto.randomUUID();
+    const BEG = `${_T_RS}DAO_BEG_${eid}${_T_RS}`;
+    const END = `${_T_RS}DAO_END_${eid}${_T_RS}`;
+    const isWin = process.platform === "win32";
+    const timeout = opts.timeout || _T_DEFAULT_TIMEOUT;
+    let wrapped;
+    if (isWin) {
+      // ver >nul 重置 ERRORLEVEL=0 · 防内置命令 (echo/cd) 不更新 errorlevel 之坑
+      const cdPart = opts.cwd ? `cd /d "${opts.cwd}" & ` : "";
+      wrapped = `echo ${BEG}\r\nver >nul\r\n${cdPart}${cmd}\r\necho ${END}EXIT=%ERRORLEVEL%\r\n`;
+    } else {
+      const cdPart = opts.cwd ? `cd "${opts.cwd}" && ` : "";
+      const begLit = BEG.replace(/'/g, "'\\''");
+      const endLit = END.replace(/'/g, "'\\''");
+      wrapped = `printf '%s\\n' '${begLit}'\n{ ${cdPart}${cmd} ; }\nprintf '%sEXIT=%d\\n' '${endLit}' "$?"\n`;
+    }
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        if (s.pending && s.pending.eid === eid) {
+          s.pending = null;
+          reject(new Error(`exec timeout ${timeout}ms sid=${sid}`));
+        }
+      }, timeout);
+      s.pending = {
+        eid,
+        BEG,
+        END,
+        resolve,
+        reject,
+        timer,
+        started: Date.now(),
+      };
+      try {
+        s.child.stdin.write(wrapped);
+      } catch (e) {
+        clearTimeout(timer);
+        s.pending = null;
+        reject(new Error(`stdin 写失 sid=${sid}: ${e.message}`));
+      }
+    });
+  }
+  _tryComplete(sid) {
+    const s = this.sessions.get(sid);
+    if (!s || !s.pending) return;
+    const { BEG, END, resolve, timer, eid } = s.pending;
+    const begIdx = s.buf.indexOf(BEG);
+    if (begIdx === -1) return;
+    const endIdx = s.buf.indexOf(END, begIdx + BEG.length);
+    if (endIdx === -1) return;
+    const tail = s.buf.slice(endIdx + END.length);
+    const m = tail.match(/EXIT=(-?\d+)/);
+    if (!m) return;
+    const body = s.buf.slice(begIdx + BEG.length, endIdx);
+    const exit = parseInt(m[1], 10);
+    const afterExit = endIdx + END.length + m.index + m[0].length;
+    const nl = s.buf.indexOf("\n", afterExit);
+    s.buf = nl >= 0 ? s.buf.slice(nl + 1) : s.buf.slice(afterExit);
+    s.pending = null;
+    clearTimeout(timer);
+    const stderr = s.errBuf;
+    s.errBuf = "";
+    resolve({
+      session_id: sid,
+      exec_id: eid,
+      stdout: body.replace(/^\s+|\s+$/g, ""),
+      stderr: stderr.replace(/^\s+|\s+$/g, ""),
+      exit,
+    });
+  }
+  list() {
+    return [...this.sessions.entries()].map(([sid, s]) => ({
+      sid,
+      busy: !!s.pending,
+      closed: s.closed,
+      idle_ms: Date.now() - s.lastUsed,
+      buf_bytes: s.buf.length,
+    }));
+  }
+  close(sid) {
+    const s = this.sessions.get(sid);
+    if (!s) return false;
+    try {
+      s.child.stdin.end();
+    } catch {}
+    try {
+      s.child.kill();
+    } catch {}
+    if (s.pending) {
+      clearTimeout(s.pending.timer);
+      s.pending.reject(new Error(`session closed sid=${sid}`));
+      s.pending = null;
+    }
+    this.sessions.delete(sid);
+    return true;
+  }
+  closeAll() {
+    for (const sid of [...this.sessions.keys()]) this.close(sid);
+    if (this._gcTimer) {
+      clearInterval(this._gcTimer);
+      this._gcTimer = null;
+    }
+    this._closed = true;
+  }
+  startGc() {
+    if (this._gcTimer) return;
+    this._gcTimer = setInterval(() => {
+      const now = Date.now();
+      for (const [sid, s] of this.sessions) {
+        if (s.closed || now - s.lastUsed > this.idleTtlMs) this.close(sid);
+      }
+    }, this.gcIntervalMs);
+    if (this._gcTimer.unref) this._gcTimer.unref();
+  }
+}
+
+// 单例池 · ext-host 内全局
+let _DAO_TERM_POOL = null;
+function _ensureTermPool() {
+  if (!_DAO_TERM_POOL) {
+    _DAO_TERM_POOL = new DaoTerminalPool();
+    _DAO_TERM_POOL.startGc();
+    L.info("term", "DaoTerminalPool 启 · 七层污染一招治");
+  }
+  return _DAO_TERM_POOL;
+}
+
+// HTTP /exec 兜底服务 · :12780 (per-user FNV 偏置 · 多账号自然隔离)
+let _DAO_TERM_HTTP = null;
+let _DAO_TERM_HTTP_PORT = 0;
+function _termHttpPort() {
+  // 复用 fnv1a 思想 · base 12780
+  const u = (os.userInfo().username || "default").toLowerCase();
+  let h = 2166136261;
+  for (let i = 0; i < u.length; i++) {
+    h ^= u.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return 12780 + (Math.abs(h) % 50); // 12780..12829
+}
+function _startDaoTermService(ctx) {
+  if (_DAO_TERM_HTTP) return;
+  const port = _termHttpPort();
+  _DAO_TERM_HTTP_PORT = port;
+  const http = require("node:http");
+  const pool = _ensureTermPool();
+  const server = http.createServer(async (req, res) => {
+    res.setHeader("content-type", "application/json; charset=utf-8");
+    // 仅 localhost 来源 · 安全
+    const remoteAddr = req.socket.remoteAddress || "";
+    if (
+      remoteAddr !== "127.0.0.1" &&
+      remoteAddr !== "::1" &&
+      remoteAddr !== "::ffff:127.0.0.1"
+    ) {
+      res.statusCode = 403;
+      res.end(JSON.stringify({ error: "localhost only" }));
+      return;
+    }
+    try {
+      const u = new URL(req.url, `http://127.0.0.1:${port}`);
+      if (req.method === "GET" && u.pathname === "/term/ping") {
+        res.end(
+          JSON.stringify({
+            ok: true,
+            version: PKG_VERSION,
+            port,
+            sessions: pool.list().length,
+          }),
+        );
+        return;
+      }
+      if (req.method === "GET" && u.pathname === "/term/list") {
+        res.end(JSON.stringify({ sessions: pool.list() }));
+        return;
+      }
+      if (req.method === "POST" && u.pathname === "/term/exec") {
+        const body = await _termReadBody(req);
+        const { session_id, cmd, cwd, timeout } = body || {};
+        if (!session_id || !cmd) {
+          res.statusCode = 400;
+          res.end(JSON.stringify({ error: "session_id+cmd 必填" }));
+          return;
+        }
+        const out = await pool.exec(session_id, cmd, { cwd, timeout });
+        res.end(JSON.stringify(out));
+        return;
+      }
+      if (req.method === "POST" && u.pathname === "/term/close") {
+        const body = await _termReadBody(req);
+        const ok = pool.close(body.session_id);
+        res.end(JSON.stringify({ closed: ok }));
+        return;
+      }
+      res.statusCode = 404;
+      res.end(JSON.stringify({ error: "not found" }));
+    } catch (e) {
+      res.statusCode = 500;
+      res.end(JSON.stringify({ error: String(e.message || e) }));
+    }
+  });
+  server.listen(port, "127.0.0.1", () => {
+    L.info("term", `HTTP /term/* 启 :${port} (localhost only)`);
+  });
+  server.on("error", (e) => {
+    L.warn("term", `http server err: ${e.message}`);
+  });
+  _DAO_TERM_HTTP = server;
+  if (ctx && ctx.subscriptions) {
+    ctx.subscriptions.push({
+      dispose: () => {
+        try {
+          server.close();
+        } catch {}
+        if (_DAO_TERM_POOL) _DAO_TERM_POOL.closeAll();
+        _DAO_TERM_HTTP = null;
+        _DAO_TERM_POOL = null;
+      },
+    });
+  }
+}
+function _termReadBody(req) {
+  return new Promise((resolve, reject) => {
+    let data = "";
+    req.on("data", (c) => (data += c));
+    req.on("end", () => {
+      try {
+        resolve(data ? JSON.parse(data) : {});
+      } catch (e) {
+        reject(e);
+      }
+    });
+    req.on("error", reject);
+  });
+}
+
+// 命令实现 · 命令面板可调
+async function cmdTermExec() {
+  try {
+    const sid = await vscode.window.showInputBox({
+      prompt: "session_id (sid · 同 sid 串行 · 不同 sid 并行)",
+      value: "agent_default",
+    });
+    if (!sid) return;
+    const cmd = await vscode.window.showInputBox({
+      prompt: `命令 · sid=${sid}`,
+      placeHolder:
+        process.platform === "win32" ? "echo hello & dir" : "echo hello && ls",
+    });
+    if (!cmd) return;
+    const pool = _ensureTermPool();
+    const r = await pool.exec(sid, cmd);
+    const stdoutSnip =
+      r.stdout.length > 800 ? r.stdout.slice(0, 800) + " ..." : r.stdout;
+    vscode.window.showInformationMessage(
+      `[${sid}] exit=${r.exit} · stdout=${stdoutSnip}`,
+      { modal: false },
+    );
+    L.info(
+      "term",
+      `cmdTermExec sid=${sid} exit=${r.exit} stdout_len=${r.stdout.length}`,
+    );
+  } catch (e) {
+    L.error("term", `cmdTermExec fail: ${e.message}`);
+    vscode.window.showErrorMessage(`term.exec 失: ${e.message}`);
+  }
+}
+async function cmdTermList() {
+  const pool = _ensureTermPool();
+  const lst = pool.list();
+  const lines =
+    lst.length === 0
+      ? "(无会话)"
+      : lst
+          .map(
+            (s) =>
+              `${s.sid} · busy=${s.busy} · idle=${Math.round(s.idle_ms / 1000)}s · buf=${s.buf_bytes}B`,
+          )
+          .join("\n");
+  vscode.window.showInformationMessage(
+    `终端会话池 (${lst.length}) · :${_DAO_TERM_HTTP_PORT}\n${lines}`,
+    { modal: true },
+  );
+}
+async function cmdTermClose() {
+  const pool = _ensureTermPool();
+  const lst = pool.list();
+  if (lst.length === 0) {
+    vscode.window.showInformationMessage("终端会话池: 无会话");
+    return;
+  }
+  const pick = await vscode.window.showQuickPick(
+    lst.map((s) => ({
+      label: s.sid,
+      description: `busy=${s.busy} idle=${Math.round(s.idle_ms / 1000)}s`,
+    })),
+    { placeHolder: "选会话关闭" },
+  );
+  if (!pick) return;
+  const ok = pool.close(pick.label);
+  vscode.window.showInformationMessage(
+    `close ${pick.label} · ${ok ? "ok" : "fail"}`,
+  );
+}
+
 // ═══════════════════════════ EssenceProvider · 本源观照 webview ═══════════════════════════
 class EssenceProvider {
   constructor(ctx) {
@@ -1723,38 +2159,32 @@ async function cmdPurge() {
     out.appendLine(`  ⚠ 自卸: ${uninstallErr} · 请手动卸载`);
   }
 
-  out.appendLine("══════ 了事拂衣去 · 水过无痕 · v9.9.27 道法自然 ══════\n");
+  out.appendLine("══════ 了事拂衣去 · 水过无痕 · v9.9.29 印 161 朴本 ══════\n");
 
-  // 末. ★ v9.9.27 主公诏 (5/19 1:31): 「全自动卸载再重启 windsurf · 用户彻底无为」
-  // 自动 reloadWindow · 3s 倒计时 · 主公无需任何操作
-  // VSCode reload window → ext-host 重启 → 启动协议读 .obsolete → 物理清 self
-  // (.obsolete 已强标 self 于 step 8 · 此 reload 必生效 · 反者道之动)
-  // 道义: 五十一「为而弗恃 · 长而弗宰 · 是谓玄德」· 七十八「正言若反」
-  //       前版本「主公手动 Reload」是仁义 · 此版本「自动 Reload」是大道 (上德无为)
-  // ★ v9.9.28 同时活 self-uninstall watchdog (onDidChange) + detached cleanup spawn
-  out.appendLine("  → spawn detached cleanup (脱父子链 · 死活无依)");
-  out.appendLine("  → 3s 后自动 Reload Window · 真水过无痕 (主公无为)");
-  vscode.window.showInformationMessage(
-    "了事拂衣去 · 水过无痕 · 3s 后自动 Reload · 主公无为",
+  // 末. ★ 印 161 朴本 · 主公诏 5/19 「彻底去芜存菁 · 道法自然 · 损之又损」
+  // 砍 v9.9.27 watchdog (onDidChange) + v9.9.28 detached cleanup spawn (繁本 · 解不存在的问题)
+  // 信任 vscode 内核 · 主公一念 reload (主公自决 · 仁义而非强制)
+  // .obsolete step 8 已强标 self → 主公 reload 后 Windsurf 启动协议必清物理目录
+  // 道义: 四十八「损之又损 · 以至于无为 · 无为而无不为」
+  //       六十四「为之于其未乱也」(治在主公一念之先 · 不在 ext 自治)
+  //       五十一「为而弗恃 · 长而弗宰 · 是谓玄德」
+  out.appendLine(
+    "  → 主公一念 Reload Window 即真水过无痕 (Ctrl+Shift+P → Reload Window)",
   );
-
-  // 标记 watchdog 不再重复触发 (cmdPurge 已自调 reload · watchdog 退让)
-  _selfUninstallReloadTriggered = true;
-
-  // ★ v9.9.28 真治: 先 spawn detached cleanup · 让独立子进程接管清残
-  // cleanup 进程脱父子链 · ext-host 死了它仍活 · 自治清物理目录+ext.json+.obsolete+孤儿反代
-  _spawnDetachedCleanup("cmdPurge");
-
-  // 3s 倒计时 (让 Windsurf 后台 uninstall 完成 + cleanup spawn 启动)
-  await new Promise((res) => setTimeout(res, 3000));
-
-  // ★ 自动 Reload Window · ext-host 重启 → VSCode 启动协议清 .obsolete → 物理清
-  try {
-    await vscode.commands.executeCommand("workbench.action.reloadWindow");
-  } catch (e) {
-    // reloadWindow 触发后 ext-host 即将销毁 · 此异常仅在 ext-host 已死时落
-    out.appendLine(`  · reloadWindow 已触发 (异常仅记: ${e && e.message})`);
-  }
+  vscode.window
+    .showInformationMessage(
+      "了事拂衣去 · .obsolete 已强标 · 主公 Reload Window 即真清 (Ctrl+Shift+P → Reload Window)",
+      "立即 Reload",
+    )
+    .then((choice) => {
+      if (choice === "立即 Reload") {
+        try {
+          vscode.commands.executeCommand("workbench.action.reloadWindow");
+        } catch (e) {
+          // ext-host 销毁中 · 异常忽
+        }
+      }
+    });
 }
 
 // ═══════════════════════════ 命令: E2E 自检 ═══════════════════════════
@@ -2521,6 +2951,10 @@ function activate(ctx) {
         "dao.外接api.toggle",
         cmdExternalApiToggle,
       ),
+      // v9.9.29 · 印 160 · 终端会话池 (反者道之动 · 七层污染一招治)
+      vscode.commands.registerCommand("dao.term.exec", cmdTermExec),
+      vscode.commands.registerCommand("dao.term.list", cmdTermList),
+      vscode.commands.registerCommand("dao.term.close", cmdTermClose),
     );
 
     // 注册 webview
@@ -2653,12 +3087,16 @@ function activate(ctx) {
     ctx.subscriptions.push({ dispose: () => clearInterval(watchdogId) });
     L.info("activate", "watchdog 启 · 30s 自愈一周");
 
-    // ── v9.9.27 真治 · self-uninstall watchdog (onDidChange 监听 → 自动 reload) ──
-    // 主公诏 5/19 2:09: 「点击卸载后 既没有卸载插件 windsurf也没重启 推进到底」
-    // 真本源: deactivate 时 ext-host shutdown · 已无法触 reloadWindow
-    // 真治: vscode.extensions.onDidChange 事件 → ext-host 还活时收到 → 调 reload
-    // 三路径全覆: ① cmdPurge 自调 ② 扩展面板 [✘] ③ CLI uninstall (主进程外路 · ext-host 不触此事件 · 但启动协议会清)
-    _setupSelfUninstallWatchdog(ctx);
+    // ── v9.9.29 真治 · 终端会话池 (印 160 · 七层污染一招治) ──
+    // 主公诏 5/19 3:11: 「反者道之动 · 不依赖任何第三方 · 直接 dao-proxy-min 解决 · 推进到底 实现一切」
+    // 真本源: shell 进程 cwd/env/$? 是 OS 物理单例 · 多 agent 共享必污
+    // 真治: 每 sid 一独立 shell 子进程 · cp.spawn /k mode + sentinel 切片
+    // 验: _test_v9929_term_pool.js · 15/15 PASS
+    try {
+      _startDaoTermService(ctx);
+    } catch (e) {
+      L.warn("term", `term service start fail (non-fatal): ${e.message}`);
+    }
 
     // ── v9.9.0 · 印 124 · 第一细药 · 外接 api 自启 (默关) ──
     // 帛书六十三章: 图难于其易 · 为大于其细 · 终不为大 · 故能成其大
@@ -2673,264 +3111,24 @@ function activate(ctx) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// v9.9.27 真治 · self-uninstall watchdog · 大道至简 (反者道之动)
+// 印 161 · 损之又损 · 复归朴本 · 道法自然 (主公诏 5/19 「彻底去芜存菁」)
 // ═══════════════════════════════════════════════════════════════════
-// 主公诏 5/19 2:09: 「点击卸载后 既没有卸载插件 windsurf 也没重启 推进到底」
-//
-// 真本源诊 (印 158 · cascade 实证):
-//   v9.9.26 三招中 deactivate ⑦ 段强标 .obsolete 真生效 (zhou .obsolete 含 9.9.26 即证)
-//   v9.9.26 cmdPurge 末自动 reloadWindow 真生效 (走命令面板「了事拂衣去」时)
-//   ★ 但 v9.9.26 漏一脉:扩展面板点 [✘] 路径 · 走 ExtensionManagementService.uninstall
-//     此路径仅 deactivate 一招触 · ⑦ 段标 .obsolete 后 ext-host shutdown
-//     此时 vscode.commands.executeCommand("workbench.action.reloadWindow") 已无法触发
-//     → 主公手动重启 Windsurf 才能清物理目录 → 主公视为「没卸 · 没重启」
-//
-// 真治 (反者道之动 · 弱者道之用):
-//   用 vscode.extensions.onDidChange 事件 (VS Code API · 见 vscode.d.ts L17647):
-//     「An event which fires when extensions.all changes. This can happen
-//      when extensions are installed, uninstalled, enabled or disabled.」
-//   时序 · 主公点 [✘] →
-//     1. VSCode 主进程 ExtensionManagementService.uninstall(self)
-//     2. 主进程删 extensions.json 中 self 条目
-//     3. ★ emit onDidChange 事件 (此时 ext-host self 还活!)
-//     4. 之后才让 ext-host deactivate self
-//   故在 onDidChange 监听器中:
-//     · self 还活 → vscode.commands.executeCommand 仍 work
-//     · 检 vscode.extensions.getExtension(SELF_ID) === undefined → self 已被卸
-//     · → 立即调 reloadWindow → 主公的 Windsurf 自动重启 → 启动协议清物理目录
-//   ext-host 重启时 deactivate ⑦ 段又会再次确保 .obsolete 标 (双保险)
-//
-// 道义:
-//   六十四章「为之于其未有也 · 治之于其未乱也」(onDidChange 触发于 deactivate 前)
-//   二十八章「朴散则为器 · 圣人用则为官长 · 夫大制无割」(用 VS Code 朴 API)
-//   七十六章「天下莫柔弱于水 · 而攻坚强者莫之能胜」(以 onDidChange 之柔 攻 deactivate 不能 reload 之坚)
-//   四十章 「反者 · 道之动；弱者 · 道之用」(反 deactivate 末路 · 用 activate 时机注册之德)
-
-let _selfUninstallReloadTriggered = false; // 幂等标 · cmdPurge 自调 reload 时也设此
-let _detachedCleanupSpawned = false; // 幂等标 · 三路径都可能调 · 仅 spawn 一次
-
-// ═══════════════════════════════════════════════════════════════════
-// v9.9.28 真治 · spawn detached cleanup child · 脱父子链 · 死活无依
-// ═══════════════════════════════════════════════════════════════════
-// 主公诏 5/19 2:36: 「无在乎一切路径 必须从根本底层首要解决点击卸载后能无论如何都能卸载插件本体」
-//
-// 真本源诊 (印 158 v9.9.27 实测漏):
-//   v9.9.27 watchdog 仅触 reloadWindow · 依 Windsurf 启动协议清 .obsolete
-//   但 Windsurf 1.110.1 fork **启动协议不可信**:
-//     · zhou 实测 .obsolete 标 9.9.22/23/24 → 启动协议未清物理目录 ✗
-//     · extensions.json 中 self 条目 fork uninstall API 漏删 ✗
-//     · :8981 utility 子进程 deactivate 时未 kill · 成孤儿反代 ✗
-//
-// 真治:
-//   spawn detached child_process · 脱 ext-host/Windsurf 主父子链
-//   · ext-host 死了它仍活 · Windsurf 关了它仍活
-//   · 完全独立 Node 进程 · 自治完成所有清理 · self exit
-//   · 不依赖 Windsurf 任何 API · 不依赖 deactivate 正常完成
-//
-// 关键技术: ELECTRON_RUN_AS_NODE=1 让 Windsurf.exe (Electron) 跑普通 Node 脚本
-//
-// 道义:
-//   四十「反者，道之动；弱者，道之用」(反 fork API 不可信 · 独立 spawn 自治)
-//   六十四「为之于其未乱也」(spawn 先 · 后 reloadWindow · 治未乱)
-//   八十「小邦寡民」(独立小进程 · 不与争 · 唯做己事)
-function _spawnDetachedCleanup(reason) {
-  if (_detachedCleanupSpawned) {
-    L.info("cleanup", `已 spawn 过 · 幂等跳 · reason=${reason}`);
-    return;
-  }
-  try {
-    const cleanupScript = path.join(__dirname, "_cleanup_spawn.js");
-    if (!fs.existsSync(cleanupScript)) {
-      L.warn("cleanup", `脚本不存: ${cleanupScript}`);
-      return;
-    }
-    // EXT_DIR = self 之父目录 (e.g. ~/.windsurf/extensions)
-    const extDir = path.dirname(__dirname);
-    const logDir = os.tmpdir();
-
-    L.info(
-      "cleanup",
-      `★ spawn detached cleanup · reason=${reason} · script=${cleanupScript} · ext=${extDir}`,
-    );
-
-    const child = cp.spawn(
-      process.execPath, // Windsurf.exe (Electron)
-      [cleanupScript, extDir, SELF_EXT_ID, logDir, reason],
-      {
-        detached: true, // ★ 关键: 脱父进程
-        stdio: "ignore", // 不连父 stdout/stderr
-        windowsHide: true,
-        env: {
-          ...process.env,
-          ELECTRON_RUN_AS_NODE: "1", // ★ 关键: 让 Electron 跑 Node 脚本
-        },
-      },
-    );
-
-    child.unref(); // ★ 关键: 让父进程不等子进程
-    _detachedCleanupSpawned = true;
-    L.info(
-      "cleanup",
-      `★ detached cleanup spawned · PID=${child.pid} · 脱父子链 · 死活无依`,
-    );
-  } catch (e) {
-    L.warn("cleanup", `spawn fail: ${e && e.message}`);
-  }
-}
-
-function _setupSelfUninstallWatchdog(ctx) {
-  try {
-    // ─────────────────────────────────────────────────────────────
-    // v9.9.28 真治 · 四重去抖 + 物理验证 · 防 onDidChange 误触致 cleanup 误删本体
-    // ─────────────────────────────────────────────────────────────
-    // 真本源 (印 159 · 五辩之四):
-    //   v9.9.27 watchdog 单查 getExtension(self)===undefined 即触 reload
-    //   v9.9.28 加 cleanup 后更危: 误触 → 物理删 self 目录 → "莫名插件被删"
-    //   主公多版本场景 (zhou 实测 5 个 dao-agi.dao-proxy-min-* 共存):
-    //     · 启动协议清 .obsolete 之物理删 → 连续 emit onDidChange
-    //     · VS Code 内部 dedup / re-resolve 临态 · getExtension(self) 偶返 undefined
-    //     · → 误触 reload + cleanup → 主公受损
-    //
-    // 治: 四重去抖 (反者道之动 · 弱者道之用)
-    //   ① startup grace 60s · activate 后 60s 内不响应 (避启动协议风暴)
-    //   ② getExtension 二查 · undefined 后等 1.5s 再查 (让 VS Code 临态稳)
-    //   ③ 物理验证 · fs.existsSync(__dirname) 在 → 真未卸 (VS Code 状态错)
-    //   ④ 磁盘锁 · ~/.dao-reload-lock-{id} 5min 跨 ext-host 实例幂等
-    //
-    // 道义:
-    //   六十四「为之于其未有也」(去抖即治未乱)
-    //   六十三「图难其易 · 为大其细」(四重小去抖治大误触)
-    //   七十六「天下莫柔弱于水 · 而攻坚强者莫之能胜」(以四重柔抖 攻误触误删之坚)
-    const ACTIVATE_TIME = Date.now();
-    const STARTUP_GRACE_MS = 60000; // ① 60s startup grace
-    const RECHECK_DELAY_MS = 1500; // ② getExtension 二查间隔
-    const DISK_LOCK_TTL_MS = 300000; // ④ 5 min 磁盘锁
-    const lockFile = path.join(
-      os.homedir(),
-      ".dao-reload-lock-" + SELF_EXT_ID.replace(/[^a-zA-Z0-9.-]/g, "_"),
-    );
-    const _checkDiskLock = () => {
-      try {
-        if (!fs.existsSync(lockFile)) return false;
-        const stat = fs.statSync(lockFile);
-        return Date.now() - stat.mtimeMs < DISK_LOCK_TTL_MS;
-      } catch {
-        return false;
-      }
-    };
-    const _writeDiskLock = () => {
-      try {
-        fs.writeFileSync(lockFile, String(Date.now()), "utf8");
-      } catch {}
-    };
-
-    const disposable = vscode.extensions.onDidChange(() => {
-      try {
-        if (_selfUninstallReloadTriggered) return; // 幂等 (已触过 · 跳)
-        // ① startup grace · 60s 内不响应 (避启动协议清 .obsolete 之 emit 风暴)
-        const elapsed = Date.now() - ACTIVATE_TIME;
-        if (elapsed < STARTUP_GRACE_MS) {
-          L.info(
-            "selfWatchdog",
-            `onDidChange in startup grace (${elapsed}ms<${STARTUP_GRACE_MS}ms) · 跳`,
-          );
-          return;
-        }
-        // ② getExtension 一查
-        const stillHere = vscode.extensions.getExtension(SELF_EXT_ID);
-        if (stillHere) return; // self 还在 · 别 ext 变
-        // ③ 二查 + 物理验证 + 磁盘锁三验 (异步 1.5s)
-        L.info(
-          "selfWatchdog",
-          `getExtension undefined · 1.5s 后二查+物理验+锁三验`,
-        );
-        setTimeout(() => {
-          try {
-            if (_selfUninstallReloadTriggered) return;
-            const recheck = vscode.extensions.getExtension(SELF_EXT_ID);
-            if (recheck) {
-              L.info("selfWatchdog", "二查 self 已恢 · VS Code 临态 · 跳");
-              return;
-            }
-            // 物理验证 · self 物理目录还在 → 真未卸 (VS Code 状态错 · 防误删)
-            try {
-              if (fs.existsSync(__dirname)) {
-                L.info(
-                  "selfWatchdog",
-                  `self 物理目录仍在 (${path.basename(__dirname)}) · 跳`,
-                );
-                return;
-              }
-            } catch {}
-            // ④ 磁盘锁 · 5 min 跨 ext-host 实例幂等
-            if (_checkDiskLock()) {
-              L.info("selfWatchdog", "磁盘锁活 · 5min 幂等 · 跳");
-              return;
-            }
-            // ── 四验通 · 真触 reload + cleanup ──
-            _selfUninstallReloadTriggered = true;
-            _writeDiskLock();
-            L.info(
-              "selfWatchdog",
-              `★ self 真被卸 (四验通) · spawn cleanup + 3s Reload · 水过无痕`,
-            );
-            _spawnDetachedCleanup("watchdog");
-            try {
-              vscode.window.showInformationMessage(
-                "了事拂衣去 · 水过无痕 · 检测到卸载 · 3s 后自动 Reload · 主公无为",
-              );
-            } catch {}
-            setTimeout(() => {
-              try {
-                vscode.commands.executeCommand("workbench.action.reloadWindow");
-                L.info(
-                  "selfWatchdog",
-                  "★ reloadWindow 已发 · cleanup 自治清残",
-                );
-              } catch (e) {
-                L.warn("selfWatchdog", `reload 失败: ${e && e.message}`);
-              }
-            }, 3000);
-          } catch (e) {
-            L.warn("selfWatchdog", `recheck err: ${e && e.message}`);
-          }
-        }, RECHECK_DELAY_MS);
-      } catch (e) {
-        L.warn("selfWatchdog", `onDidChange tick err: ${e && e.message}`);
-      }
-    });
-    ctx.subscriptions.push(disposable);
-    L.info(
-      "selfWatchdog",
-      `★ watchdog v9.9.28 已挂 (四重去抖+物理验证+磁盘锁) · self=${SELF_EXT_ID}`,
-    );
-  } catch (e) {
-    L.warn("selfWatchdog", `setup fail: ${e && e.message}`);
-  }
-}
-
+// 此处原藏 v9.9.27 watchdog (~85 行) + v9.9.28 spawn cleanup (~140 行) + 幂等标志
+// 真本源参毕 (印 161): 反代本 in ext-host 内 · ext-host 死 → server 自然 close · 永无孤儿
+//   v9.9.27/28 之 watchdog + spawn = 「解决一个不存在的问题」之繁本
+// 治: 信任 vscode 内核 + ext-host 生命周期 + Windsurf 启动协议
+//   主公点 [✘] → vscode 标 .obsolete + 删 ext.json 条目 → 主公一念 reload → ext-host 死 → server close
+//   → 启动协议读 .obsolete → 删物理目录 → 真水过无痕
+// 兼底: deactivate ⑦ 段兜底标 .obsolete (印 156 真药 · 反 Windsurf fork bug · 留)
+// 道义: 四十八「损之又损 · 以至于无为 · 无为而无不为」
+//       四十「反者道之动 · 弱者道之用」(反『自建×模式』 · 用 vscode 内核之朴)
+//       三十七「道恒无名 · 朴唯小 · 而天下弗敢臣 · 侯王若能守之 · 万物将自宾」
 async function deactivate() {
   L.info("ext", "deactivate");
 
-  // ★ v9.9.28 真治 · 兜底 spawn detached cleanup ★
-  // 主公诏 5/19 2:36:「无在乎一切路径 必须从根本底层首要解决」
-  // 三路径覆: watchdog (onDidChange) · cmdPurge (命令面板) · deactivate (兜底任何路径)
-  //   · CLI uninstall: 不触 ext-host onDidChange · 但 ext-host shutdown 时调 deactivate
-  //   · 扩展面板 [✘]: 触 onDidChange · watchdog 先 spawn · deactivate 再 spawn (幂等保只跑一次)
-  //   · cmdPurge: 已 spawn · 此 deactivate 幂等跳
-  //   · 主公手动 Windsurf 关掉: ext-host shutdown · 调 deactivate · 此处兜底 (但 self 没被卸 · _detachedCleanupSpawned 检不到 self 被卸的迹象 · 故不应 spawn)
-  // 仅在 self 真被卸时 (vscode.extensions.getExtension(self)===undefined) 才 spawn
-  try {
-    const stillHere = vscode.extensions.getExtension(SELF_EXT_ID);
-    if (!stillHere) {
-      L.info("ext", "deactivate · self 已被卸 · 兜底 spawn cleanup");
-      _spawnDetachedCleanup("deactivate");
-    } else {
-      L.info("ext", "deactivate · self 仍在 (普通退出/reload) · 跳 cleanup");
-    }
-  } catch (e) {
-    L.warn("ext", `deactivate cleanup probe err: ${e && e.message}`);
-  }
+  // 印 161 朴本 · 信任 vscode 内核 + ext-host 生命周期 (无需 spawn cleanup)
+  // ext-host 死 → http server 自然 close → :8981 释放 (反代 in ext-host · 永无孤儿)
+  // 道义: 四十八「损之又损」· 三十七「道恒无名 · 朴唯小 · 而天下弗敢臣 · 侯王若能守之 · 万物将自宾」
 
   const isLocal = _proxyHandle && _proxyHandle.server;
 

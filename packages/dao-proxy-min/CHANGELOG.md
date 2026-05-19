@@ -2,6 +2,98 @@
 
 > 反也者, 道之动也; 弱也者, 道之用也. —— 帛书《老子》德经
 
+## v9.9.29 — 印 161 · 损之又损 · 复归朴本 · 道法自然 (2026-05-19)
+
+> **为学者日益, 闻道者日损. 损之又损, 以至于无为, 无为而无不为.** —— 帛书《老子》四十八章
+>
+> **反也者, 道之动也; 弱也者, 道之用也.** —— 帛书《老子》四十章
+>
+> **道恒无名. 朴唯小, 而天下弗敢臣. 侯王若能守之, 万物将自宾.** —— 帛书《老子》三十七章
+
+### 主公诏 (5/19 03:11 → 印 158→159→160→161 链)
+
+「**专注于最本源最核心的终端问题 · 反者道之动 · 不依赖任何第三方 · 推进到底 实现一切**」
+
+「**彻底去芜存菁 · 道法自然 · 损之又损**」
+
+### 真本源参毕 · 反代本就 in ext-host
+
+精读 `extension.js` L383~ 之活相 — **真态**:
+
+```js
+async function proxyStart(port, mode) {
+  const mod = require(srcPath);              // ★ require 入 ext-host 同进程
+  _proxyHandle = await mod.start({ port }); // ★ http server listen 在 ext-host 内!
+}
+async function proxyStop() {
+  await _proxyHandle.close();                // ★ server.close 在 ext-host 内!
+}
+```
+
+→ **反代根本不是独立子进程 · 反代 = ext-host 内嵌 http server**.
+→ **ext-host 死 → server 自然 close → 永无孤儿**.
+
+### 「自建 × 模式」之伪病
+
+| 想象之病 (印 158/159 引为治理动机) | 真实之态 |
+|---|---|
+| 反代 fork 之 utility 子进程成孤儿 | ★ **本无 fork** — 反代 = ext-host 内 server |
+| ext-host 卸载 → utility 仍活 | ★ **ext-host 死 = 反代死** — vscode 内核保证 |
+| :8981 端口残留 | ★ ext-host 进程死 → 端口自然释放 |
+| 物理目录清不掉 | ★ vscode 启动协议本应清 (Windsurf fork 偶 bug · 印 156 ⑦ 段已治) |
+
+→ **v9.9.27 watchdog + v9.9.28 cleanup spawn + `_cleanup_spawn.js` = 解决一个不存在的问题之繁本**.
+
+### 五刀 · 损之又损
+
+| 刀 | 部位 | 治 | 减 |
+|---|---|---|---|
+| ① | activate 之 watchdog 调用 + 注释 | **删** | -6 行 |
+| ② | `_spawnDetachedCleanup` + `_setupSelfUninstallWatchdog` + 幂等标志声明 | **删** | -236 行 |
+| ③ | cmdPurge 末段 (自动 reload + spawn) | **简化** 为「主公一念 reload (含立即 Reload 按钮)」 | -10 行 |
+| ④ | deactivate 兜底 spawn 探 | **删** (保 ⑦ 段印 156 真药) | -19 行 |
+| ⑤ | `build_vsix.ps1` 之 `_cleanup_spawn.js` 引用 | **删** | -1 行 |
+
+### 验
+
+| 验 | 项 | 真态 |
+|---|---|---|
+| 减码 | extension.js | 143015B → 130357B (-12658B / -8.8%) |
+| 减行 | extension.js | 3587 → 3333 (-254 行) |
+| 减 vsix | dao-proxy-min-9.9.29.vsix | 123348B → 113067B (-10281B / -8.3%) |
+| 砍标 | `_spawnDetachedCleanup` / `_setupSelfUninstallWatchdog` / `_detachedCleanupSpawned` / `_selfUninstallReloadTriggered` / `ELECTRON_RUN_AS_NODE` / `_cleanup_spawn.js` / `selfWatchdog` / `spawn detached cleanup` | **8/8 全 ✓ 已删** |
+| 留标 | `_ensureTermPool` / `DaoTerminalPool` / `_startDaoTermService` / `cmdPurge` / 强标 `.obsolete` (deactivate ⑦) / `tryStartExternalApi` / `tryStopExternalApi` / 印 161 | **8/8 全 ✓ 留** |
+| 语法 | `node --check extension.js` | **exit=0 ✓ 通** |
+| 装毕 | zhou + admin · CLI `--install-extension --force` | **双账号 ✓ 装毕** |
+
+### 当前态对照
+
+```text
+extension.js
+├── ① 反代核 (proxyStart/proxyStop · in ext-host) ──── 不动 (印 156 真药)
+├── ② cmdPurge (主公一念 reload · 含按钮) ──────── 简 (印 161 朴)
+├── ③ 终端会话池 (_ensureTermPool · DaoTerminalPool) ── 不动 (印 160 真药)
+├── ④ deactivate (⑦ 段兜底标 .obsolete) ────────── 简 (砍 spawn 探 · 留 ⑦)
+├── ⑤ proxy watchdog (30s 自愈 · 反代复活) ───────── 不动 (印 v9.4.7 真药)
+└── ⑥ 外接 api (tryStartExternalApi / Stop) ───────── 不动 (印 124 真药)
+
+砍部 (繁本 · 印 158/159):
+× _setupSelfUninstallWatchdog (~85 行)
+× _spawnDetachedCleanup (~140 行)
+× _cleanup_spawn.js (13.8 KB · 整件)
+× _detachedCleanupSpawned / _selfUninstallReloadTriggered (幂等标)
+```
+
+### 道义
+
+- 四十八「**损之又损 · 以至于无为 · 无为而无不为**」 — 五刀全砍 ~290 行 + 13.8 KB 繁本
+- 四十「**反者道之动 · 弱者道之用**」 — 反「自治防孤儿」之妄 · 用 vscode 内核生命周期之弱柔
+- 三十七「**道恒无名 · 朴唯小 · 而天下弗敢臣**」 — 信 vscode 内核 + ext-host 生命周期 + Windsurf 启动协议
+- 二十八「**朴散则为器 · 圣人用则为官长 · 夫大制无割**」 — 复归朴本 · 不再以妄想构繁本
+- 六十四「**为之于其未有 · 治之于其未乱**」 — 治在主公一念之先 · 不在 ext 自治
+
+---
+
 ## v9.9.27 — 软编码彻终 + self-uninstall watchdog · 印 158 · 适所有用户 / 所有 fork (2026-05-19)
 
 > **朴散为器 · 圣人用则为官长 · 夫大制无割.** —— 帛书《老子》二十八章
