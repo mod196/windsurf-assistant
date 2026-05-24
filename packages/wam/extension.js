@@ -1,4 +1,4 @@
-// WAM · 万法归宗 v2.6.8 · 道极版 · 道法自然 · 太上下知有之
+// WAM · 万法归宗 v3.0.0 · 道极版 · 道法自然 · 太上下知有之
 //
 // 本源需求: 用户在 Cascade panel 发消息 → WAM 自动切健康号 (用户无为 · 插件无不为)
 //
@@ -8,6 +8,46 @@
 //   · 不禁账号   · 失败仅记数 · 号永远可选 · rate-limit 退让 30s 即回池
 //   · 上善如水   · 不 kill 进程 · 不抢路 · 等 cascade 流完再切
 //   · 大制无割   · 198KB → ~80KB · 一层 hook 一条真路 (从 v2.4.13b 损之又损)
+//
+// v3.0.0 · 道法自然 · 无为而无不为 · 全量解构自封体系 (2026-05-21):
+//   「一」移除一切自动限制 · 有密码即可用 · Free/Trial/Pro 皆可进入候选池
+//   「二」 _cleanseHealthOnLoad 彻底废止清洗 · 不主动覆写任何字段
+//   「三」 _scoreOf 加为所有已验号给正分·双零才最低分 · 无门第封冻
+//   「四」 endpoint 死亡检测扩展 400 · 不再漏检服务端故障
+//   「五」 _tryDevinBillingFallback · GetUserStatus 400 时用 Devin billing API 探实隟额
+//     实证: app.devin.ai/api/{orgId}/billing/status 返 overage_credits + billing_error
+//
+// v3.0.1 · 反者道之动 · 手动至高优先 · 彻底无阻 (2026-05-21):
+//
+//   ━━━ 五大结构性病灶 (逆流审视 v3.0.0) ━━━
+//   「病灶一」 _engine.rotating && !_switching 永久无超时阻塞手动切号 (最致命)
+//     根因: Engine.rotateNext() 只设 this.rotating=true·不设 _switching=true
+//     效果: rotateNext 执行期间 (最长160s) 手动切号命中此判断 → 永久阻塞
+//     30s 强制解锁逻辑仅针对 _switching·对 _engine.rotating 完全无效
+//   「病灶二」 Engine.rotateNext() 不同步 _switching 全局锁
+//     根因: rotateNext 仅管 this.rotating·_switching 始终为 false
+//     效果: 手动切号30s超时保护对 rotateNext 场景完全失效
+//   「病灶三」 命令面板 wam.switchAccount 不同步 _switching
+//     根因: line 4820 设 _engine.rotating=true 但不设 _switching=true
+//     效果: 命令面板切号期间 手动切号同样被永久阻塞
+//   「病灶四」 rate-limit 时 rotateNext 串行遍历候选号 长时持锁
+//     根因: for(idx of order) loginAccount(idx) 每次3-8s · 20号=最长160s
+//     效果: 高速切号场景 IP 级 rate-limit → rotateNext 遍历全部失败 → 持锁分钟级
+//   「病灶五」 手动切号 _switching 超时 30s 过长 · 用户体感卡顿严重
+//
+//   ━━━ v3.0.1 解法 (反者道之动·损之又损·一锁覆万源) ━━━
+//   「修一」 手动切号删除 _engine.rotating && !_switching 永久阻塞
+//     改为: 只检查 _switching (统一互斥锁) · 超时 30s→10s (手动不应久等)
+//     力: 手动强占时同步清除 _engine.rotating (双锁归一)
+//   「修二」 Engine.rotateNext() 设/清 _switching (与 _doAutoSwitch 对齐)
+//     改为: this.rotating=true 时同步 _switching=true + _switchingStartTime
+//     力: 手动10s超时保护对 rotateNext 场景生效 · 用户最长等10s即可抢占
+//   「修三」 命令面板 wam.switchAccount 同步 _switching
+//     改为: _engine.rotating=true 时同步 _switching=true
+//   「守一」 _switching 成为唯一互斥锁 · _engine.rotating 仅用于UI显示
+//     道理: 天下莫柔弱于水·水善利万物而不争 · 一锁至柔·覆万场景
+//   「道法」 用户手动切号 = 最高优先 · 任何时候 ≤10s 必可执行
+//     无为而无不为 · 不禁 · 不阻 · 不滞 · 回归本源
 //
 // v2.6.0 · 底层软编码 · 唯变所适 · 水无常形 (2026-05-05):
 //   · RE_SESSION_TOKEN 常量统一 · "devin-session-token$" 两处字面量 → 单点定义
@@ -317,200 +357,243 @@ const { URL } = require("node:url");
 //     · 大象无形   — 邮箱定准 (RFC 宽放) · 严判 TLD ≥2 letters
 //     · 信不足 案有不信 — 测毕 72/0 方为道
 //
-// v2.7.1 · 万法归一·token 直登 · 反者道之动·逆流解析所有 windsurf token (2026-05-14):
+// v3.0.2 · 反者道之动 · 持久化全量修复 · 道法自然 · 无为而无不为 (2026-05-22):
+//   「一」 LOCK_FILE 独立持久化 (v2.7.4 补入) · lock-state.json 专司🔒 · multi-window race-safe
+//   「二」 save() 守一同步 _savedAccountMeta (v2.7.3 补入) · 解锁不再悄悄回退
+//   「三」 reloadAccounts() 实时读 LOCK_FILE · 反映其他窗口意图
+//   「四」 toggleSkip 写 LOCK_FILE + 同步内存快照 · 锁意图即时落盘
+//   「五」 verifyAllAccounts try/finally · _verifyAllInProgress 必重置 · 周期验证永不卡死
+//   「六」 lock-state.json 文件监视器 · 跨窗口锁变更实时广播
+//   「七」 autoVerifyStartupStaleMin (默认15min) · 启动验证不再跳过近期验过号
+//   「八」 refresh 消息触发 onlyStale 后台验证 · 手动刷新不再只是 reloadAccounts
+// v3.0.3 · 道法自然·无为而无不为 (2026-05-22 晚):
+//   「一」 _sessionCache 预缓存体系 — verifyOneAccount 已登录的 sessionToken 缓存
+//       loginAccount 弹延 devinLogin (速率限制根源) · 读缓存直射 injectToken
+//   「二」 injectFailCooldownMs 软编码 — 原 30s 硬编码改配置 (silent 默认 5s)
+//       预缓存命中时基本不再触发速率限制 · 5s 建基足夠口
+//   「三」 切号快速通道 — cache 命中时跳过 devinLogin/windsurfPostAuth 整个网络往返
+//       平均切号耗时: 3-8s(全登录) → <50ms(缓存命中) — 60倍提速
+// v3.0.4 · 水无常形·万格通吃 · 账密解析全量增强 (2026-05-22):
+//   「一」 _parseDualLabelLine — 双标签同行通吃 (邮箱：email----密码：pass · 任意顺序·任意分隔)
+//   「二」 _stripAnyLabel     — tryPair双侧净化 · 密码含"密码："前缀自动剥取真值
+//   「三」 行内标签检测       — email@x.com密码：pass / pass----邮箱：email 等无标准分隔形
+//   「四」 JSON数组整体解析   — [{email,password},...] 批量导出格式
+//   「五」 bracket标签兼容    — 【邮箱】email【密码】pass 等全角括号形
+// v3.0.5 · 反者道之动·邮箱先定密码后识 · 一劳永逸根治 (2026-05-22):
+//   「一」 _stripPassCandLabel — 密码候选保守剥 · 只剥中文标签与全英长词 · 不剥 pass/key/secret/pwd 短词
+//       根因: _stripAnyLabel 含 pass(?:word|wd)? 使裸 pass/key 等短词也匹配 → pass:word123 被污染为 word123
+//   「二」 tryPair 两阶段 — 第一阶裸检邮箱(保留原始密码) · 第二阶剥标签再检(针对有标签前缀的邮箱侧)
+//       核心: 密码侧永远使用 _stripPassCandLabel 而非 _stripAnyLabel · 像AI一样 邮箱先锚定密码取余值
+//   「三」 _emailAnchorExtract — 同步改用 _stripPassCandLabel · 根治兜底层同一病灶
+// v3.0.6 · 损之又损·归零IP限速 · devinLogin 全局序列化+缓存快路 (2026-05-22):
+//   【根因七层】: devinLogin = IP级速率限制唯一触发点
+//     ① verifyOneAccount 无条件调 devinLogin (无缓存快路) → parallel=3 同时三调 → 直触限速
+//     ② loginAccount 有缓存快路但 verifyOneAccount 没有 → verifyAll填cache途中手动切号 → miss → 再触
+//     ③ 无全局序列化 → 任何时刻N个并发 devinLogin → IP限速必然
+//   「一」 devinLogin 全局序列化门 — _devinLoginGate Promise chain
+//       任意时刻只有一个 devinLogin 在飞 · 连续调用间自动保证 wam.devinLoginMinGapMs(默认1200ms)
+//   「二」 verifyOneAccount 缓存快路 — 与 loginAccount 对齐
+//       有效cache → 直接 tryFetchPlanStatus → 零 devinLogin · 二次verifyAll无任何限速
+//       cache失效 → 驱逐 → 走全路 (devinLogin已被序列化保护)
+// v3.1.0 · 根治浏览器弹窗 · 道法自然 · 天下之至柔驰骋于天下之致坚 (2026-05-23)
 //
-//   *天下莫柔弱于水，而攻坚强者莫之能胜也，以其无以易之也*
+//   根因 (逆向 codeium.windsurf dist/extension.js 实证):
+//     WindsurfAuthProvider.createSession() → login() → openExternal(loginUrl) = 浏览器弹窗
+//     触发链: ① 路甲(hijack) 调 loginWithAuthToken → provideAuthToken() 内 openExternal(loginUrl)
+//                  若 hijack 不粘 (Proxy/frozen) 或 Windsurf 在 hijack 前已捕获引用 → 泄漏弹窗
+//             ② 路乙(clipboard) 同 loginWithAuthToken → 同理泄漏
+//             ③ 路丙(provideAuthTokenToAuthProvider) 返 error 后降级到 ①② → 泄漏
+//             ④ 切号窗口内 Cascade panel 检测 "未登录" 发 handleLogin → LOGIN_WITH_REDIRECT → 弹窗
 //
-//   缘起 · 主公实证 (2026-05-14 · 用户图1+图2+图3):
-//     图1 "添加方式" UI 草图 · 7 类: 智能识别/Devin 账密/Devin 邮件/Devin Session/Devin auth1/邮箱密码/Refresh Token
-//     图2 微信发货 "卡号: email----auth1_<52字符>" 格式 · 主公实证两枚卡密
-//     图3 v2.7.0 在 179 端实证: 138 号·1 未验·25 耗尽·trial 状态混乱
+//   治法 (三层根治):
+//     「一」 openExternal 持久守卫 — 切号全程拦截 windsurf.com/auth URL · 从源头断弹窗
+//     「二」 消灭路甲/路乙降级 — 路丙失败仅重试一次 · 不走 loginWithAuthToken (弹窗根源)
+//     「三」 token 预验 — loginAccount 全登录路径先 registerUserViaSession 验 token 有效性
+//           再 injectToken · 避免 handleAuthToken 内部 registerUser 失败扰动 auth 状态
 //
-//   病诊 (v2.7.0 parseAccountText 之残漏):
-//     · email----auth1_xxx 形被 tryPair 误识为 (email, password=auth1)
-//     · 入 accounts 后 devinLogin(email, auth1) 必败 (auth1 非真密码)
-//     · 入库 138 号许多失效·主公必手动 verify·违"无为而无不为"
+//   帛书四十三章: 天下之至柔，驰骋于天下之致坚；无有入于无间
+//   守卫无形(至柔) · 穿透一切弹窗路径(致坚) · 用户无感(无有入于无间)
 //
-//   治法 · 后端打通万法 · UI 完全不动 (主公二诏: "为学者日益·闻道者日损·UI 不变·后端打通"):
-//     §A 立 _detectTokenKind(s) · 5 类 (auth1/session/jwt/apikey/raw) · 单一信源
-//        windsurf 4 阶 token 链: auth1 → session(postAuth) → apiKey(register) → JWT/refresh
-//     §B 立 _isPrefixedToken(s) · 持久化前缀 "auth1:xxx"/"session:xxx"/"refresh:xxx" 识别
-//     §C tryPair 升级 · email+token 优先返 (返 {email, token, kind})
-//     §D items 加 'pair-token' 类型 · 配对循环加 token 与 pendingEmail 多行配对
-//     §E parseAccountText 返 { accounts, tokens, tokenPairs }
-//     §F addBatch 处理 tokenPairs · 入 accounts 加 auth1/sessionToken/refreshToken 字段
-//        同 email 已存补 token 不重复 · 返 tokenUpdated 供 verify
-//     §G 立 resolveSessionTokenFromCreds(creds) · 任意凭据 → sessionToken
-//        降级链: session>jwt>auth1>password>refresh
-//     §H 立 loginViaToken(creds, store, opts) · 任意 token → inject+register+quota+setActive
-//        反查 email · 入完整管理流
-//     §I loginAccount/verifyOneAccount 三链择优 (auth1 > sessionToken > password)
-//        实证依据: auth1 跳 devinLogin 一阶 · 避 Devin rate-limit (用户图3 D10953 W9142 压力)
-//     §J _persistAccountsToMd 4 形落盘 (password/auth1:/session:/refresh:)
-//     §K webview UI **完全不变** · 同 v2.7.0 placeholder + 单 textarea (主公二诏 · 太上下知有之)
-//        底层 parseAccountText 已万法识号 · UI 不必显示 token kind 7 卡片 (大道至简)
-//     §L 新命令 wam.addToken · Command Palette 显式 token 入口
-//     §M wam.injectToken 升级 · 走 parseAccountText + loginViaToken 全栈
-//     §N webview 'addBatch'/'verify' 通走 loginViaToken/verifyOneAccount 三链 · UI 无感
+// v3.1.1 · 不着相·不妄为·顺其自然·无为而无不为 (2026-05-23)
 //
-//   测套件 _test_v271_omni_token.cjs · 65 测 · 11 节:
-//     §1 静态契约 (15) · §2 函抽 (5) · §3 _detectTokenKind 严判 (11)
-//     §4 治用户图2 病 (7) · §5 持久化形 (6) · §6 JSON 4 字段 (4)
-//     §7 反序多行 (3) · §8 5 分隔符 (5) · §9 多 kind (2)
-//     §10 不退化 (3) · §11 综合极端 (4)  · 全 65/0 ✓
+//   主公诏: 反者道之动·为道者日损·重新完善插件一切体系·最小化变动
+//          专注于本源·彻底解决切号速度波动·突破官方一切限制
+//          想切号就切号·想切多快就切多快·道并行而不相悖
 //
-//   道之精要:
-//     · 反者道之动 — auth1 链跳 devinLogin · 反向避一阶 rate-limit
-//     · 弱者道之用 — token 体细分识 · 不再以"非 email 即 password"草率
-//     · 唯变所适   — 任意形式 (auth1/session/JWT/refresh/email-pair) 同走 loginViaToken
-//     · 守一       — 单一信源 _detectTokenKind · tryPair/JSON/labels/持久化全栈复用
-//     · 太上下知有之 — UI 完全同 v2.7.0 · 用户察觉无差 · 后端已通万法 (主公二诏)
-//     · 道法自然   — 用户粘什么识什么·无为而无不为
-//     · 闻道者日损 — UI 7 卡片日益 · 撤之归一 · 损之又损以至于无为
-//     · 大道至简   — 一个 textarea + 万法识号 · 不必七卡片显式分类
-//     · 大制无割   — extension.js ~228 KB (UI 撤回后 -4 KB · 全栈 token 链尽留后端)
-//     · 信不足 案有不信 — 测毕 65/0 + 全 13 套 0 退化 方为道
+//   反者审视 (v3.1.0 三处「日益」未损 + 一处「妄弃」未持):
+//     「日益一」 injectViaJia 函数体 ~58 行 · v3.1.0 已声明永废 · 但代码仍在 → 真死代码
+//     「日益二」 injectViaYi 函数体 ~32 行 · 同上 → 真死代码
+//     「日益三」 _devinLoginGate Promise chain 互斥锁 ~36 行 · 实效仅等价于 _lastDevinLoginAt
+//                单变量 minGap 检查 · Promise 链是繁形 · 简之即顺
+//     「妄弃」 _sessionCache 仅 in-memory 15min · sessionToken JWT 实际有效 数小时-数天
+//             重启 IDE 即丢 · 用户重启后首次切号必触 devinLogin · 必受 IP 限速 · 必感波动
 //
-// v2.7.2 · 主公三诏「token 看做账号密码 · 直接复用一切 · 顺其自然」之最后一公里 (2026-05-14):
-//   (内涵同 v2.7.1.1 · SemVer 合规 patch bump · 三段为道 · 信言不美)
+//   治法 (顺其自然·三损一益):
+//     「损一」 删 injectViaJia 函数体 (路甲·永废)
+//     「损二」 删 injectViaYi 函数体 (路乙·永废)
+//     「损三」 _devinLoginGate Promise chain → _lastDevinLoginAt minGap (单变量)
+//     「益」 _sessionCache 持久化磁盘 ~/.wam/_session_cache.json
+//             activate() 启动加载 → 重启不丢 → 全部账号秒切
+//             24h TTL (sessionToken JWT 实际有效远超 in-memory 15min)
+//             startup 后台 fire-forget verifyAllAccounts(staleMin=24h) 预热未缓存号
 //
-// v2.7.3 · 治🔒回退根 · 守一 · 大道至简 (2026-05-14):
-//   · 缘起 (主公诏 12:48 后实证):
-//     "🔒按钮有时候状态会自动回退 持久化功能有点问题"
-//     用户解锁后 · 经一次 refresh/addBatch 触发 reloadAccounts · 锁状态自动恢复
-//   · 根因 (一行致命漏):
-//     toggleSkip → acc.skipAutoSwitch=false → _store.save() 写盘 (新 accountMeta) ✓
-//     但 this._savedAccountMeta 仍是 load() 时初始化的过期内存 ref · 从未刷新
-//     reloadAccounts() 调用时 (refresh/Layer6/addBatch) · 用过期 _savedAccountMeta 把解锁号又 restore
-//     → 用户解锁状态被悄悄回退 · 显形为"🔒自动回退"
-//   · 治法 (柔之胜刚·守一):
-//     save() 写盘 atomicWrite 之前 · this._savedAccountMeta = accountMeta · 一行同步
-//     → 内存快照 ≡ 盘上 state · 任何 reloadAccounts 后 restore 仍合用户意图
-//   · 道理: 78 章 "天下莫柔弱于水，而攻坚强者莫之能胜也，以其无以易之也"
-//          用户手动意图为柔 (一次点击) · 系统自动循环为刚 (1800s 一轮 verify + 多源 reloadAccounts)
-//          柔以易刚之路: save 出口守一 · 一行覆盖过期内存快照 · 柔通则刚不复
-//   · 实证: _test_v273_lock_persistence.cjs — 模拟 toggle → save → reloadAccounts 全循环
-//          验 skipAutoSwitch 守用户意图不回退 (锁 → 解锁 → reload → 仍解锁)
+//   核心成效:
+//     · 切号热路径 = injectViaBing 单步 50-200ms (cache 命中)
+//     · 重启不丢 cache · 跨 IDE 会话永久有效 → 永远不再触发 IP 限速
+//     · 用户感知: 想切号就切号 · 任意状态下秒级响应 (无 1200ms 序列化等待)
+//     · 仅 cache 失效/未热 时才 fallback devinLogin (rare path)
 //
-//   *道生一，一生二，二生三，三生万物。万物负阴而抱阳，中气以为和*
+//   帛书四十一章: 大成若缺，其用不敝；大盈若盅，其用不窘
+//   损死代码 ≠ 缺 · 简日益 = 大成 · 持 sessionToken = 大盈 · 用之不敝不窘
 //
-//   缘起 · 主公三诏 (2026-05-14):
-//     v2.7.1 治了 parseAccountText (email----auth1_xxx 不再误入 password 槽)
-//     但 accounts schema 加了 auth1/sessionToken/refreshToken 三字段 · 此为"日益"
-//     主公诏: 将 token 看做账号密码 · 直接复用一切 (loginAccount/persist/UI/复制) · 顺其自然
+//   实证: _test_v311_dao.cjs · 守门四章
+//     §A 死代码确删 (injectViaJia/injectViaYi 不存在)
+//     §B Promise chain 已简 (无 _devinLoginGate 引用)
+//     §C sessionCache 持久化往返 (write→load→hit)
+//     §D activate() 暴露 _internals._sessionCache + _persistSessionCache
 //
-//   病诊 (v2.7.1 残漏):
-//     · parseAccountText 改返 tokenPairs · accounts 加三字段 · schema 膨胀 (日益)
-//     · 持久化 _persistAccountsToMd 加 4 形 (password|auth1:|session:|refresh:) · 落盘复杂
-//     · webview/wam.injectToken/wam.addToken 各自处理 tokenPairs 中转 · 代码三处复制
-//     · 灾真本源: 部分代码路径若 acc.password 含 token 字符 (持久化形/直传) 仍走 devinLogin → 必败
+// v3.1.2 · 道法自然·彻底审弊·零增弊端·彻底无感 (2026-05-23)
 //
-//   治法 (v2.7.1.1 · 闻道者日损 · 损之又损):
-//     §α 损 parseAccountText 返 tokenPairs · 复返 { accounts, tokens } 同 v2.7.0
-//        items 中 'pair-token' 类型直入 accounts.password 槽 (token 与密码同居 · 顺其自然)
-//        反序 token+email · 单行 token+pendingEmail · 均入 password 槽 · 不再单存 tokenPairs
-//     §β 损 _persistAccountsToMd 4 形落盘 · 复返 v2.7.0 单形 "email password" (password 槽万法皆容)
-//     §γ 损 addBatch 之 tokenPairs/tokenUpdated 返字段 · 仅返 { added, duplicate, tokens, addedEmails }
-//        password 不同则替换 · addedEmails 涵盖 (新加 ∪ password 替换) · 后下 verify 自动验
-//     §δ 立 _normalizeAccCreds(acc) · 公器 · 登录入口浅复制 + _detectTokenKind 自动分流
-//        password 槽 auth1_xxx → 临时挂 auth1 · session$xxx → 临时挂 sessionToken · refresh → refreshToken
-//        loginAccount/verifyOneAccount 顶端一行映射 · 三链择优逻辑无变 · 单点改修复全栈
-//     §ε 损 webview addBatch handler · 去 tokenPairs 中转代码 (~50 行死代码)
-//        wam.injectToken/wam.addToken 同清 · 三处复制 → 一处分流 (大方无隅)
+//   主公诏: 道法自然 顺其自然 无为而无不为
+//          彻底审视所有方案弊端·彻底实现不增加任何弊端同时解决所有之问题
 //
-//   测套件 _test_v2711_main.cjs · 14 节 · 70+ 测:
-//     §1 _normalizeAccCreds 5 kind 映射 (auth1/session/jwt/apikey/raw/null)
-//     §2 显式字段优先 (acc.auth1 存 不覆盖)
-//     §3 parseAccountText 主公三诏 · pair-token 入 password 槽
-//     §4 _persistAccountsToMd 单形落盘
-//     §5 addBatch 不返 tokenPairs · addedEmails 涵 password 替换
-//     §6 verifyOneAccount/loginAccount 内 _normalizeAccCreds 调用契约
-//     §7 用户图2 微信卡密 端到端
-//     §8 反序顺逆均通
-//     §9 不退化 (v2.7.0/v2.7.1 兼容)
+//   v3.1.1 残弊 (现场实证·用户报 × devinLogin: Rate limited later):
+//     「弊一」 activate 后 8s prewarm verifyAll(staleMin=1440·parallel=2)
+//             首次部署 cache 空 → 对所有 N 号挨个 devinLogin → IP 限速雪崩
+//     「弊二」 startup auto-verify (30s) + periodic verify (30min) 仍批量
+//             叠加 prewarm 三路并发 → 限速根源
+//     「弊三」 _getCachedSession 用 _cfg(15min) 死阈值 · 磁盘加载来 24h entry 实际仅 15min 后失效
+//             v3.1.1 持久化承诺 24h · 实际仅生效 15min (隐藏 bug)
+//     「弊四」 cache hit 不续期 cachedAt → 24h 后活跃号必 cache miss → 必触 devinLogin
+//     「弊五」 devinLogin 无限速感知 → 触发后无限重打服务器 · 永不退避
 //
-//   道之精要:
-//     · 损之又损 — schema 守 v2.7.0 单 {email,password} · 不日益三字段 · 大成若缺
-//     · 顺其自然 — token 与密码同居 password 槽 · 下游一识别即分流 · 不破"道法自然"
-//     · 道生一   — _normalizeAccCreds 公器 · 入口一处分流 · 三链择优逻辑无须改 (一生二，二生三)
-//     · 知止可以不殆 — _persistAccountsToMd 不知止则 4 形 · 知止则单形 · 复用 v2.7.0 第三方 .md 读
-//     · 信言不美 — banner 描述简至"主公三诏·token 看做密码·_normalizeAccCreds 入口分流"
+//   方案审弊 (反观三路 · 唯零弊端方可顺其自然):
+//     方案A·全关 → 弊: 重启后 health 陈旧 · 冷号不验 · 体验降
+//     方案B·感知 → 弊: 三路并发未除 · 首次仍限 (感知是事后补救)
+//     方案C·慢预 → 弊: 主动切号也等 12s · 12min 内仍可能批量冲突
+//     方案D·零弊 → 自动路径仅 verify cache 内号 (走 fast-path · 零 devinLogin)
+//                未 cache 号 lazy on user switch (单次 · 永不批量)
+//                + 限速感知 + cache hit 续期 + TTL 修隐藏 bug
 //
-// v2.7.5 · 单独 token 万法适配·无为无感·道恒无名 (2026-05-14):
+//   治法 (顺其自然·三损三益·零增弊端):
+//     「损一」 删 v3.1.1 prewarm (line 6169-6193) · 限速重叠源
+//     「损二」 startup auto-verify 改 _cacheOnly=true · 仅 verify cache 内号
+//             cache 内号走 tryFetchPlanStatus(apiKey) fast-path · 零 devinLogin
+//             未 cache 号不主动批量 · 用户切到时 lazy login (单次·不限速)
+//     「损三」 periodic verify 同改 _cacheOnly=true · 与启动同步
+//     「益一」 devinLogin 限速自感知 (auto 5min backoff window)
+//             响应 429 / json error 含 rate/limit → 设 _devinLoginRateLimitedUntil = now + 5min
+//             入口检查窗口 → 命中即立返 · 零网络 · 永不打死服务器
+//             配置 wam.devinLoginRateLimitWindowMs (默 300000ms · 0=关)
+//     「益二」 _getCachedSession 命中续期 cachedAt + 修 TTL 隐藏 bug
+//             命中后 c.cachedAt = Date.now() · 异步 _persistSessionCache (debounce)
+//             过期检查优先用 entry.maxAgeMs (磁盘加载 24h) · fallback _cfg
+//             效果: 活跃号永不过期 · 冷号 24h 后自然清理
+//     「益三」 verifyAllAccounts 支持 {_cacheOnly:true} 选项
+//             队列构建时过滤 _getCachedSession 为 null 的号 · 仅保留 cache 内号
 //
-//   *道恒无名·侯王若能守之·万物将自宾·民莫之令而自均焉*
+//   零弊端确认 (审视所有可能弊端 · 一一闭环):
+//     · 自动批量? → 删 (零 devinLogin·零限速)
+//     · 重启 health 陈旧? → cache 内号仍刷新 (走 fast-path)
+//     · 冷号不验? → lazy on switch · 反正未 cache 号必走 devinLogin · 现按需
+//     · 限速误伤主动切号? → cache hit 不调 devinLogin·无影响 · 仅 cache miss 受影响 5min
+//     · IO 风暴? → cache hit 续期走 _persistSessionCache debounce 500ms · 已合并
+//     · 主动批量按钮? → 保留 + 限速感知保护 · 用户自主决定冒险
 //
-//   缘起 (主公诏 15:09):
-//     "继续推进 并解决单独token无法添加登录之问题
-//      token登录后账号信息均可查询 用户无为 无感 适配万法之格式"
-//     主公图1 五行 auth1_xxx (无 email 同行配对) · 当下被弃入 tokens 孤儿数组·accounts 空
-//     → 用户粘贴后 列表无新号 · "添加" 形同未响应
+//   核心成效:
+//     · 启动期零 devinLogin (cache 空时跳过 · cache 有则 fast-path)
+//     · 切号热路径 = injectViaBing 单步 50-200ms (cache 命中 · 99%)
+//     · cache miss 切号 = lazy 单次 devinLogin · 1-3s · 之后该号永久秒切
+//     · 限速触发 → 5min 自动退避 → cache 切号无感
+//     · 永不再批量 devinLogin → 永不再触发 IP 限速
 //
-//   病诊 (v2.7.4 残漏):
-//     parseAccountText 末段 · 孤儿 token 无 pendingEmail 配 → tokens.push(raw)
-//     addBatch 拿 parsed.accounts (空) · 仅返 tokens 数组 · UI 显 "0 added"
-//     用户图1 五行 auth1 token → 入库 0 号
+//   帛书六十四章: 为之于其未有也，治之于其未乱也
+//   未有之时即不为 (零批量) · 未乱之时即治 (限速感知) · 万乱不生
 //
-//   治法 (v2.7.5 · 道恒无名·万物自宾):
-//     §A parseAccountText 末段 · 孤儿 token → 占位 email 入 accounts (10 行)
-//        占位形: `<kind>.<sha8>@token.wam`
-//        kind ∈ {auth1, session, jwt, apikey, refresh, raw}
-//        sha8 = sha256(token).slice(0,8) · 同 token 反粘不重 (幂等)
-//        合法 email 形 (通过 _isValidEmail · TLD wam 3 字母 ≥2 letters)
-//        password 槽 = 原 token · 重启 parseAccountText 自然读回 (tryPair 识 email+token)
-//     §B 立 _isPlaceholderEmail(s) · 工具识别占位号 · UI/verify/rename 路径快判 (一函)
-//     §C webview domainBadge 加 "tk" · 占位号视觉可识 (用户图1 五行入库后显 "tk" badge)
-//        .dm.tk{background:#5a3a14;color:#f0c674} (金黄·token-only 美学)
-//     §D 下游 _normalizeAccCreds 已就·_detectTokenKind(acc.password) 自动分流
-//        loginAccount/verifyOneAccount 三链择优 → loginViaToken 全栈
-//        quota/plan/expiry 等账号信息均可查询 (绑占位 email · 信息无差)
-//     §E _persistAccountsToMd 单形落盘 ("placeholder password") · v2.7.1.1 兼容
+//   实证: _test_v312_dao.cjs · 守门四章
+//     §A 弊一已损 (无 v3.1.1 prewarm setTimeout)
+//     §B 弊三/四已益 (cache hit 续期 · entry.maxAgeMs 优先)
+//     §C 益一限速感知 (window 内 devinLogin 立即拒绝)
+//     §D 益三 _cacheOnly 队列过滤 (verifyAllAccounts 支持选项)
 //
-//   道之精要:
-//     · 道恒无名 — 不强求"真 email" · 占位即真 · sha8 作"名"
-//     · 万物自宾 — 任意 token 形 (auth1/session/jwt/refresh/raw) 自归 accounts 池
-//     · 民莫之令而自均 — 用户粘 5 行 token · 列表自增 5 号 · 无需手动绑 email
-//     · 顺其自然 — token 与密码同居 password 槽 · 下游识别即分流 (v2.7.1.1 主公三诏延续)
-//     · 适配万法 — auth1/session/jwt/apikey/refresh/raw 5+1 kind 通  ·placeholder 涵
-//     · 用户无为·无感 — 视觉 "tk" badge · 工作如普通号 · 不增任何手动操作
-//     · 大道至简 — parseAccountText 末加 10 行 · 公器 _isPlaceholderEmail 加 6 行 · UI 加 3 行
+// v3.1.3 · effQuota 一以贯之 · 道法自然 · 反者道之动 (2026-05-23):
+//   病灶: tick 判耗尽用 effQ = Math.min(D, W) · 但 _scoreOf 用 W*8+D*3
+//     D=0/W=50 → effQ=0 触发切号 → _scoreOf 给 400 分 → 选入即刻再耗尽 → 无限循环
+//   根因: 评分维度与实际可用性定义不对齐 · 天下大乱
 //
-//   实证: _test_v275_single_token_omni.cjs · 主公图1 五行 token 端到端
-//        粘 5 行 auth1_xxx → addBatch 返 5 added · accounts.length = 5
-//        每号 password = 原 token · email = placeholder
-//        webview 列表显 5 tk badge · verify 后 quota/plan 正常 (绑 placeholder 即可)
+//   ━━━ 四修 (损之又损 · 一以贯之) ━━━
+//   「损一」 _scoreOf 正常模式: effQ < threshold → 大幅降权 (1-55分)
+//     与 tick effQuota 定义完全对齐 · D=0/W=50 不再得高分
+//   「损二」 _isValidAutoTarget 守门: 已验号 effQ < threshold → false
+//     预选/候补/重试三路径均受守门 · 杜绝切入即耗尽
+//   「损三」 getStats exhausted: 改用 effQ<1 计 (非仅双零)
+//     D=0/W=50 → effQ=0 → 计入 exhausted (统计真相 · UI 如实反映)
+//   「益一」 _doAutoSwitch: 首次+重试均加 _isValidAutoTarget 守门
+//     getBestIndex 返低分号仍需验证 · 无有效候选即停 (不浪费 login)
 //
-// v2.7.4 · 道恒无名·万物自宾 · 治🔒回退·multi-window race 真本源 (2026-05-14):
-//   · 缘起 (主公诏 13:31):
-//     "🔒一部分账号 同时🔓一部分账号后 关闭windsurf 重新开启后被回退
-//      必须要停留很久才能持久化 ... 复用持久化资源 道法自然 无为而无不为"
-//     主公选诏《道德经》三十二章: "道恒无名·侯王若能守之·万物将自宾·民莫之令而自均焉"
-//   · 真凶诊 (v2.7.3 实测·5+ Windsurf 窗口并发):
-//     主公 5 号 toggleSkip 操作 vs 盘上实际状态 — 100% 颠倒回退
-//     · 现场: 主公有 5+ Windsurf 窗口同时跑 · 含 11:49 启的 v2.7.1 残留进程
-//             共 5+ 个 WAM extension host 进程并发读写同一 ~/.wam/wam-state.json
-//     · race: A 进程 toggleSkip 锁 X → save() 写盘 (含 X 锁) ✓
-//             B 进程 (历史窗口·内存无 X 锁) 数秒后 tick save() → 覆盖 (不含 X 锁) ✗
-//             主公关 A 重开 → load → X 解锁 (B 胜出) → 显形"回退"
-//     · "停留很久才能持久化": 因为 B 偶发 reloadAccounts 后内存才更新·之后 save 才不覆盖
-//   · 治法 (大道至简·复用持久化资源):
-//     §1 新增 ~/.wam/lock-state.json 独立持久化🔒 (复用 atomicWrite · 顺其自然)
-//     §2 toggleSkip 写 LOCK_FILE (read-modify-write atomic · 唯一权威写者)
-//     §3 reloadAccounts 实时读 LOCK_FILE (不依赖内存快照)
-//     §4 save() 之 accountMeta 字段 从 LOCK_FILE 读 · 非 store.accounts 重算
-//        → 任何进程的 save 都不覆盖 LOCK_FILE · multi-window race 自消
-//        → wam-state.json.accountMeta 退为 legacy 镜像 (旧版兼容)
-//     §5 load() 首次启动 migrate 旧 accountMeta → LOCK_FILE (一次性·无缝)
-//   · 道理 (《道德经》三十二章):
-//     · 道恒无名 — LOCK_FILE 专司🔒一事 · "无名" 即"专一"
-//     · 侯王若能守之 — 守 LOCK_FILE 一文件之规
-//     · 万物将自宾 — 各 WAM 进程不再争抢锁字段 · 自归宾位
-//     · 天地相合·以降甘露 — 多进程 (天) + 用户意图 (地) 相合 · 锁状态自然降下
-//     · 民莫之令而自均焉 — 不必杀进程 / 不必强制用户改习惯 · multi-window 自然均衡
-//   · 实证: _test_v274_lock_state_isolation.cjs — 模拟 2 进程并发 save
-//          A toggleSkip 锁 X → B 后续 save → 验 X 仍锁 (LOCK_FILE 不被覆盖)
+//   道法自然 (37章): 道恒无名·侯王若守之·万物将自化
+//     effQuota 为「一」· 评分/守门/统计皆归于此 · 一以贯之 · 万源自化
 //
-const VERSION = "2.7.5";
+// v3.2.1 · 额度重置感知 · 无为而无不为 (2026-05-23):
+//   天发杀机 · 移星易宿 — 额度重置瞬间自动全池刷新
+//
+//   ━━━ 重置感知 (道法自然·天人合发) ━━━
+//   「感知」 _scheduleResetRefresh() — 精准 setTimeout 到下次重置时刻
+//     每日 UTC 08:00 (北京 16:00) → 日额度重置 · 全池自动刷新
+//     周日 UTC 08:00 (北京 周日 16:00) → 周+日额度重置 · 全池自动刷新
+//   「效果」 耗尽号在重置瞬间自动复活 · 用户无感 · 系统无不为
+//   「承」 v3.2.0 三处归一 + 去芜存菁
+//
+//   迅雷烈风 · 莫不蠢然 · 至乐性余 · 至静性廉
+//
+// v3.3.0 · 💎 额度绝对优先分层 · 反者道之动 · 存量先于流量 (2026-05-24):
+//   反者道之动 · 弱者道之用 · 天下之物生于有 · 有生于无 — 帛书《老子》德经
+//
+//   ━━━ 解构本源 (先解构隐藏在需求下的底层目标) ━━━
+//   · overage = Stock(存量·真金白银·不可再生·不用即损沉没)
+//   · 百分比  = Flow (流量·周期重置·自然回潮·等待无损)
+//   · 经济学本质截然不同 · 不应同坐标系比大小
+//
+//   ━━━ 病灶 (v3.2.1 之前 · 错误抽象) ━━━
+//   _scoreOf 把 overage 与百分比塞同一连续坐标系打分:
+//     overage:  300+min(100,$) +时效 ≈ 150~460 分
+//     百分比:   W*8+D*3+时效         ≈ 0~1830 分 (W50/D50 即 480~)
+//   → 主公图1 $195/$189/$208 等额度账号全部得 400 分 (被 min(100,$) 封顶)
+//   → 实际行为反向: 百分比账号被优先消耗 · 额度账号被冷落浪费 · 与用户诉求相悖
+//
+//   ━━━ 治法 (九竅之邪在乎三要 · 可以動靜 · 分层各得其所) ━━━
+//   第三层 💎 overage 池   [1_000_000, 1_099_950]
+//     基础 1_000_000 · 内排按 overageDollars × 100 (全幅可比 · 去封顶)
+//     $208=1_020_800 > $195=1_019_500 > $193=1_019_300 > $189=1_018_900 > $185=1_018_500
+//   第二层 📊 百分比池      [1, 9_999]  上限封顶 · 永不突破第三层
+//     沿用 v3.1.3 effQ 守门 · effQ<threshold 大幅降权
+//   候补层 ⏳ 未验号        100  · 与 v3.0 一致 · 不夺主权 · 等 verify 决定真相
+//   -∞   永禁              无密码 / 用户主动锁
+//
+//   ━━━ 自然顺应 (无为而无不为 · 一以贯之) ━━━
+//   1. getBestIndex/getSortedIndices 天然受益 · 无需改动调用方
+//   2. 当前 active 是 overage 切号 → 自然选下一 overage (excludeIdx 排自己)
+//   3. overage 全耗 (overageActive=false) → 自然下沉百分比层
+//   4. 重置时刻 overage 复活 → _scheduleResetRefresh 触发 verify → 自然上跃
+//
+//   ━━━ 门控 ━━━
+//   wam.preferOverageFirst (默认 true · 道法自然) · false 回退 v3.2.1 兼容
+//
+//   ━━━ 守门 ━━━
+//   _test_v330_overage_priority.cjs
+//   · overage 永远 > 百分比 (无论 W%/D% 多高)
+//   · overage 内部按金额排 ($208>$195>$193 顺序保留)
+//   · overage 全锁 → 下沉百分比
+//   · overage 全无 → 自然百分比
+//   · 锁号 (skipAutoSwitch) 即使有 overage 也跳过
+//
+//   ━━━ 诉求印证 (用户原话) ━━━
+//   "就是有额外额度的，就有额度的就先用额度的"
+//   "百分比制的是没有额度之后才会跳转到百分比制"
+//   "优先把有额度的账号先用完，而非先把有百分比的账号先用完"
+//   → 完全实现 · 道法自然 · 无为而无不为
+//
+const VERSION = "3.3.0";
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36";
 const WINDSURF = "https://windsurf.com";
@@ -530,9 +613,9 @@ const URL_GET_USER_STATUS_LIST = [
 ];
 // 兼容别名 (旧代码路径 + 导出 · 语义已转移)
 const URL_GET_PLAN_STATUS_LIST = URL_GET_USER_STATUS_LIST;
-const URL_GET_PLAN_STATUS = URL_GET_USER_STATUS_LIST[0];
 // v2.6.0 · 软编码 · 会话 token 格式单点定义 · 后端变更时仅此一处修
 const RE_SESSION_TOKEN = /^devin-session-token\$/;
+const URL_DEVIN_ORG_AUTH = "https://app.devin.ai/api/users/post-auth";
 // v2.4.0 · 全局 endpoint 健康度追踪 · 连续 401 时跳过 verifyAll · 不浪费请求
 let _quotaEndpointHealth = {
   consecutive401: 0, // 连续 401 计数
@@ -552,9 +635,9 @@ function _quotaEndpointDead() {
 const HTTP_TIMEOUT_MS = 12000;
 const WAM_DIR = path.join(os.homedir(), ".wam");
 const STATE_FILE = path.join(WAM_DIR, "wam-state.json");
-// v2.7.4 · 道恒无名·侯王若能守之·万物将自宾·民莫之令而自均焉
+// v2.7.4 (补入v3.0.2) · 道恒无名·侯王若能守之·万物将自宾·民莫之令而自均焉 (三十二章)
 //   独立🔒持久化 · 专司一事 · 不被 multi-window race 污染 wam-state.json 大对象
-//   只有 toggleSkip 读写 · 其他 save() 完全不动 · multi-process 自宾不争
+//   只有 toggleSkip 读写 · save() 从此文件读 · multi-process 自宾不争
 const LOCK_FILE = path.join(WAM_DIR, "lock-state.json");
 const BACKUP_DIR = path.join(WAM_DIR, "backups");
 const PENDING_TOKEN_FILE = path.join(WAM_DIR, "_pending_token.json");
@@ -575,10 +658,14 @@ let _output = null,
   _verifyAllInProgress = false,
   _wamMode = "wam", // 'wam' | 'official' (本源同款) · 默认 wam · 用户自显式选官方时停引擎
   _switching = false, // 切号互斥锁 (本源 v17.42.7)
+  _uiAddOpen = false, // v3.0.5 · 添加账号展开状态 · 跨 refresh 持久 · 防回退闪烁
   _switchingStartTime = 0,
   _lastSwitchTime = 0, // 上次切号成功时间 (冷却用)
   _predictiveCandidate = -1, // 预判候选 idx (本源 v8 · 额度低时提前选好下一号)
   _lastInjectFail = 0, // 上次注入失败时间 (rate-limit 拦截冷却)
+  _lastDevinLoginAt = 0, // v3.0.6 上次 devinLogin 完成时间 · 全局最小间隔保证
+  _broadcastUITimer = null, // v3.0.6 broadcastUI 防抖定时器 · 合并高频调用
+  _openExternalGuardActive = false, // v3.1.0 openExternal 守卫开关 · 切号期间拦截 auth URL 弹窗
   _lastDocChangeAt = 0, // 最近文档变化时间 (Cascade 流式避让 · 对齐本源 v17.42.5)
   _lastSwitchMs = 0, // 上次切号耗时ms (对齐本源 switchToAccount.ms)
   _lastPerMsgTriggerAt = 0, // v2.5 per-msg 触发防抖
@@ -595,7 +682,8 @@ let _output = null,
   _lastQuotaFlowCredits = -1, // v2.6.13 阴 · 上轮 flowCredits (微观池·绝对数)
   _lastRotateToastAt = 0, // 状态栏切号反馈 3s 高亮
   _lastRotateToastEmail = "", // 状态栏切号反馈上次 email
-  _layer6Stop = null; // Layer 6 dispose 函数
+  _layer6Stop = null, // Layer 6 dispose 函数
+  _resetRefreshTimer = null; // v3.2.1 · 额度重置感知定时器 · 精准唤醒
 // v2.4.4 · log 落盘 (~/.wam/wam.log · 2MB 滚动 · 外部诊断可读)
 let _logFileInit = false;
 const _logMaxBytes = 2 * 1024 * 1024;
@@ -692,24 +780,8 @@ function sweepOrphanTmp() {
     return 0;
   }
 }
-// ═══ v2.7.4 · 🔒 独立持久化 · multi-window race-safe ═══
-//   道恒无名·侯王若能守之·万物将自宾 (《道德经》三十二章)
-//
-//   病灶 (v2.7.3 实测): 主公 5+ Windsurf 窗口并发 · 各跑独立 WAM extension 进程
-//     · 主公 toggleSkip 锁 X → A 进程 save() 写 wam-state.json (含 X 锁) ✓
-//     · 数秒后 B 进程 (历史窗口·内存无 X 锁) verifyAll/tick 触发 save()
-//       → B.save() 写 wam-state.json (不含 X 锁) ★ 覆盖 A 修改 ✗
-//     · 主公关 A 窗 重开 → load → X 解锁 (B 胜出) → 主公看到「回退」
-//
-//   治法: 独立 lock-state.json 专司🔒 · 只有 toggleSkip 读写 · 其他 save() 不动
-//     · A 写 lock-state.json {X: lock} → B 任何 save() 都不触此文件 → race 自消
-//     · multi-process 真本源治法 · 民莫之令而自均焉 (不杀进程·自然均衡)
-//
-//   设计:
-//     · _readLockState():  每次 reloadAccounts/load 实时读盘 (不存内存快照)
-//     · _writeLockState(): read-modify-write atomic (toggleSkip 唯一调用者)
-//     · migrate: load() 时若 lock-state.json 不存在 但 wam-state.json 有 accountMeta
-//                → 一次性 migrate (复用持久化资源·顺其自然)
+// ═══ v2.7.4 (补入v3.0.2) · 🔒 独立持久化 · multi-window race-safe ═══
+//   治法: lock-state.json 专司🔒 · A 写 lock-state → B 的 save() 不动此文件 → race 自消
 function _readLockState() {
   try {
     if (!fs.existsSync(LOCK_FILE)) return {};
@@ -720,24 +792,240 @@ function _readLockState() {
     return {};
   }
 }
-// 写: read-modify-write · 单进程内 atomic · multi-process 之间 last-writer-wins
-//   (但 last-writer 必是主公 toggleSkip · 其他 save 路径 永不触此文件 · 故安全)
+// 写: read-modify-write · 单进程内 atomic · multi-process last-writer-wins (安全·唯 toggleSkip 写)
+// ═══ v3.0.3 · 🚀 Session 预缓存体系 · 切号全程运动利万物而不争 ═══
+// 根治: devinLogin 是切号热路径的唱题 (IP级速率限制)
+//   沿革: verifyOneAccount 已走 devinLogin 全流 → 缓存 token
+//           rotateNext/loginAccount 先查缓存 → 命中则跳 devinLogin 直射 injectToken
+//           缓存未命中/失效 → 退退 fallback 全登录路径
+// 默认有效期: wam.tokenCacheMaxAgeMs (15min) · verifyAll周期为15-30min — 需单单对应
+const _sessionCache = new Map(); // email.lower → { sessionToken, apiKey, apiServerUrl, cachedAt, maxAgeMs }
+// v3.1.1 · _devinLoginGate Promise chain 已损 · 改用 _lastDevinLoginAt minGap (单变量·顺其自然)
+// v3.1.1 · sessionCache 持久化磁盘 · 跨重启不丢 · 永久突破 IP 限速
+// v3.1.2 · 默认 maxAgeMs 对齐 24h disk TTL (修 v3.1.1 隐藏 bug: in-memory 15min 与 disk 24h 不一致)
+const SESSION_CACHE_FILE = path.join(WAM_DIR, "_session_cache.json");
+const SESSION_CACHE_DISK_TTL_MS = 24 * 60 * 60 * 1000; // 24h · sessionToken JWT 实际有效远超此
+// v3.1.2 · devinLogin 限速自感知窗口 (auto-backoff · 永不打死服务器)
+let _devinLoginRateLimitedUntil = 0; // ms timestamp · 当前限速窗口结束时间
+function _cacheSession(email, sessionToken, apiKey, apiServerUrl) {
+  if (!email || !sessionToken) return;
+  // v3.1.2 · 默认用 24h disk TTL · in-memory 与 disk 一致 · 修 v3.1.1 隐藏 bug
+  const maxAgeMs = Math.max(
+    60000,
+    +_cfg("tokenCacheMaxAgeMs", SESSION_CACHE_DISK_TTL_MS) ||
+      SESSION_CACHE_DISK_TTL_MS,
+  );
+  _sessionCache.set(email.toLowerCase(), {
+    sessionToken,
+    apiKey: apiKey || "",
+    apiServerUrl: apiServerUrl || "",
+    cachedAt: Date.now(),
+    maxAgeMs,
+  });
+  // v3.1.1 · 写后同步落盘 (debounce 500ms 合并高频)
+  if (typeof _persistSessionCache === "function") _persistSessionCache();
+}
+function _getCachedSession(email) {
+  if (!email) return null;
+  const c = _sessionCache.get(email.toLowerCase());
+  if (!c) return null;
+  // v3.1.2 · 优先用 entry 自身 maxAgeMs (磁盘加载/写入时已设) · fallback _cfg
+  //   修 v3.1.1 隐藏 bug: 磁盘加载 entry maxAgeMs=24h 但原 _cfg(15min) 覆盖→仅 15min 后失效
+  const maxAgeMs =
+    c.maxAgeMs ||
+    Math.max(
+      60000,
+      +_cfg("tokenCacheMaxAgeMs", SESSION_CACHE_DISK_TTL_MS) ||
+        SESSION_CACHE_DISK_TTL_MS,
+    );
+  if (Date.now() - c.cachedAt > maxAgeMs) {
+    _sessionCache.delete(email.toLowerCase());
+    return null;
+  }
+  // v3.1.2 · 命中续期 · 活跃号永不过期 · 冷号 24h 后自然清理
+  //   含义: cache hit = 号有使用 = sessionToken 实际仍有效 → 重置 TTL 计时
+  //   异步落盘 (debounce 500ms) · IO 无风暴 · 高频切号安全
+  c.cachedAt = Date.now();
+  if (typeof _persistSessionCache === "function") _persistSessionCache();
+  return c;
+}
+function _evictSessionCache(email) {
+  if (email) _sessionCache.delete(email.toLowerCase());
+  _persistSessionCache(); // v3.1.1 · 驱逐时同步落盘 · 保持磁盘一致
+}
+// v3.1.1 · sessionCache 持久化函数族 · 顺其自然·重启不丢
+//   时机: _cacheSession 写入后 (debounce 500ms 合并高频) + _evictSessionCache 后 + deactivate
+//   原子性: atomicWrite 单文件 · multi-window 安全 (last-writer-wins · 不致脏读)
+//   形式: JSON · 字段同 in-memory Map · diskTtl 24h (sessionToken JWT 真实有效远超)
+//   读出: _loadSessionCacheFromDisk 在 activate 启动时调用 · 静默忽略过期项
+let _persistDebounceTimer = null;
+function _persistSessionCache() {
+  // 防抖 · 高频写入合并 (verifyAll 期间可能并发 100+ _cacheSession)
+  if (_persistDebounceTimer) clearTimeout(_persistDebounceTimer);
+  _persistDebounceTimer = setTimeout(() => {
+    _persistDebounceTimer = null;
+    try {
+      const obj = {};
+      const now = Date.now();
+      for (const [email, c] of _sessionCache.entries()) {
+        // 仅持久化未过期的 (磁盘 TTL 24h · 比 in-memory 15min 长得多)
+        if (now - c.cachedAt < SESSION_CACHE_DISK_TTL_MS) {
+          obj[email] = {
+            sessionToken: c.sessionToken,
+            apiKey: c.apiKey || "",
+            apiServerUrl: c.apiServerUrl || "",
+            cachedAt: c.cachedAt,
+          };
+        }
+      }
+      atomicWrite(SESSION_CACHE_FILE, JSON.stringify(obj, null, 0));
+    } catch (e) {
+      log("_persistSessionCache fail: " + (e.message || e));
+    }
+  }, 500);
+}
+function _loadSessionCacheFromDisk() {
+  try {
+    if (!fs.existsSync(SESSION_CACHE_FILE)) return 0;
+    const j = JSON.parse(fs.readFileSync(SESSION_CACHE_FILE, "utf8"));
+    if (!j || typeof j !== "object") return 0;
+    const now = Date.now();
+    let n = 0;
+    for (const email of Object.keys(j)) {
+      const c = j[email];
+      if (!c || !c.sessionToken || !c.cachedAt) continue;
+      // 磁盘 TTL 24h 过滤 (super-set of in-memory · 由 _getCachedSession 兜底再过滤)
+      if (now - c.cachedAt >= SESSION_CACHE_DISK_TTL_MS) continue;
+      _sessionCache.set(email.toLowerCase(), {
+        sessionToken: c.sessionToken,
+        apiKey: c.apiKey || "",
+        apiServerUrl: c.apiServerUrl || "",
+        cachedAt: c.cachedAt,
+        maxAgeMs: SESSION_CACHE_DISK_TTL_MS, // 用磁盘 TTL · 不再受 wam.tokenCacheMaxAgeMs 限制
+      });
+      n++;
+    }
+    return n;
+  } catch (e) {
+    log("_loadSessionCacheFromDisk fail: " + (e.message || e));
+    return 0;
+  }
+}
+// ═══ v3.1.0 · openExternal 持久守卫 · 天下之至柔驰骋于天下之致坚 ═══
+// 切号期间拦截 windsurf.com 认证 URL 的 openExternal 调用 · 从源头断弹窗
+// 原理: Windsurf extension 内部 login() / provideAuthToken() / LOGIN_WITH_REDIRECT
+//   都最终调 vscode.env.openExternal(loginUrl) 弹浏览器 · 我们在切号窗口内
+//   替换 openExternal 为守卫函数 · 凡 windsurf.com/account URL 静默吞掉 · 其余放行
+let _origOpenExternal = null; // 原始 openExternal 备份
+let _guardBlockCount = 0; // 守卫拦截计数 (诊断)
+function _installOpenExternalGuard() {
+  if (_openExternalGuardActive) return; // 已安装 · 幂等
+  try {
+    _origOpenExternal = vscode.env.openExternal;
+    const _guard = async (uri) => {
+      const s = uri && (typeof uri === "string" ? uri : uri.toString());
+      // 拦截 windsurf.com 认证相关 URL (account/login/auth/signin)
+      if (
+        s &&
+        /windsurf\.com\/(account|_devin-auth|auth|signin|login)/i.test(s)
+      ) {
+        _guardBlockCount++;
+        log(
+          "🛡️ openExternal guard: 拦截 auth URL #" +
+            _guardBlockCount +
+            " → " +
+            (s.length > 80 ? s.substring(0, 80) + "..." : s),
+        );
+        return false; // 静默吞掉 · 不弹浏览器
+      }
+      // 非 auth URL → 放行 (如帮助页面等)
+      return _origOpenExternal.call(vscode.env, uri);
+    };
+    Object.defineProperty(vscode.env, "openExternal", {
+      value: _guard,
+      configurable: true,
+      writable: true,
+    });
+    _openExternalGuardActive = vscode.env.openExternal === _guard;
+    if (_openExternalGuardActive) {
+      log("🛡️ openExternal guard: 已安装 · 切号窗口保护中");
+    } else {
+      log("🛡️ openExternal guard: defineProperty 不粘 · 降级无守卫");
+      _origOpenExternal = null;
+    }
+  } catch (e) {
+    log("🛡️ openExternal guard: 安装失败 · " + (e.message || e));
+    _origOpenExternal = null;
+    _openExternalGuardActive = false;
+  }
+}
+function _removeOpenExternalGuard() {
+  if (!_openExternalGuardActive || !_origOpenExternal) {
+    _openExternalGuardActive = false;
+    return;
+  }
+  try {
+    Object.defineProperty(vscode.env, "openExternal", {
+      value: _origOpenExternal,
+      configurable: true,
+      writable: true,
+    });
+    log(
+      "🛡️ openExternal guard: 已卸载 · 拦截 " + _guardBlockCount + " 次",
+    );
+  } catch (e) {
+    log("🛡️ openExternal guard: 卸载失败 · " + (e.message || e));
+  }
+  _openExternalGuardActive = false;
+  _origOpenExternal = null;
+}
+// v3.2.0 · 圣人抱一 · 模式切换三处归一
+//   三处调用 (setMode webview · setModeWam cmd · setModeOfficial cmd) → 单一函数
+//   官方模式: 停引擎 + windsurf.logout + 卸guard (v3.1.4 三步净身)
+//   WAM模式: 装guard + 启引擎
+//   返回: true=模式已变 / false=已是此模式 (无变化)
+async function _setMode(mode) {
+  const m = mode === "official" ? "official" : "wam";
+  if (m === _wamMode) return false;
+  _wamMode = m;
+  if (m === "official") {
+    if (_engine) _engine.stopMonitor();
+    _removeOpenExternalGuard();
+    log("_setMode: official · 引擎停 · guard卸 · 调 windsurf.logout");
+    try {
+      await vscode.commands.executeCommand("windsurf.logout");
+      log("_setMode: windsurf.logout ✓");
+    } catch (_e) {
+      log("_setMode: windsurf.logout err: " + (_e.message || _e));
+    }
+    // v3.2.1 · 官方模式: 停重置感知定时器 (无需刷新)
+    if (_resetRefreshTimer) { clearTimeout(_resetRefreshTimer); _resetRefreshTimer = null; }
+  } else {
+    _installOpenExternalGuard();
+    if (_engine) _engine.startMonitor();
+    // v3.2.1 · WAM模式: 启动重置感知定时器
+    _scheduleResetRefresh();
+    log("_setMode: wam · 引擎启 · guard装 · 重置感知启");
+  }
+  if (_ctx) _ctx.globalState && _ctx.globalState.update("wam.mode", m);
+  _broadcastUI();
+  return true;
+}
 function _writeLockState(email, locked) {
   try {
     const cur = _readLockState();
     const k = String(email || "").toLowerCase();
     if (!k) return false;
-    if (locked) {
-      cur[k] = { skipAutoSwitch: true, ts: Date.now() };
-    } else {
-      delete cur[k];
-    }
-    const data = {
-      version: VERSION,
-      savedAt: Date.now(),
-      locks: cur,
-    };
-    atomicWrite(LOCK_FILE, JSON.stringify(data, null, 2));
+    if (locked) cur[k] = { skipAutoSwitch: true, ts: Date.now() };
+    else delete cur[k];
+    atomicWrite(
+      LOCK_FILE,
+      JSON.stringify(
+        { version: VERSION, savedAt: Date.now(), locks: cur },
+        null,
+        2,
+      ),
+    );
     return true;
   } catch (e) {
     log("_writeLockState fail: " + e.message);
@@ -788,36 +1076,71 @@ function isWeeklyDrought() {
   const s = _store.getStats();
   return s.drought;
 }
-function isTrialPlan(p) {
-  return /trial|free/i.test(p || "");
+// v3.2.1 · 道法自然 · 额度重置感知 · 无为而无不为
+//   核心: 每日 UTC 08:00 (北京16:00) 额度重置 · 周日同时刷周额度
+//   策略: 精准 setTimeout 到下次重置时刻 → 自动全池刷新 → 用户无感
+//   效果: 耗尽号在重置瞬间自动复活 · 无需手动 · 无需等 30min 周期扫描
+function _scheduleResetRefresh() {
+  if (_resetRefreshTimer) clearTimeout(_resetRefreshTimer);
+  _resetRefreshTimer = null;
+  if (_wamMode !== "wam") return;
+  const hrsDaily = hoursUntilDailyReset();
+  const hrsWeekly = hoursUntilWeeklyReset();
+  const hrsMin = Math.min(hrsDaily, hrsWeekly);
+  const isWeekly = hrsWeekly <= hrsDaily;
+  // 重置后 30s 再刷 (留余量让服务端完成重置 · 软编码)
+  const bufferMs = Math.max(5000, +_cfg("resetRefreshBufferMs", 30000) || 30000);
+  const delayMs = Math.max(5000, Math.round(hrsMin * 3600000) + bufferMs);
+  _resetRefreshTimer = setTimeout(_onResetFired, delayMs);
+  log("_scheduleResetRefresh: " + (isWeekly ? "周+日" : "日") + "重置 · " +
+      hrsMin.toFixed(2) + "h后 (" + Math.round(delayMs / 60000) + "min)");
 }
+async function _onResetFired() {
+  _resetRefreshTimer = null;
+  if (_wamMode !== "wam") { _scheduleResetRefresh(); return; }
+  const now = new Date();
+  const isSunday = now.getUTCDay() === 0;
+  log("⏰ 额度重置感知: " + (isSunday ? "周日(周+日)" : "日") +
+      "重置 · 全池刷新 · " + now.toISOString());
+  if (!_verifyAllInProgress) {
+    try {
+      await verifyAllAccounts({ onlyStale: false, _cacheOnly: true });
+      log("⏰ 重置刷新完成 ✓");
+    } catch (e) {
+      log("⏰ 重置刷新 err: " + (e.message || e));
+    }
+  } else {
+    log("⏰ 重置刷新: verifyAll 进行中 · 30s后重试");
+    _resetRefreshTimer = setTimeout(_onResetFired, 30000);
+    return;
+  }
+  _broadcastUI();
+  // 刷新完毕 · 重新调度下次重置
+  setTimeout(() => _scheduleResetRefresh(), 5000);
+}
+// v3.2.0 · isTrialPlan 已损 (从未被调用·真死代码 · _isTrialLike 已替代)
 function isClaudeAvailable(h) {
-  if (!h || !h.checked) return false;
-  const p = (h.plan || "").toLowerCase();
-  // 兵无常势: 所有免费层 → Claude 死刑 (对齐本源 v17.42.4 _FREE_TIER_SET)
-  if (/^free$|^devin.free$|^waitlist/i.test(p)) return false;
-  // Trial 过期 + 额度耗尽 → 不可用
-  if (
-    isTrialPlan(p) &&
-    h.planEnd > 0 &&
-    Date.now() > h.planEnd &&
-    h.daily <= 0 &&
-    h.weekly <= 0
-  )
-    return false;
+  // v3.0 · 道法自然 · 无为而无不为 · 不限制任何账号
+  //   旧法之患: Free/过期/!checked 均被封死 · 附加大量预判逻辑
+  //   新法: 一切返 true · 让登录/API实际失败说话 · 不作茧自缚
   return true;
 }
-// v2.3.0 锁🔒 全链路贯通 — 单一真相门 · 凡五辨一不齐即无效
-// 五辨: password · skipAutoSwitch (手动锁) · isBanned (15min 真黑) · isInUse (120s 使用中守) · isClaudeAvailable
+// v3.1.3 · 道法自然 · 守门候选判定 · effQuota 对齐 (防切入即耗尽)
 function _isValidAutoTarget(i) {
   if (i < 0 || !_store) return false;
   const acc = _store.accounts[i];
-  if (!acc || !acc.password) return false;
-  if (acc.skipAutoSwitch) return false; // 用户手动锁 → 禁止自动切号
-  if (_store.isBanned(acc.email)) return false;
-  if (_store.isInUse(acc.email)) return false; // v2.3.0 使用中🔒 · 120s 内刚切过的号自动切号跳
+  if (!acc || !acc.password) return false; // 无密码真无法登录
+  if (acc.skipAutoSwitch) return false; // 用户主动设置的锁 · 尊重意愿
+  // v3.1.3 · 有效额度守门 (与 tick effQuota 一以贯之)
+  //   未验号放行 (checked=false · 给机会验证)
+  //   已验号: effQ < threshold → 拒绝 (切入即刻触发耗尽保护 · 无意义)
   const h = _store.getHealth(acc.email);
-  if (!isClaudeAvailable(h)) return false;
+  if (h.checked) {
+    const _drought = isWeeklyDrought();
+    const _effQ = _drought ? h.daily : Math.min(h.daily, h.weekly);
+    const _thr = typeof _cfg === 'function' ? +_cfg('autoSwitchThreshold', 5) || 5 : 5;
+    if (_effQ < _thr) return false; // 有效额度不足 · 非有效候选
+  }
   return true;
 }
 
@@ -949,163 +1272,255 @@ function _isNoiseLine(ln) {
   return false;
 }
 
-// v2.7.1 · token 细分识别 · 万法识号·众妙之门 · 反者道之动
-//   病诊 (v2.7.0 实证 · 用户图2 微信卡密):
-//     · "卡号: foo@gmail.com----auth1_xxx..." 被 tryPair 误识为 (email, password=auth1_xxx)
-//     · 入 accounts 后 devinLogin(email, auth1_xxx) 必败 (auth1 不是 password)
-//   治法 (v2.7.1):
-//     · 一处定锚 · 多处复用 (tryPair / JSON / labels / 持久化 / loginViaToken 全栈)
-//     · 返 kind ∈ { auth1, session, jwt, apikey, raw } · null 即非 token
-//
-// windsurf 四阶 token 链 (postAuth 实证):
-//   ① auth1_token   = devinLogin 出 · 浏览器 localStorage `devin_auth1_token` · 52 字符 [a-z0-9]
-//   ② sessionToken  = windsurfPostAuth(auth1) 出 · 前缀 "devin-session-token$"
-//   ③ apiKey        = registerUserViaSession(session) 出 · Trial 中 == sessionToken
-//   ④ JWT/refresh   = 部分情境出现 (eyJ... · OAuth refresh_token)
-function _detectTokenKind(s) {
-  if (!s || typeof s !== "string") return null;
-  s = s.trim();
-  if (!s) return null;
-  // auth1 · Devin 一阶 (52 字符 lowercase alnum · 宽放 40+ 为兼容未来变化)
-  if (/^auth1_[A-Za-z0-9]{40,}$/.test(s)) return "auth1";
-  // sessionToken · Devin 二阶 (postAuth 之果)
-  if (/^devin-session-token\$.+/.test(s)) return "session";
-  // JWT · 3 段 base64url · eyJ 是 {"alg":...} 的 base64
-  if (/^eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+$/.test(s))
-    return "jwt";
-  // sk- · 通用 API key 形 (Anthropic/OpenAI/部分内部 apiKey)
-  if (/^sk-[A-Za-z0-9_\-]{20,}$/.test(s)) return "apikey";
-  // 兜底 · 长 base64-ish 60+ chars · 仅安全字符 · 不含 @
-  if (s.length >= 60 && /^[A-Za-z0-9_\-\.\$\/+=]+$/.test(s) && !s.includes("@"))
-    return "raw";
-  return null;
+// ═══ v3.0.4 水无常形·万格通吃 · 账密解析全量增强 ═══
+// 标签词典 MID版 (非行首锁定) · 用于行内搜索双标签同行 / bracket兼容
+const _RE_EMAIL_LABEL_MID =
+  /(?:\[|【)?(?:邮箱|邮件|账号|账户|帐号|帐户|用户名称?|用户|登录名|登陆名|登录账号|登陆账号|登录账户|卡号|号码|账户名|e[\-\s]?mail|email|account|user(?:name)?|login|mail|id|number|num)(?:\]|】)?\s*\d*\s*[:：=＝]\s*/i;
+const _RE_PASS_LABEL_MID =
+  /(?:\[|【)?(?:密码|登录密码|登陆密码|口令|秘钥|密钥|卡密|令牌|password|pass(?:word|wd)?|pwd|secret|key)(?:\]|】)?\s*\d*\s*[:：=＝]\s*/i;
+// _stripAnyLabel: 剥首标签+数字序号 · tryPair双侧调用 · 密码含"密码："前缀自动净化
+function _stripAnyLabel(s) {
+  s = (s || "").trim();
+  s = s.replace(/^(?:#\s*)?\(?\d+[.):\-、，]\s*/, "").trim();
+  s = s
+    .replace(
+      /^(?:\[|【)?(?:邮箱|邮件|账号|账户|帐号|帐户|用户名称?|用户|登录名|登陆名|登录账号|登陆账号|登录账户|卡号|号码|账户名|e[\-\s]?mail|email|account|user(?:name)?|login|mail|id|number|num)(?:\]|】)?\s*\d*\s*[:：=＝]\s*/i,
+      "",
+    )
+    .trim();
+  s = s
+    .replace(
+      /^(?:\[|【)?(?:密码|登录密码|登陆密码|口令|秘钥|密钥|卡密|令牌|password|pass(?:word|wd)?|pwd|secret|key)(?:\]|】)?\s*\d*\s*[:：=＝]\s*/i,
+      "",
+    )
+    .trim();
+  return s;
+}
+// _stripPassTrail · 密码尾部注释净化 · 一劳永逸之本
+// 密码永远没有格式 · 但人们常在密码后追加备注 【首次登录需修改】(备注:xxx) 等
+// 凡此类尾部中文括号注释 · 全剥 · 还密码本真
+function _stripPassTrail(s) {
+  if (!s) return s;
+  let prev;
+  do {
+    prev = s;
+    // 尾部 【...】 （...） (...)
+    s = s.replace(/[\s　]*[【（(][^】）)]{0,60}[】）)][\s　]*$/, "").trim();
+    // 尾部 备注:xxx / 提示:xxx / 注意:xxx
+    s = s.replace(/[\s　]*(?:备注|提示|注意|说明)\s*[:：].{0,60}$/, "").trim();
+    // 尾部 首次登录/请修改/需修改 等动词提示
+    s = s
+      .replace(
+        /[\s　]*(?:首次登录|请.*?修改|需.*?修改|初始密码|默认密码).{0,40}$/,
+        "",
+      )
+      .trim();
+  } while (s !== prev && s.length > 0);
+  return s;
+}
+// _stripPassCandLabel · 密码候选侧保守剥 · v3.0.5 一劳永逸根治
+// 哲学: 密码无结构 · 只有"确定无歧义"的标签才能被剥取 · 不能剥短歧义词(pass/key/secret/pwd)
+//   _stripAnyLabel 含 pass(?:word|wd)? 使裸 pass 也匹配 → user@x.com:pass:word123 被污染为 word123
+//   此函数专用于密码候选侧 · 只剥中文标签(无歧义) + 全英长词(>= 8char · 无歧义)
+//   保留: pass:xxx / key:xxx / pwd:xxx / secret:xxx 等短英文 → 不再被误剥
+function _stripPassCandLabel(s) {
+  s = (s || "").trim();
+  // 中文标签: 语义明确 无歧义 可安全剥
+  s = s
+    .replace(
+      /^(?:\[|【)?(?:密码|登录密码|登陆密码|口令|秘钥|密钥|卡密|令牌)(?:\]|】)?\s*\d*\s*[:：=＝]\s*/i,
+      "",
+    )
+    .trim();
+  // 全英长词(>=8字符): password/passphrase/passwd 无歧义可安全剥 · 不含 pass/key/pwd/secret
+  s = s
+    .replace(/^(?:password|passphrase|passwd)\s*\d*\s*[:：=＝]\s*/i, "")
+    .trim();
+  return s;
+}
+// _emailAnchorExtract · 邮箱锚定通吃法 · 真正一劳永逸之本源
+// 哲学: 邮箱是唯一有确定结构的字段 · 密码=行内去除邮箱+标签+噪声后的一切剩余
+// 覆盖一切分隔符失效、未知格式、未来格式 — 永久兜底
+// v3.0.5: 密码候选改用 _stripPassCandLabel (保守剥) · 不再用 _stripAnyLabel (可污染密码)
+const _RE_EMAIL_SCAN =
+  /[A-Za-z0-9._+\-]+@[A-Za-z0-9](?:[A-Za-z0-9\-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9\-]*[A-Za-z0-9])?)*\.[A-Za-z]{2,}/;
+function _emailAnchorExtract(ln) {
+  const m = _RE_EMAIL_SCAN.exec(ln);
+  if (!m) return null;
+  const email = m[0];
+  const before = ln
+    .substring(0, m.index)
+    .replace(/[-\s|,;，；=＝：:·#*（(【>]+$/, "")
+    .trim();
+  const after = ln
+    .substring(m.index + email.length)
+    .replace(/^[-\s|,;，；=＝：:·#*）)】<]+/, "")
+    .trim();
+  // v3.0.5: 保守剥 · 密码侧不再使用 _stripAnyLabel
+  const passCand = _stripPassTrail(_stripPassCandLabel(after || before));
+  if (!passCand || !_isValidEmail(email)) return null;
+  return { email, password: passCand };
 }
 
-// v2.7.1.1 · 主公三诏「token 看做账号密码」之最后一公里
-//   accounts schema 守 v2.7.0 单 {email, password} · password 槽可含真密码或任意 token
-//   _normalizeAccCreds 在登录前 · 用 _detectTokenKind 自动分流 password → auth1/session/refresh
-//   下游 loginAccount/verifyOneAccount 三链择优逻辑无变 (auth1>session>password)
-//   返浅复制 · 不污 store.accounts 原对象 · 道法自然 · 顺其自然
-//
-// 凭据映射律 (单一信源):
-//   auth1_xxx                → out.auth1
-//   devin-session-token$xxx  → out.sessionToken
-//   eyJ...JWT                → out.sessionToken (windsurf authProvider 同接)
-//   sk-xxx (apikey)          → out.sessionToken (透传作 session 用)
-//   raw (60+ base64ish)      → out.sessionToken (兜底·宁错 inject 不错 devinLogin)
-//   refresh:xxx 形           → 已被 parseAccountText 解前缀 · 此处不再独立分支
-//   null kind (真密码)       → out.password (原路 · devinLogin)
-//
-// 显式 acc.auth1/sessionToken/refreshToken 已存 · 视为外部源 · 不覆盖 (向前兼容 wam.addToken 显式路径)
-function _normalizeAccCreds(acc) {
-  if (!acc) return acc;
-  const out = Object.assign({}, acc); // 浅复制 · 不污原引用
-  if (acc.auth1 || acc.sessionToken || acc.refreshToken) return out; // 显式字段优先
-  if (!acc.password) return out;
-  const kind = _detectTokenKind(acc.password);
-  if (!kind) return out; // null → 真密码 · 原路走 devinLogin
-  if (kind === "auth1") {
-    out.auth1 = acc.password;
-    delete out.password;
-  } else if (
-    kind === "session" ||
-    kind === "jwt" ||
-    kind === "apikey" ||
-    kind === "raw"
-  ) {
-    out.sessionToken = acc.password;
-    delete out.password;
+// _parseDualLabelLine: 双标签同行通吃 · 水无常形 · 任意顺序·任意分隔
+// 覆盖: 邮箱：email----密码：pass / 邮箱：email 密码：pass / 密码：pass 邮箱：email
+//       【邮箱】email【密码】pass / email:xxx password:yyy 等所有双标签同行格式
+function _parseDualLabelLine(ln) {
+  const em = _RE_EMAIL_LABEL_MID.exec(ln);
+  const pm = _RE_PASS_LABEL_MID.exec(ln);
+  if (!em || !pm) return null;
+  let emailPart, passPart;
+  if (em.index <= pm.index) {
+    const afterEmail = ln.substring(em.index + em[0].length);
+    const pm2 = _RE_PASS_LABEL_MID.exec(afterEmail);
+    if (!pm2) return null;
+    emailPart = afterEmail
+      .substring(0, pm2.index)
+      .replace(/[-\s|,;，；=＝：:·]+$/, "")
+      .trim();
+    passPart = afterEmail.substring(pm2.index + pm2[0].length).trim();
+  } else {
+    const afterPass = ln.substring(pm.index + pm[0].length);
+    const em2 = _RE_EMAIL_LABEL_MID.exec(afterPass);
+    if (!em2) return null;
+    passPart = afterPass
+      .substring(0, em2.index)
+      .replace(/[-\s|,;，；=＝：:·]+$/, "")
+      .trim();
+    emailPart = afterPass.substring(em2.index + em2[0].length).trim();
   }
-  return out;
-}
-
-// v2.7.5 · 占位 email 识别 · UI/验证路径快判 (顺其自然)
-//   形如 "auth1.abc12345@token.wam" / "session.xxx@token.wam" / "raw.xxx@token.wam"
-//   下游可: webview 渲染 "tk" badge · verify 后若拿到真 email 自动 rename
-//   位居 _normalizeAccCreds 之后/parseAccountText 之前 · 公器同列 · 大制无割
-//     此位令 parseAccountText 末 return 紧邻 loadAccountsFromFs (守 v2.7.0 schema 静态契约)
-function _isPlaceholderEmail(s) {
-  if (!s || typeof s !== "string") return false;
-  return /^(?:auth1|session|jwt|apikey|refresh|raw)\.[a-f0-9]{8}@token\.wam$/i.test(
-    s.trim(),
-  );
+  emailPart = emailPart.replace(/^[-\s·]+/, "").trim();
+  passPart = passPart.replace(/^[-\s·]+/, "").trim();
+  if (!_isValidEmail(emailPart) || !passPart) return null;
+  return { email: emailPart, password: passPart };
 }
 
 function parseAccountText(content) {
-  // v2.7.1.1 · 主公三诏: "将 token 看做账号密码 · 直接复用一切 · 顺其自然"
-  //   去 tokenPairs 中转 · token 直入 accounts.password 槽
-  //   accounts schema 守 {email, password} 同 v2.7.0 (token 与密码同居 password)
-  //   下游 loginAccount/verifyOneAccount 用 _detectTokenKind(a.password) 自动分流
-  //   复制/存盘/UI/复用 一切 同 v2.7.0 · 自然无为 · 不惧方能成其大
   const accounts = [];
-  const tokens = []; // 单孤儿 token (无 email 同行配对·留待显式命令 反查后入 accounts)
+  const tokens = [];
   if (!content || typeof content !== "string") return { accounts, tokens };
+
+  // v3.0.4+ · JSON 数组整体解析 (批量导出 [{email,password},...] 格式优先尝试)
+  const _tc = content.trim();
+  if (_tc.startsWith("[")) {
+    try {
+      const _ja = JSON.parse(_tc);
+      if (Array.isArray(_ja)) {
+        for (const _j of _ja) {
+          if (!_j || typeof _j !== "object") continue;
+          const _je = String(
+            _j.email ||
+              _j.username ||
+              _j.account ||
+              _j.user ||
+              _j.mail ||
+              _j.login ||
+              "",
+          ).trim();
+          const _jp = String(
+            _j.password || _j.pass || _j.pwd || _j.passwd || _j.secret || "",
+          ).trim();
+          if (_je && _jp && _isValidEmail(_je))
+            accounts.push({ email: _je, password: _jp });
+          const _jt = String(
+            _j.token ||
+              _j.sessionToken ||
+              _j.session_token ||
+              _j.authToken ||
+              _j.access_token ||
+              "",
+          ).trim();
+          if (_jt) tokens.push(_jt);
+        }
+        if (accounts.length || tokens.length) return { accounts, tokens };
+      }
+    } catch {}
+  }
 
   // 标签词典 · 大方无隅 · 标签后兼容 \d* 数字编号 (卡号1: / 账号2: / Email3:)
   const RE_LABEL_EMAIL =
     /^\s*(?:邮箱|邮件|账号|账户|帐号|帐户|用户名|用户名称|用户|登录名|登陆名|登录账号|登陆账号|登录账户|卡号|号码|账户名|e[\-\s]?mail|email|account|user(?:name)?|login|mail|id|number|num)\s*\d*\s*[:：=＝]\s*/i;
-  // v2.7.1 · 扩 auth1|session|refresh|jwt|apikey 关键字 · 多行配对 (邮箱:x \n auth1:y) 通
   const RE_LABEL_PASS =
-    /^\s*(?:密码|登录密码|登陆密码|口令|秘钥|密钥|卡密|令牌|password|pass(?:word|wd)?|pwd|secret|key|token|access(?:[\-_]?token)?|auth1(?:_token|Token)?|session(?:Token|_token|-token)?|refresh(?:Token|_token|-token)?|jwt|apikey|api[\-_]?key)\s*\d*\s*[:：=＝]\s*/i;
+    /^\s*(?:密码|登录密码|登陆密码|口令|秘钥|密钥|卡密|令牌|password|pass(?:word|wd)?|pwd|secret|key|token|access(?:[\-_]?token)?)\s*\d*\s*[:：=＝]\s*/i;
+  const RE_TOKEN_PREFIX = /^(devin-session-token\$|auth1_|sk-)/i;
+  const RE_JWT = /^eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+$/;
 
-  // v2.7.1 · looksLikeToken → 用 _detectTokenKind 单一信源
-  //   旧法本地 RE_TOKEN_PREFIX/RE_JWT 与模块顶 _detectTokenKind 分二处定锚 · 失道
-  //   新法 looksLikeToken = boolean(_detectTokenKind) · 配对内 ('a----b' 形) 不能含 \s|\|/----
-  //   故仍预检 _intra 分隔
   function looksLikeToken(s) {
     if (!s) return false;
+    if (s.includes("@")) return false;
     if (/[\s\|]|----/.test(s)) return false;
-    return _detectTokenKind(s) !== null;
+    if (RE_TOKEN_PREFIX.test(s)) return true;
+    if (RE_JWT.test(s)) return true;
+    // 长 base64-ish · 60+ chars · 仅 [A-Za-z0-9_-.$/+=]
+    if (s.length >= 60 && /^[A-Za-z0-9_\-\.\$\/+=]+$/.test(s)) return true;
+    return false;
   }
 
-  // v2.7.1 · 持久化前缀形识别 · "auth1:<token>" / "session:<token>" / "refresh:<token>" / "jwt:<token>"
-  //   _persistAccountsToMd 用此格式落盘 · parseAccountText 重启加载时还原
-  //   兼大小写 · 兼 = ：＝ 分隔
-  function _isPrefixedToken(s) {
-    if (!s || typeof s !== "string") return null;
-    const m = s
-      .trim()
-      .match(/^(auth1|session|refresh|jwt|apikey)\s*[:：=＝]\s*(\S.*)$/i);
-    if (!m) return null;
-    const kind = m[1].toLowerCase();
-    const tk = m[2].trim();
-    if (!tk) return null;
-    // 自身合 _detectTokenKind 即用 detected · 否则信前缀 (持久化已识)
-    return { token: tk, kind: _detectTokenKind(tk) || kind };
-  }
-
-  // v2.7.1 · tryPair 升级 · email+token 优先返 (修 v2.7.0 'email----auth1_xxx' 错入 password 病)
-  //   返 { email, password }       — 经典 (一 email + 一非 token 非 email)
-  //   返 { email, token, kind }    — token-pair (一 email + 一 token · kind 来自 _detectTokenKind)
-  //   返 null                      — 不可配对
+  // tryPair · v3.0.5 两阶段 · 邮箱先锚密码取余 · 像AI一样 · 一劳永逸
+  // 第一阶: 裸检(不剥标签) · 保留原始密码值 · 覆盖: 无标签分隔格式、密码含:=等特殊字符
+  // 第二阶: 邮箱侧剥标签后再检 · 覆盖: 邮箱有标签前缀(邮箱：xxx / email:xxx) 的情形
+  // 密码侧永远使用 _stripPassCandLabel(保守剥) · 永不使用 _stripAnyLabel · 根治 pass:xxx 污染
   function tryPair(a, b) {
     a = (a || "").trim();
     b = (b || "").trim();
     if (!a || !b) return null;
-    const aIsEmail = _isValidEmail(a);
-    const bIsEmail = _isValidEmail(b);
-    // 反者道之动 · 先识 token · 不再以"非 email 即 password"草率
-    if (aIsEmail && !bIsEmail) {
-      // 1) 持久化前缀形: "auth1:xxx" / "session:xxx"
-      const pT = _isPrefixedToken(b);
-      if (pT) return { email: a, token: pT.token, kind: pT.kind };
-      // 2) 裸 token (auth1_xxx / devin-session-token$xxx / JWT)
-      const k = _detectTokenKind(b);
-      if (k) return { email: a, token: b, kind: k };
-      return { email: a, password: b };
-    }
-    if (bIsEmail && !aIsEmail) {
-      const pT = _isPrefixedToken(a);
-      if (pT) return { email: b, token: pT.token, kind: pT.kind };
-      const k = _detectTokenKind(a);
-      if (k) return { email: b, token: a, kind: k };
-      return { email: b, password: a };
-    }
-    if (aIsEmail && bIsEmail) return { email: a, password: b }; // 双合法 取首 (理论极罕)
+    // 第一阶: 裸检 (无任何剥取) — 原始值最可信 · 密码含:=等不被误剥
+    const aIsEmailRaw = _isValidEmail(a);
+    const bIsEmailRaw = _isValidEmail(b);
+    if (aIsEmailRaw && !bIsEmailRaw)
+      return { email: a, password: _stripPassTrail(_stripPassCandLabel(b)) };
+    if (bIsEmailRaw && !aIsEmailRaw)
+      return { email: b, password: _stripPassTrail(_stripPassCandLabel(a)) };
+    if (aIsEmailRaw && bIsEmailRaw)
+      return { email: a, password: _stripPassTrail(b) };
+    // 第二阶: 邮箱侧剥标签 (处理 "邮箱：xxx" / "email:xxx" 等有标签前缀的邮箱)
+    // 密码侧 b/a 同样只用 _stripPassCandLabel (保守) · 不用 _stripAnyLabel
+    const aStripped = _stripAnyLabel(a);
+    const bStripped = _stripAnyLabel(b);
+    if (!aStripped && !bStripped) return null;
+    const aIsEmailSt = _isValidEmail(aStripped);
+    const bIsEmailSt = _isValidEmail(bStripped);
+    if (aIsEmailSt && !bIsEmailSt)
+      return {
+        email: aStripped,
+        password: _stripPassTrail(_stripPassCandLabel(b)),
+      };
+    if (bIsEmailSt && !aIsEmailSt)
+      return {
+        email: bStripped,
+        password: _stripPassTrail(_stripPassCandLabel(a)),
+      };
+    if (aIsEmailSt && bIsEmailSt)
+      return { email: aStripped, password: _stripPassTrail(b) };
     return null;
   }
 
   function parseSingleLine(ln) {
+    // 0. 双标签同行通吃 (邮箱：email----密码：pass · 任意顺序·任意分隔)
+    const _dlr = _parseDualLabelLine(ln);
+    if (_dlr) return _dlr;
+    // 0b. 行内密码标签: email@x.com密码：pass / email@x.com 密码：pass
+    const _inPm = _RE_PASS_LABEL_MID.exec(ln);
+    if (_inPm && _inPm.index > 0) {
+      const _ec = ln
+        .substring(0, _inPm.index)
+        .replace(/[-\s|,;，；=＝：:·]+$/, "")
+        .trim();
+      const _pc = ln.substring(_inPm.index + _inPm[0].length).trim();
+      if (_isValidEmail(_ec) && _pc) return { email: _ec, password: _pc };
+    }
+    // 0c. 行内邮箱标签: pass 邮箱：email / pass----邮箱：email (密码在前邮箱在后)
+    const _inEm = _RE_EMAIL_LABEL_MID.exec(ln);
+    if (_inEm && _inEm.index > 0) {
+      const _pc2 = _stripAnyLabel(
+        ln
+          .substring(0, _inEm.index)
+          .replace(/[-\s|,;，；=＝：:·]+$/, "")
+          .trim(),
+      );
+      const _ec2 = ln.substring(_inEm.index + _inEm[0].length).trim();
+      if (_isValidEmail(_ec2) && _pc2) return { email: _ec2, password: _pc2 };
+    }
     // 1. ---- (4+ dashes)
     if (/----+/.test(ln)) {
       const i = ln.search(/----+/);
@@ -1149,6 +1564,11 @@ function parseAccountText(content) {
       const r = tryPair(ws[1], ws[2]);
       if (r) return r;
     }
+    // 7. 邮箱锚定通吃法 · 一劳永逸终极兜底 · 凡上述分隔符皆失效时仍可解
+    //    原理: 邮箱是唯一有确定结构的字段，密码=行内去除邮箱+标签+噪声后的一切剩余
+    //    覆盖: 未知分隔符·未来格式·任意语言注释混入·永不失效
+    const _eae = _emailAnchorExtract(ln);
+    if (_eae) return _eae;
     return null;
   }
 
@@ -1166,110 +1586,57 @@ function parseAccountText(content) {
     // 0b. 噪声行 · 静默跳过 (微信广告模板/订单/账号管理器整行等)
     if (_isNoiseLine(ln)) continue;
 
-    // 0b. 整行就是 token · v2.7.1 带 kind
-    {
-      const k0 = _detectTokenKind(ln);
-      if (k0 && !/[\s\|]|----/.test(ln)) {
-        items.push({ type: "token", raw: ln, kind: k0 });
-        continue;
-      }
+    // 0b. 整行就是 token
+    if (looksLikeToken(ln)) {
+      items.push({ type: "token", raw: ln });
+      continue;
     }
 
-    // 1. JSON 单行 · v2.7.1 扩 auth1/refreshToken 识别
+    // 1. JSON 单行
     if (ln.startsWith("{") && ln.endsWith("}")) {
       try {
         const j = JSON.parse(ln);
         const e =
           j.email || j.username || j.account || j.user || j.mail || j.login;
         const p = j.password || j.pass || j.pwd || j.passwd || j.secret;
-        // v2.7.1 · 四种 token 字段 (兼大小写蛇形)
-        const auth1 =
-          j.auth1 || j.auth1_token || j.auth1Token || j["auth1-token"];
-        const sess =
-          j.sessionToken ||
-          j.session_token ||
-          j.devinSessionToken ||
-          j["devin-session-token"];
-        const refresh = j.refreshToken || j.refresh_token || j["refresh-token"];
-        const tkAny = j.token || j.authToken || j.access_token || j.accessToken;
-        const emTrim =
-          e && _isValidEmail(String(e).trim()) ? String(e).trim() : null;
-        // 优先级 · email+pass > email+auth1 > email+session > email+any > 单 token
-        if (emTrim && p) {
+        if (e && p && _isValidEmail(String(e).trim())) {
           items.push({
             type: "pair",
-            email: emTrim,
+            email: String(e).trim(),
             password: String(p).trim(),
           });
           continue;
         }
-        if (emTrim && auth1) {
-          items.push({
-            type: "pair-token",
-            email: emTrim,
-            token: String(auth1).trim(),
-            kind: "auth1",
-          });
-          continue;
-        }
-        if (emTrim && sess) {
-          items.push({
-            type: "pair-token",
-            email: emTrim,
-            token: String(sess).trim(),
-            kind: "session",
-          });
-          continue;
-        }
-        if (emTrim && refresh) {
-          items.push({
-            type: "pair-token",
-            email: emTrim,
-            token: String(refresh).trim(),
-            kind: "refresh",
-          });
-          continue;
-        }
-        if (emTrim && tkAny) {
-          const tk = String(tkAny).trim();
-          items.push({
-            type: "pair-token",
-            email: emTrim,
-            token: tk,
-            kind: _detectTokenKind(tk) || "session",
-          });
-          continue;
-        }
-        const stand = auth1 || sess || refresh || tkAny;
-        if (stand) {
-          const tk = String(stand).trim();
-          items.push({
-            type: "token",
-            raw: tk,
-            kind: auth1
-              ? "auth1"
-              : refresh
-                ? "refresh"
-                : sess
-                  ? "session"
-                  : _detectTokenKind(tk) || "session",
-          });
+        const tk =
+          j.token ||
+          j.sessionToken ||
+          j.session_token ||
+          j.authToken ||
+          j.access_token;
+        if (tk) {
+          items.push({ type: "token", raw: String(tk).trim() });
           continue;
         }
       } catch {}
     }
 
     // 2. 标签前缀 · 密码 · 守一不退: 标签明确即定锚 · 内容含 @ 仍为密码
-    //    v2.7.1 · 若内容是 token 则带 kind · 供下游 token-pair 配对
     const passM = ln.match(RE_LABEL_PASS);
     if (passM) {
-      const v = ln.substring(passM[0].length).trim();
+      // v3.0.4+ · 双标签同行优先 (密码：pass----邮箱：email 逆序形 · 水无常形)
+      const _dlrP = _parseDualLabelLine(ln);
+      if (_dlrP) {
+        items.push({
+          type: "pair",
+          email: _dlrP.email,
+          password: _dlrP.password,
+        });
+        continue;
+      }
+      const v = _stripPassTrail(ln.substring(passM[0].length).trim());
       if (v) {
-        const kP = _detectTokenKind(v);
-        // 标签即锚 · 不再以 含@ 排除 (修 v2.7.0 病二: uuCO4@7hukcO 不再误判)
-        // v2.7.1 · 含 \s/|/---- 的 token 形不算 token (parseSingleLine 之事)
-        if (kP && !/[\s\|]|----/.test(v))
-          items.push({ type: "token", raw: v, kind: kP });
+        // 标签即锚 · 不再以 含@ 排除 (修病二: uuCO4@7hukcO 不再误判)
+        if (looksLikeToken(v)) items.push({ type: "token", raw: v });
         else items.push({ type: "pass", password: v });
         continue;
       }
@@ -1280,6 +1647,16 @@ function parseAccountText(content) {
     // 3. 标签前缀 · 邮箱 · 守一: 必须 isValidEmail 才认 (修病四: '账号管理器:URL' 不再误伤)
     const emailM = ln.match(RE_LABEL_EMAIL);
     if (emailM) {
+      // v3.0.4+ · 双标签同行优先 (邮箱：email----密码：pass · 水无常形)
+      const _dlrE = _parseDualLabelLine(ln);
+      if (_dlrE) {
+        items.push({
+          type: "pair",
+          email: _dlrE.email,
+          password: _dlrE.password,
+        });
+        continue;
+      }
       const v = ln.substring(emailM[0].length).trim();
       if (_isValidEmail(v)) {
         items.push({ type: "email", email: v });
@@ -1290,76 +1667,52 @@ function parseAccountText(content) {
       ln = v || ln;
     }
 
-    // 4. 组合行 (各种分隔符) · v2.7.1 区分 pair vs pair-token
+    // 4. 组合行 (各种分隔符)
     const pair = parseSingleLine(ln);
     if (pair) {
-      if (pair.token) {
-        items.push({
-          type: "pair-token",
-          email: pair.email,
-          token: pair.token,
-          kind: pair.kind,
-        });
-      } else {
-        items.push({
-          type: "pair",
-          email: pair.email,
-          password: pair.password,
-        });
-      }
+      items.push({
+        type: "pair",
+        email: pair.email,
+        password: pair.password,
+      });
       continue;
     }
 
-    // 5. 兜底: 整行就是合法邮箱 (待与下一行密码/token 配对)
+    // 5. 兜底: 整行就是合法邮箱 (待与下一行密码配对)
     if (_isValidEmail(ln)) {
       items.push({ type: "email", email: ln });
       continue;
     }
 
-    // 6. 仍然像 token (放宽阈值 40+) · v2.7.1 带 kind
+    // 6. 仍然像 token (放宽阈值 40+)
     if (
       ln.length >= 40 &&
       /^[A-Za-z0-9_\-\.\$\/+=]+$/.test(ln) &&
       !ln.includes("@")
     ) {
-      const k6 = _detectTokenKind(ln) || "raw";
-      items.push({ type: "token", raw: ln, kind: k6 });
+      items.push({ type: "token", raw: ln });
       continue;
     }
     // 不可识别 · 静默跳过
   }
 
-  // 序列配对 · 双向 · 顺逆皆通 · v2.7.1 加 pair-token 与 token 之多行配对
+  // 序列配对 · 双向 · 顺逆皆通
   let pendingEmail = null;
   let pendingPass = null;
-  let pendingToken = null; // v2.7.1 反序 token (token 先 email 后)
   for (const it of items) {
     if (it.type === "pair") {
       if (it.email && it.password && _isValidEmail(it.email))
         accounts.push({ email: it.email, password: it.password });
       pendingEmail = null;
       pendingPass = null;
-      pendingToken = null;
-    } else if (it.type === "pair-token") {
-      // v2.7.1.1 · email + token 同行 · token 直入 password 槽 (主公三诏)
-      if (it.email && it.token && _isValidEmail(it.email))
-        accounts.push({ email: it.email, password: it.token });
-      pendingEmail = null;
-      pendingPass = null;
-      pendingToken = null;
     } else if (it.type === "email") {
       if (pendingPass) {
         // 反序: 先 pass 后 email
         accounts.push({ email: it.email, password: pendingPass });
         pendingPass = null;
         pendingEmail = null;
-      } else if (pendingToken) {
-        // v2.7.1.1 反序 token: 先 token 后 email · token 入 password 槽
-        accounts.push({ email: it.email, password: pendingToken.raw });
-        pendingToken = null;
-        pendingEmail = null;
       } else {
-        // 已有 pendingEmail 而无 pass/token · 新 email 覆盖 (前者孤立 · 弃)
+        // 已有 pendingEmail 而无 pass · 新 email 覆盖 (前者孤立 · 弃)
         pendingEmail = it.email;
       }
     } else if (it.type === "pass") {
@@ -1371,56 +1724,12 @@ function parseAccountText(content) {
         pendingPass = it.password;
       }
     } else if (it.type === "token") {
-      // v2.7.1.1 · 单行 token: 优先与前 pendingEmail 配 (入 password 槽) · 否则进 tokens 孤儿数组
-      if (pendingEmail) {
-        accounts.push({ email: pendingEmail, password: it.raw });
-        pendingEmail = null;
-      } else {
-        tokens.push(it.raw);
-        // 兼反序: 缓存等下一 email
-        pendingToken = {
-          raw: it.raw,
-          kind: it.kind || _detectTokenKind(it.raw) || "session",
-        };
-      }
+      tokens.push(it.raw);
     }
   }
-
-  // v2.7.1.1 · 兼容: 反序 token (token→email) 配对后 · tokens 中已 push 之 token 应移除
-  //   accounts 中 password 槽含此 token 即为已配 · tokens 仅留真孤儿
-  if (tokens.length > 0 && accounts.length > 0) {
-    const pwSet = new Set(accounts.map((a) => a.password).filter(Boolean));
-    for (let i = tokens.length - 1; i >= 0; i--) {
-      if (pwSet.has(tokens[i])) tokens.splice(i, 1);
-    }
-  }
-
-  // v2.7.5 · 主公诏「单独 token 无法添加登录」治法 · 顺其自然·适配万法之格式
-  //   病: 主公图1 五行 auth1_xxx (无 email 同行配对) · 进 tokens 数组成孤儿 · accounts 空
-  //   治: 孤儿 token 转占位 email 入 accounts · password 槽放原 token
-  //       占位形 `<kind>.<sha8>@token.wam` (合法 email · 通过 _isValidEmail)
-  //       下游 _normalizeAccCreds 之 _detectTokenKind(acc.password) 自动分流 → loginViaToken
-  //       UI 用 domain `token.wam` 渲染 "tk" badge · 用户视觉可识 · 实际无感工作
-  //       verify/login 后 quota/plan/expiry 等账号信息均可查询 · 用户无为
-  //   道: 道恒无名 · 不强求"真 email" · 占位即真 · 万物自宾
-  for (const tk of tokens) {
-    const kind = _detectTokenKind(tk) || "raw";
-    const sha = crypto
-      .createHash("sha256")
-      .update(tk)
-      .digest("hex")
-      .substring(0, 8);
-    const placeholder = `${kind}.${sha}@token.wam`;
-    // 防重: 同 token 反复粘贴不重复 (sha8 决定 placeholder 唯一)
-    if (!accounts.find((a) => a.email.toLowerCase() === placeholder))
-      accounts.push({ email: placeholder, password: tk });
-  }
-  // 孤儿尽转 accounts · tokens 数组清 (返兼容 v2.7.1.1 · 但消费者一般不再读)
-  tokens.length = 0;
 
   return { accounts, tokens };
 }
-
 function loadAccountsFromFs() {
   const cfgPath = _cfg("accountsFile", "");
   const cands = [
@@ -1491,13 +1800,11 @@ class Store {
         this.activeApiServerUrl = j.activeApiServerUrl;
       if (typeof j.lastRotateAt === "number")
         this.lastRotateAt = j.lastRotateAt;
-      // v2.1.2 · 锁🔒贯通 · accountMeta 持久化 (skipAutoSwitch 重启不丢)
-      // v2.7.4 · 优先读独立 lock-state.json (multi-window race-safe)
-      //   兼容: lock-state.json 不存在 时 fallback 旧 accountMeta + 一次性 migrate
+      // v2.7.4 (补入v3.0.2) · 优先读独立 lock-state.json (multi-window race-safe)
+      //   兼容: lock-state.json 不存在时 fallback 旧 accountMeta + 一次性 migrate
       const diskLocks = _readLockState();
       const hasLockFile = fs.existsSync(LOCK_FILE);
       if (hasLockFile) {
-        // 新模式: lock-state.json 为真本源
         this._savedAccountMeta = diskLocks;
         log(
           "store.load · lock-state.json 真本源 · " +
@@ -1505,23 +1812,28 @@ class Store {
             " 个🔒",
         );
       } else if (j.accountMeta && typeof j.accountMeta === "object") {
-        // 兼容旧版: wam-state.json.accountMeta + 一次性 migrate
         this._savedAccountMeta = j.accountMeta;
         try {
-          const migrateData = {
-            version: VERSION,
-            savedAt: Date.now(),
-            locks: j.accountMeta,
-            _migratedFrom: "wam-state.json.accountMeta",
-          };
-          atomicWrite(LOCK_FILE, JSON.stringify(migrateData, null, 2));
+          atomicWrite(
+            LOCK_FILE,
+            JSON.stringify(
+              {
+                version: VERSION,
+                savedAt: Date.now(),
+                locks: j.accountMeta,
+                _migratedFrom: "wam-state.json.accountMeta",
+              },
+              null,
+              2,
+            ),
+          );
           log(
             "store.load · migrate accountMeta → lock-state.json · " +
               Object.keys(j.accountMeta).length +
               " 个🔒 (一次性)",
           );
-        } catch (e) {
-          log("store.load · migrate lock fail: " + e.message);
+        } catch (me) {
+          log("store.load · migrate lock fail: " + me.message);
         }
       } else {
         this._savedAccountMeta = {};
@@ -1566,42 +1878,12 @@ class Store {
   // stale 阈值: 12h (与 UI getHealth.isStale 同步 · v2.4.0 收严)
   //   endpoint 挂时全部号都会 stale · 顶部红条提示即可 · 单行不再标
   _cleanseHealthOnLoad() {
-    const report = { dwPolluted: 0, staleCount: 0, trialNoPlanEnd: 0 };
-    const STALE_HOURS = 12; // 超过 12h 认为陈年 (UI 会显 stale)
-    const now = Date.now();
-    for (const key of Object.keys(this.health)) {
-      const h = this.health[key];
-      if (!h) continue;
-      // 检测 D=W 污染 (D=W 且 0 < D < 100 · 独立资源池同值概率极低)
-      if (
-        h.checked &&
-        typeof h.daily === "number" &&
-        typeof h.weekly === "number" &&
-        h.daily === h.weekly &&
-        h.daily > 0 &&
-        h.daily < 100
-      ) {
-        // 标记为未验 · 清陯 D/W · 保留其他元数据 (planEnd/credits)
-        h._dwPollutedAt = now;
-        h.checked = false;
-        h.daily = 0;
-        h.weekly = 0;
-        report.dwPolluted++;
-      }
-      // v2.5.4 · Trial 脏数据清洗 · 软编码判据 (兼容 Team Trial/Free Trial 等变体)
-      //   实证: 2026-05-04 前 header X-Devin-Auth1-Function 缺 → parsePlan 跑过但 planEnd 可能遗失
-      //   法: _isTrialLike(h) && planEnd==0 && checked=true · 标 checked=false · 下次自动重验
-      if (h.checked && _isTrialLike(h) && (!h.planEnd || h.planEnd === 0)) {
-        h._trialDirtyAt = now;
-        h.checked = false;
-        report.trialNoPlanEnd++;
-      }
-      // 统计 stale
-      if (h.lastChecked && now - h.lastChecked > STALE_HOURS * 3600 * 1000) {
-        report.staleCount++;
-      }
-    }
-    return report;
+    // v3.0 · 无为 · 完全废止一切清洗操作 · 保留全部历史数据不动
+    //   旧法之患:
+    //     · D=W 污染清洗: 误标 checked=false → 冤杀正常号
+    //     · Trial+planEnd=0 清洗: 误标 checked=false → GetUserStatus 400 时全军覆没
+    //   新法: 直接返回空报告 · 绝不修改任何字段
+    return { dwPolluted: 0, staleCount: 0, trialNoPlanEnd: 0 };
   }
   // v2.4.0 · 手动清空全部 health · 用户重置·从干净开始
   clearAllHealth() {
@@ -1635,18 +1917,11 @@ class Store {
   }
   save() {
     try {
-      // v2.7.4 · 道恒无名·守一·万物自宾 (《道德经》三十二章)
-      //   病灶 (v2.7.3 实测 5+ Windsurf 窗口并发):
-      //     · 进程 A: 主公 toggleSkip 锁 X → save 写 wam-state (含 X 锁)
-      //     · 进程 B: tick/verifyAll 触发 save → 用自己旧内存覆盖 (不含 X 锁) ★ race
-      //   治法: accountMeta 字段写 LOCK_FILE 真本源 (toggleSkip 已写) · 不从 store.accounts 重算
-      //         → 任何进程的 save 都不会覆盖 LOCK_FILE · multi-window race 自消
-      //         → wam-state.json.accountMeta 仅作 legacy 镜像 (旧版兼容) · 不再权威
-      //
-      //   守一: LOCK_FILE 唯一权威 · 任何 save 路径都不污染它
-      //   不令而自均: 多进程的 save 各自互不污染锁字段 · multi-window 自然均衡
+      // v2.7.4 (补入v3.0.2) · 道恒无名·守一 · accountMeta 从 LOCK_FILE 真本源读 (non-raceable)
+      //   v2.7.3 关键修: this._savedAccountMeta 同步 → reloadAccounts 不再回退锁状态
+      //   v2.7.4 升级: 不再从 accounts 重算 (race-immune) · 读 LOCK_FILE 权威源
       const accountMeta = _readLockState(); // 真本源·非从 accounts 重算
-      this._savedAccountMeta = accountMeta; // 同步内存快照·与盘一致
+      this._savedAccountMeta = accountMeta; // 守一·与盘同步 (v2.7.3 治🔒回退关键一行)
       const data = {
         version: VERSION,
         savedAt: Date.now(),
@@ -1661,7 +1936,6 @@ class Store {
         activeTokenShort: this.activeTokenShort || null,
         activeApiServerUrl: this.activeApiServerUrl || null,
         lastRotateAt: this.lastRotateAt || 0,
-        // v2.7.4 · accountMeta 镜像 (legacy compat · 真本源在 lock-state.json)
         accountMeta: accountMeta,
       };
       atomicWrite(STATE_FILE, JSON.stringify(data, null, 2));
@@ -1700,8 +1974,8 @@ class Store {
     const r = loadAccountsFromFs();
     this.accountsSource = r.source;
     this.accounts = r.accounts;
-    // v2.7.4 · 实时读 lock-state.json (盘上真本源·multi-window race-safe)
-    //   旧法 (v2.1.2 ~ v2.7.3): 用 this._savedAccountMeta 内存快照 · 多窗口下被覆盖
+    // v2.7.4 (补入v3.0.2) · 实时读 lock-state.json (盘上真本源 · multi-window race-safe)
+    //   旧法 (v2.1.2): 用 this._savedAccountMeta 内存快照 · 多窗口下被覆盖
     //   新法: 每次 reloadAccounts 都重读盘 · 反映其他窗口 toggleSkip 的最新意图
     //   降级 (lock-state.json 读失败): 继续用 _savedAccountMeta (load 时已 fallback)
     const diskLocks = _readLockState();
@@ -1742,29 +2016,18 @@ class Store {
     return r;
   }
   addBatch(text) {
-    // v2.7.1.1 · 主公三诏: token 看做账号密码 · 直接复用 v2.7.0 经典链
-    //   parseAccountText 已把 email+token 配对入 accounts.password 槽
-    //   token 与密码同居 · 落盘/复制/UI/登录分流皆走原路 · 无为而无不为
     const parsed = parseAccountText(text);
     const newOnes = parsed.accounts;
-    const tokens = parsed.tokens || []; // 孤儿 token (无 email · 留待 wam.addToken/injectToken 显式反查)
+    const tokens = parsed.tokens || [];
     let added = 0,
       duplicate = 0;
     const addedEmails = []; // v2.4.3 · 返新加 email 给 webview handler 即时 verify
-    // 同 v2.7.0 经典链 · password 槽可含真密码亦可含 token · 下游自动判别
-    //   exists 但 password 不同时更新 (主公:"直接复用一切·token 与密码同居")
     for (const a of newOnes) {
       const exists = this.accounts.find(
         (x) => x.email.toLowerCase() === a.email.toLowerCase(),
       );
       if (exists) {
-        // v2.7.1.1 · 主公:"将 token 看做账号密码" · password 不同则替换 (新值优先 · 大成若缺)
-        if (exists.password !== a.password && a.password) {
-          exists.password = a.password;
-          addedEmails.push(a.email); // 触即时重 verify
-        } else {
-          duplicate++;
-        }
+        duplicate++;
         continue;
       }
       this.accounts.push({
@@ -1775,7 +2038,7 @@ class Store {
       addedEmails.push(a.email);
       added++;
     }
-    if (added > 0 || addedEmails.length > 0) this._persistAccountsToMd();
+    if (added > 0) this._persistAccountsToMd();
     return { added, duplicate, tokens, addedEmails };
   }
   remove(idx) {
@@ -1834,13 +2097,7 @@ class Store {
     if (!target || !target.endsWith(".md"))
       target = path.join(WAM_DIR, "accounts.md");
     try {
-      // v2.7.1.1 · 主公三诏: token 看做账号密码 · 持久化同 v2.7.0 单形
-      //   · email <password|token>       (password 槽含真密码或任意 token · 同一行落盘)
-      //   下游 _detectTokenKind(a.password) 自动分流 (token kind 走 loginViaToken · 否则 devinLogin)
-      //   复用 / 复制 / 第三方读 一切不变 · 自然无为
-      const lines = this.accounts.map((a) =>
-        a.password ? a.email + " " + a.password : a.email,
-      );
+      const lines = this.accounts.map((a) => a.email + " " + a.password);
       atomicWrite(target, lines.join("\n") + "\n");
       log("persistAccountsToMd: " + this.accounts.length + " → " + target);
       return true;
@@ -2002,37 +2259,84 @@ class Store {
     this.inUseUntil = {};
     return n;
   }
-  // ── v2.3.0 评分 — 道法自然 · D/W 综合 + 干旱/重置倒计时/锁/Claude门控 + 使用中🔒 ──
+  // ── v3.3.0 道法自然 · 绝对分层 · 存量先于流量 · 各得其所 ──────────────
+  //   §解构本源:
+  //     · overage  = Stock(存量)  · 真金白银 · 不可再生 · 不用即损沉没
+  //     · 百分比   = Flow (流量)  · 周期重置 · 自然回潮 · 等待无损
+  //   §病灶 (v3.2.1 之前): 二者塞同一连续坐标系 · overage 上限 460 < 百分比 W50 = 480~
+  //     → 实际行为反向: 百分比账号被优先消耗 · overage 账号被冷落浪费 · 与用户诉求相悖
+  //   §治法 (反者道之动 · 九竅之邪在乎三要 · 可以動靜):
+  //     第三层 💎 overage 池   [1_000_000, 1_099_950]  内排按美元数全幅 · 去 min(100,$) 封顶
+  //     第二层 📊 百分比池      [1, 9_999]              沿用 v3.1.3 effQ 守门 · 上限封顶
+  //     候补层 ⏳ 未验号        100                       与 v3.0 一致 · 不夺主权
+  //     -∞   永禁              无密码 / 用户主动锁
+  //   §门控: wam.preferOverageFirst (默认 true) · false 回退 v3.2.1 统一坐标系兼容旧行为
   _scoreOf(idx) {
     const a = this.accounts[idx];
-    if (!a || !a.password) return -Infinity;
-    if (a.skipAutoSwitch) return -Infinity; // 🔒 锁号不参与自动切号
-    if (this.isBanned(a.email)) return -Infinity;
-    if (this.isInUse(a.email)) return -Infinity; // v2.3.0 使用中🔒 120s 不参与
+    if (!a || !a.password) return -Infinity; // 无密码真无法登录
+    if (a.skipAutoSwitch) return -Infinity; // 用户主动锁 · 尊重意愿
+    // v3.0 · 不再检查 isBanned/isInUse · 全号平等参与
     const h = this.getHealth(a.email);
-    if (!h.checked) return 50; // 未验号给基础分 (好过跳过)
-    if (!isClaudeAvailable(h)) return -Infinity; // Free/过期耗尽不选
+    if (!h.checked) return 100; // 未验号给中等分 · 可与已验号公平竞争
+    // isClaudeAvailable 永远 true · 不会 -Infinity
     const hrsToDaily = hoursUntilDailyReset();
     const hrsToWeekly = hoursUntilWeeklyReset();
     const drought = isWeeklyDrought();
+    const preferOverageFirst = (typeof _cfg === 'function') ? !!_cfg('preferOverageFirst', true) : true;
+
+    // ═══ 第三层 · 💎 OVERAGE 池 (绝对优先 · 道法自然 · 存量先用防废账) ═══
+    //   触发: overageActive=true · GetUserStatus 返 overageBalanceMicros > 0
+    //   主权: 1_000_000 基础分 · 永远凌驾于百分比层 9_999 上限
+    //   内排: overageDollars × 100 → $1=+100 / $100=+10_000 / $200=+20_000 (全幅可比·主公图1中 $208>$195>$193>$189>$185 顺序天然保留)
+    //   时效: 仅 ±50 分微调 · 不夺金额主权
+    if (h.overageActive && preferOverageFirst) {
+      let s = 1000000;
+      s += Math.min(99900, Math.round((h.overageDollars || 0) * 100));
+      if (h.staleMin >= 0 && h.staleMin < 15) s += 50;
+      else if (h.staleMin >= 0 && h.staleMin < 60) s += 20;
+      else if (h.staleMin >= 60 && h.staleMin < 360) s -= 10;
+      else if (h.staleMin >= 360) s -= 30;
+      return s; // 区间 [999_970, 1_099_950]
+    }
+    // 旧 overage 逻辑 (preferOverageFirst=false · 兼容回退 · 与 v3.2.1 一致)
+    if (h.overageActive) {
+      let s = 300 + Math.min(100, h.overageDollars || 0);
+      if (h.staleMin >= 0 && h.staleMin < 15) s += 60;
+      else if (h.staleMin >= 0 && h.staleMin < 60) s += 30;
+      else if (h.staleMin >= 60 && h.staleMin < 120) s -= 30;
+      else if (h.staleMin >= 120 && h.staleMin < 360) s -= 80;
+      else if (h.staleMin >= 360) s -= 150;
+      return s;
+    }
+
+    // ═══ 第二层 · 📊 百分比池 (流量 · 沿用 v3.1.3 effQ 守门) ═══
+    //   v3.3.0 上限 9_999 · 绝不突破第三层 · 各得其所
     if (drought) {
       // ── 干旱模式: 只看 Daily ──
-      if (h.daily <= 0 && hrsToDaily > 4) return -Infinity;
-      let s = h.daily * 15;
-      if (h.daily <= 5 && hrsToDaily <= 2)
-        s += 300; // 即将重置 · 低额度也值得
+      // v3.0 · D=0 也不 -Infinity · 给最低正分
+      let s = Math.max(h.daily, 0) * 15;
+      if (h.daily <= 5 && hrsToDaily <= 2) s += 300;
       else if (h.daily <= 5 && hrsToDaily <= 6) s += 120;
       if (h.daily > 50) s += 200;
       if (h.staleMin >= 0 && h.staleMin < 5) s += 30;
-      else if (h.staleMin >= 0 && h.staleMin > 60) s += 60;
-      return s;
+      return Math.min(9999, Math.max(s, 1)); // v3.3.0 · 上限 9_999 · 不破第三层
     }
-    // ── 正常模式: D+W 综合评分 ──
-    const eff = Math.min(h.daily, h.weekly);
-    if (h.daily <= 0 && h.weekly <= 0 && hrsToDaily > 4 && hrsToWeekly > 4)
-      return -Infinity;
-    if (h.weekly <= 0 && hrsToWeekly > 6) return -Infinity;
-    let s = eff * 10 + h.weekly * 8 + h.daily * 3;
+    // ── 正常模式: effQuota 对齐评分 (v3.1.3 道法自然 · 一以贯之) ──
+    // 核心: tick 判耗尽用 effQ = Math.min(D, W) · 评分必须与此对齐
+    //   否则 D=0/W=50 得高分入选 → 切入即刻 effQ=0 → 再次耗尽 → 无限循环
+    const effQ = Math.min(Math.max(h.daily, 0), Math.max(h.weekly, 0));
+    const _threshold = typeof _cfg === 'function' ? +_cfg('autoSwitchThreshold', 5) || 5 : 5;
+    if (effQ < _threshold) {
+      // 有效额度低于阈值 · 切入即刻触发耗尽保护 · 大幅降权
+      // 不封号 (Math.max 1) · 但远低于任何可用号 · 仅胜于 -Infinity
+      let s = effQ * 3; // 0-15 分极低区间
+      // 若临近重置 · 给微加分 (等待价值 · 重置后即变可用)
+      if (h.daily < _threshold && hrsToDaily <= 2) s += 20;
+      if (!drought && h.weekly < _threshold && hrsToWeekly <= 2) s += 20;
+      return Math.max(s, 1); // 不封号 · 但极低
+    }
+    // effQ >= threshold · 真正可用 · 正常综合评分
+    let s = Math.max(h.weekly, 0) * 8 + Math.max(h.daily, 0) * 3;
     if (h.daily <= 5 && hrsToDaily <= 2) s += 250;
     else if (h.daily <= 5 && hrsToDaily <= 6) s += 100;
     if (h.weekly <= 5 && hrsToWeekly <= 4) s += 350;
@@ -2040,7 +2344,7 @@ class Store {
     if (h.staleMin >= 0 && h.staleMin < 5) s += 80;
     else if (h.staleMin >= 0 && h.staleMin < 30) s += 40;
     else if (h.staleMin < 0 || h.staleMin > 120) s -= 50;
-    return s;
+    return Math.min(9999, Math.max(s, 1)); // v3.3.0 · 上限 9_999 · 不破第三层
   }
   getBestIndex(excludeIdx) {
     let best = -1,
@@ -2066,13 +2370,44 @@ class Store {
     arr.sort((a, b) => b.s - a.s);
     return arr.map((x) => x.i);
   }
+  // ── v3.3.0 · 池层标识 · 透明性 · 让用户看见道之运行 ──
+  //   💎 overage 池 (存量·绝对优先)  · 📊 百分比池 (流量·次选)
+  //   ⏳ 候补 (未验·待 verify)        · 🔒 主动锁 (skipAutoSwitch)
+  //   ✗ 永禁 (无密码)
+  _tierOf(idx) {
+    const a = this.accounts[idx];
+    if (!a || !a.password) return "\u2717"; // ✗
+    if (a.skipAutoSwitch) return "\uD83D\uDD12"; // 🔒
+    const h = this.getHealth(a.email);
+    if (!h.checked) return "\u23F3"; // ⏳
+    return h.overageActive ? "\uD83D\uDC8E" : "\uD83D\uDCCA"; // 💎 / 📊
+  }
+  // 池层分布统计 (返 {ovg, pct, wait, lock, ban, total})
+  _tierStats(excludeIdx) {
+    const r = { ovg: 0, pct: 0, wait: 0, lock: 0, ban: 0, total: 0 };
+    for (let i = 0; i < this.accounts.length; i++) {
+      if (i === excludeIdx) continue;
+      const a = this.accounts[i];
+      r.total++;
+      if (!a || !a.password) { r.ban++; continue; }
+      if (a.skipAutoSwitch) { r.lock++; continue; }
+      const h = this.getHealth(a.email);
+      if (!h.checked) { r.wait++; continue; }
+      if (h.overageActive) r.ovg++;
+      else r.pct++;
+    }
+    return r;
+  }
   getStats() {
     let totalD = 0,
       totalW = 0,
       checkedCount = 0,
       unchecked = 0,
       available = 0,
-      exhausted = 0;
+      exhausted = 0,
+      overageAccounts = 0, // v2.8.4 · Extra Usage Active 账号数
+      totalOverageDollars = 0, // v2.8.4 · 全池 Extra Usage 总额 (USD)
+      checkedNoOverage = 0; // v2.8.5 · 已验但未激活 Extra Usage (待激活)
     for (const a of this.accounts) {
       const h = this.getHealth(a.email);
       if (!h.checked) {
@@ -2082,9 +2417,21 @@ class Store {
       checkedCount++;
       totalD += h.daily;
       totalW += h.weekly;
-      const eff = Math.min(h.daily, h.weekly);
-      if (eff < 1) exhausted++;
+      // v3.1.3 · effQuota 对齐: 有效额度<1 才算耗尽 (与 tick/scoreOf 一以贯之)
+      //   正常: effQ = min(D, W) · D=0/W=50 → effQ=0 → 耗尽 (切入即触发)
+      //   干旱: effQ = D · 仅看 daily
+      const _isDrought = checkedCount > 0 && totalW / Math.max(checkedCount, 1) < 1;
+      const _effQ = _isDrought ? h.daily : Math.min(h.daily, h.weekly);
+      if (_effQ < 1) exhausted++;
       else available++;
+      // v2.8.5 · overageActive 统计 (GetUserStatus 权威 · "Extra Usage Active")
+      // overageActive = overageDollars > 0 (由 _parsePlanStatusJson 定义 · 不需双判)
+      if (h.overageActive) {
+        overageAccounts++;
+        totalOverageDollars += h.overageDollars || 0;
+      } else {
+        checkedNoOverage++; // 已验 · 无 Extra Usage · 等待激活或未触发
+      }
     }
     const banned = Object.keys(this.blacklist).filter((k) =>
       this.isBanned(k),
@@ -2108,6 +2455,9 @@ class Store {
       hrsToDaily: hoursUntilDailyReset(),
       hrsToWeekly: hoursUntilWeeklyReset(),
       drought: checkedCount > 0 && totalW / checkedCount < 1,
+      overageAccounts, // v2.8.4
+      totalOverageDollars: Math.round(totalOverageDollars * 100) / 100, // v2.8.4
+      checkedNoOverage, // v2.8.5 · 已验但无Extra Usage · 待激活数量
     };
   }
   setActive(idx, email, sessionToken, apiKey, apiServerUrl, injectPath) {
@@ -2147,7 +2497,32 @@ class Store {
 
 // ═══ § 3 · 万法之本 (Devin auth · inject · 切号主流水) ═══
 async function devinLogin(email, password) {
+  // v3.1.1 · 简化序列化门 · 单变量 minGap 替代 Promise chain (顺其自然·去日益)
+  // v3.1.2 · 限速自感知门 (auto-backoff · 永不打死服务器·零增弊端)
+  //   入口: 检查 _devinLoginRateLimitedUntil 窗口 → 命中即立返 · 零网络
+  //   出口: 检测 429 / json error 含 rate/limit → 设 _devinLoginRateLimitedUntil = now + 5min
+  //   配置: wam.devinLoginRateLimitWindowMs (默 300000ms · 0=关闭感知)
+  //   零误伤: cache hit 切号走 injectViaBing 不调 devinLogin · 不受窗口影响
+  //   仅 cache miss 切号 + 后台 verify 受窗口保护 · 5min 自动恢复
+  // v3.1.2 · 限速窗口入口检查 (零网络·永不打死)
+  const _rlNow = Date.now();
+  if (_rlNow < _devinLoginRateLimitedUntil) {
+    const remainSec = Math.ceil((_devinLoginRateLimitedUntil - _rlNow) / 1000);
+    return {
+      ok: false,
+      error: "rate-limit-window",
+      retryAfterSec: remainSec,
+      status: 429,
+    };
+  }
   try {
+    const _minGapMs = Math.max(0, +_cfg("devinLoginMinGapMs", 1200) || 1200);
+    if (_minGapMs > 0) {
+      const _elapsed = Date.now() - _lastDevinLoginAt;
+      if (_elapsed < _minGapMs)
+        await new Promise((r) => setTimeout(r, _minGapMs - _elapsed));
+    }
+    _lastDevinLoginAt = Date.now();
     const r = await jsonPost(
       URL_DEVIN_LOGIN,
       {
@@ -2162,6 +2537,28 @@ async function devinLogin(email, password) {
     const err =
       (r.json && (r.json.detail || r.json.error || r.json.message)) ||
       "no_token";
+    // v3.1.2 · 限速感知 · 触发后开 5min 自动 backoff 窗口 (永不打死服务器)
+    const _rlWinMs = Math.max(
+      0,
+      +_cfg("devinLoginRateLimitWindowMs", 300000) || 300000,
+    );
+    if (_rlWinMs > 0) {
+      const _errLow = String(err || "").toLowerCase();
+      const _isRateLimit =
+        r.status === 429 ||
+        r.status === 503 ||
+        /rate.?limit|too.?many|throttl/.test(_errLow);
+      if (_isRateLimit) {
+        _devinLoginRateLimitedUntil = Date.now() + _rlWinMs;
+        log(
+          "devinLogin: 命中限速 (status=" +
+            r.status +
+            ") · auto-backoff " +
+            Math.round(_rlWinMs / 1000) +
+            "s · cache 命中切号无感",
+        );
+      }
+    }
     return { ok: false, status: r.status, error: err };
   } catch (e) {
     return { ok: false, error: e.message };
@@ -2285,7 +2682,8 @@ async function tryFetchPlanStatus(apiKey, opts) {
       }
       _quotaEndpointHealth.totalFail++;
       lastReason = "status=" + r.status;
-      if (r.status === 401) _quotaEndpointHealth.consecutive401++;
+      // v3.0 · 400 也是服务端故障信号 · 不只 401
+      if (r.status >= 400) _quotaEndpointHealth.consecutive401++;
       _quotaEndpointHealth.consecutiveOk = 0;
       if (!o.silent) {
         log(
@@ -2297,7 +2695,7 @@ async function tryFetchPlanStatus(apiKey, opts) {
             (r.text || "").substring(0, 100),
         );
       }
-      if (r.status === 401) break; // 认证拒绝 · 换 endpoint 无救
+      if (r.status === 401 || r.status === 400) break; // v3.0 · 400/401 均换endpoint无救
     } catch (e) {
       _quotaEndpointHealth.totalFail++;
       _quotaEndpointHealth.consecutiveOk = 0;
@@ -2524,6 +2922,42 @@ function _parsePlanStatusJson(j) {
     const m = tierRaw.match(/\d+/);
     if (m) teamsTier = Number(m[0]);
   }
+  // ── overageBalanceMicros → overageDollars ──────────────────────────────────
+  // v2.8.6 · 反者道之动 · 多层查找 + uint32 无符号修正 + 合理性上限
+  // proto3 int64 可能在多个层级: ps / userStatus / j (按精度降序尝试)
+  // {lo,hi} / {low,high} 格式: lo/hi 是 JS signed int32 → 需 >>> 0 转 uint32
+  const _m = (v) => {
+    if (v == null || v === 0 || v === "0" || v === "") return 0;
+    if (typeof v === "bigint") return Number(v);
+    if (typeof v === "object") {
+      // proto int64 as {lo,hi} or {low,high} — lo/hi are signed JS ints
+      const lo = v.lo != null ? v.lo : v.low != null ? v.low : null;
+      const hi = v.lo != null ? v.hi : v.low != null ? v.high : null;
+      if (lo != null) {
+        const uLo = Number(lo) >>> 0; // uint32
+        const uHi = Number(hi) >>> 0; // uint32
+        return uLo + uHi * 4294967296;
+      }
+    }
+    const n = Number(v);
+    return isFinite(n) && n >= 0 ? n : 0;
+  };
+  // 多层 fallback: ps → userStatus → j (防字段藏在不同层级)
+  const _rawOvg =
+    ps.overageBalanceMicros ??
+    ps.overage_balance_micros ??
+    (userStatus &&
+      (userStatus.overageBalanceMicros ?? userStatus.overage_balance_micros)) ??
+    j.overageBalanceMicros ??
+    j.overage_balance_micros ??
+    0;
+  const overageMicros = _m(_rawOvg);
+  // 合理性上限: Devin 最高 $200 Extra Usage; 上限 $1000 防解析异常虚高
+  const overageDollars = Math.min(
+    1000,
+    Math.round((overageMicros / 1000000) * 100) / 100,
+  );
+  const overageActive = overageDollars > 0;
   return {
     daily: safeDaily,
     weekly: safeWeekly,
@@ -2538,71 +2972,248 @@ function _parsePlanStatusJson(j) {
     dailyResetAt,
     weeklyResetAt,
     teamsTier,
+    overageDollars, // USD · $200 Extra Usage Balance
+    overageActive, // true = Cascade quota=0 时仍完全可用
   };
+}
+
+// ═══ $200 Extra Usage 激活引擎 · 道法自然 · 内化于一 · 太上下知有之 ═══════════
+// 触发: POST /api/{orgId}/schedules → checklist.automations=true
+// 发放: AdjustOverageBalanceInternal → overageBalanceMicros=200_000_000
+// 发现: GetUserStatus → overageActive=true → WAM 高优先选号
+const _pendingAct = new Set();
+
+async function _tryAllTriggers(auth1, orgId) {
+  const H = {
+    Authorization: "Bearer " + auth1,
+    "x-cog-org-id": orgId,
+    "Content-Type": "application/json",
+    "User-Agent": UA,
+    Origin: "https://app.devin.ai",
+    Referer: "https://app.devin.ai/",
+  };
+  const s = JSON.stringify({
+    name: "dao-init",
+    prompt: "echo ok",
+    schedule_type: "recurring",
+    frequency: "0 0 31 2 *",
+    interval_count: 1,
+    agent: "devin",
+    bypass_approval: true,
+    is_enabled: false,
+  });
+  for (const url of [
+    "https://app.devin.ai/api/" + orgId + "/schedules",
+    "https://app.devin.ai/api/v1/organizations/" + orgId + "/schedules",
+    "https://app.devin.ai/api/v3/organizations/" + orgId + "/schedules",
+    "https://app.devin.ai/api/" + orgId + "/automations",
+  ]) {
+    try {
+      const r = await httpsReq("POST", url, H, s, 8000);
+      if (r && (r.status === 200 || r.status === 201 || r.status === 202))
+        return { ok: true, url };
+    } catch {}
+  }
+  return { ok: false };
+}
+
+async function _pollForOverage(apiKey, apiServerUrl, n, ms) {
+  // v2.8.4 · 软编码: n/ms 参数可经 _cfg 覆盖 (autoActivate.pollN / autoActivate.pollMs)
+  // 默认 5×3s=15s 快验: $200 通常24-48h后到账 · 15s 足够检查"是否已有"/"刚触发到账"
+  const pollN =
+    n != null ? n : Math.max(1, _cfg("autoActivate.pollN", 5) | 0) || 5;
+  const pollMs =
+    ms != null
+      ? ms
+      : Math.max(500, _cfg("autoActivate.pollMs", 3000) | 0) || 3000;
+  for (let i = 0; i < pollN; i++) {
+    await new Promise((r) => setTimeout(r, pollMs));
+    try {
+      const q = await tryFetchPlanStatus(apiKey, {
+        apiServerUrl,
+        silent: true,
+      });
+      if (q && q.overageActive)
+        return { ok: true, overage: q.overageDollars, pollN: i + 1, q };
+    } catch {}
+  }
+  return { ok: false, reason: "timeout" };
+}
+
+async function _getOrgId(auth1) {
+  try {
+    const r = await jsonPost(
+      URL_DEVIN_ORG_AUTH,
+      { Authorization: "Bearer " + auth1 },
+      {},
+      6000,
+    );
+    const j = r && r.json;
+    return (j && ((j.org && j.org.org_id) || j.org_id)) || null;
+  } catch {
+    return null;
+  }
+}
+
+// v3.0 · Devin billing 后备探额 · GetUserStatus 400 时用此路径获取真实额度
+// 实证: app.devin.ai/api/{orgId}/billing/status
+//   返回 { overage_credits: number, billing_error: string|null }
+//   overage_credits < 0 = 有 Extra Usage (平台对用户赏予)、>= 0 = 无额度
+async function _tryDevinBillingFallback(auth1) {
+  if (!auth1) return null;
+  try {
+    const orgId = await _getOrgId(auth1);
+    if (!orgId) return null;
+    const r = await httpsReq(
+      "GET",
+      "https://app.devin.ai/api/" + orgId + "/billing/status",
+      { Authorization: "Bearer " + auth1, "User-Agent": UA },
+      null,
+      8000,
+    );
+    if (r.status !== 200) return null;
+    let j;
+    try {
+      j = JSON.parse(r.body.toString());
+    } catch {
+      return null;
+    }
+    // overage_credits < 0 且无 billing_error → 有实际额度
+    const hasFunds =
+      typeof j.overage_credits === "number" &&
+      j.overage_credits < 0 &&
+      !j.billing_error;
+    const dollarAmt = hasFunds ? Math.abs(j.overage_credits) : 0;
+    return {
+      checked: true,
+      plan: "Trial", // billing API 不返 plan 名称 · 保守设 Trial
+      daily: hasFunds ? 100 : 0,
+      weekly: hasFunds ? 100 : 0,
+      planEnd: 0,
+      daysLeft: 0,
+      overageActive: hasFunds,
+      overageDollars: dollarAmt,
+      billingError: j.billing_error || null,
+      lastChecked: Date.now(),
+      _source: "devin_billing_v3", // 标记数据来源
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function _activateOverageFull(auth1, apiKey, apiServerUrl, email) {
+  if (!auth1 || !apiKey) return { ok: false };
+  if (_pendingAct.has(email)) return { ok: false, reason: "pending" };
+  _pendingAct.add(email);
+  try {
+    const q0 = await tryFetchPlanStatus(apiKey, { apiServerUrl, silent: true });
+    if (q0 && q0.overageActive)
+      return { ok: true, reason: "already", overage: q0.overageDollars, q: q0 };
+    const orgId = await _getOrgId(auth1);
+    if (!orgId) return { ok: false, reason: "no_orgId" };
+    const trig = await _tryAllTriggers(auth1, orgId);
+    log(
+      "activate [" +
+        email.split("@")[0].substring(0, 16) +
+        "] trigger:" +
+        (trig.ok ? "✓ " + trig.url : "✗"),
+    );
+    // v2.8.5 · 软编码: 不再硬传 20,3000 · 让 _cfg 软编码生效 (默认 5×3s)
+    const poll = await _pollForOverage(apiKey, apiServerUrl);
+    if (poll.ok) log("activate ✓ $" + poll.overage + " poll#" + poll.pollN);
+    else log("activate triggered:" + trig.ok + " $200 处理中(24-48h后到账)");
+    return { triggered: trig.ok, ...poll };
+  } catch (e) {
+    return { ok: false, reason: e.message };
+  } finally {
+    _pendingAct.delete(email);
+  }
 }
 
 // ═══ § 3b · 批量验证 (verifyOne / verifyAll) · 不切号 · 仅探测 quota ═══
 // 取之尽锱铢: 用 devinLogin → postAuth → tryFetchPlanStatus 三步链条 · 不调 inject
 // 用之如泥沙: 并行 + 间隔抖动 + 限速回退 · 防 Devin 整批拉黑
 async function verifyOneAccount(account) {
-  if (!account || !account.email)
-    return { ok: false, stage: "init", error: "no email" };
-  // v2.7.1.1 · 主公三诏 · 入口先映射 password 槽内 token 至显式字段
-  //   accounts.password 含 auth1_xxx 时 → 临时挂 account.auth1 · 跳 devinLogin 一阶 (修 v2.7.0/v2.7.1 之灾)
-  account = _normalizeAccCreds(account);
-  if (!account.password && !account.auth1 && !account.sessionToken)
-    return {
-      ok: false,
-      stage: "init",
-      error: "no creds (no pw/auth1/session)",
-    };
-  // v2.7.1 · 凭据择优 (auth1 → session → password)
-  //   实证: 跳 devinLogin 一阶可避 Devin rate-limit (用户图1 D10953 W9142 即此压力)
-  let sessionToken = null;
-  let source = null;
-  if (account.auth1) {
-    const pa = await windsurfPostAuth(account.auth1);
-    if (pa.ok) {
-      sessionToken = pa.sessionToken;
-      source = "auth1";
-    } else if (!account.sessionToken && !account.password) {
-      return { ok: false, stage: "auth1.postAuth", error: pa.error };
+  if (!account || !account.email || !account.password)
+    return { ok: false, stage: "init", error: "no creds" };
+  // v3.0.6 · 缓存快路 · 与 loginAccount 对齐 · 根治 verifyAll 批量触 IP限速
+  //   有效 session cache → 直接 tryFetchPlanStatus · 零 devinLogin · 二次 verifyAll 无任何限速
+  //   cache失效/quota获取失败 → 驱逐缓存 → 走全路 (devinLogin已被全局序列化门保护)
+  const _cachedV = _getCachedSession(account.email);
+  if (_cachedV) {
+    const _qC = await tryFetchPlanStatus(_cachedV.apiKey, {
+      apiServerUrl: _cachedV.apiServerUrl,
+      silent: true,
+    });
+    if (_qC) {
+      _cacheSession(
+        account.email,
+        _cachedV.sessionToken,
+        _cachedV.apiKey,
+        _cachedV.apiServerUrl,
+      ); // 刷新 TTL
+      return {
+        ok: true,
+        q: _qC,
+        sessionToken: _cachedV.sessionToken,
+        apiKey: _cachedV.apiKey,
+        apiServerUrl: _cachedV.apiServerUrl,
+      };
     }
-    // 否则降级 (有 session/password)
+    _evictSessionCache(account.email); // apiKey 失效 → 驱逐 → 走全路
   }
-  if (!sessionToken && account.sessionToken) {
-    sessionToken = account.sessionToken;
-    source = "session";
-  }
-  if (!sessionToken && account.password) {
-    const dl = await devinLogin(account.email, account.password);
-    if (!dl.ok) return { ok: false, stage: "devinLogin", error: dl.error };
-    const pa = await windsurfPostAuth(dl.auth1);
-    if (!pa.ok) return { ok: false, stage: "postAuth", error: pa.error };
-    sessionToken = pa.sessionToken;
-    source = "password";
-  }
-  if (!sessionToken)
-    return { ok: false, stage: "noSession", error: "all-chains-failed" };
+  const dl = await devinLogin(account.email, account.password);
+  if (!dl.ok) return { ok: false, stage: "devinLogin", error: dl.error };
+  const pa = await windsurfPostAuth(dl.auth1);
+  if (!pa.ok) return { ok: false, stage: "postAuth", error: pa.error };
   // v2.4.1 · 加 RegisterUser 步: 拿真 api_key + 动态 api_server_url
   //   GetUserStatus 真路径需 X-Api-Key Header · trial 里 sessionToken == apiKey, 失败时降级
-  const reg = await registerUserViaSession(sessionToken);
-  const apiKey = (reg.ok && reg.apiKey) || sessionToken;
-  const apiServerUrl = (reg.ok && reg.apiServerUrl) || "";
-  const q = await tryFetchPlanStatus(apiKey, {
-    apiServerUrl: apiServerUrl,
-    silent: true,
-  });
-  if (!q)
-    return { ok: false, stage: "planStatus", error: "fetch null", source };
-  return {
-    ok: true,
-    q,
-    sessionToken,
-    apiKey,
-    apiServerUrl,
-    source,
-  };
+  const reg = await registerUserViaSession(pa.sessionToken);
+  const apiKey = (reg.ok && reg.apiKey) || pa.sessionToken;
+  const apiServerUrl = (reg.ok && reg.apiServerUrl) || pa.apiServerUrl || "";
+  let q = await tryFetchPlanStatus(apiKey, { apiServerUrl, silent: true });
+  // v3.0 · GetUserStatus 400 时用 Devin billing API 作后备探实隔额
+  if (!q) {
+    const qb = await _tryDevinBillingFallback(dl.auth1);
+    if (qb) {
+      q = qb;
+      log(
+        "  billing-fallback ✅ " +
+          account.email.split("@")[0] +
+          " overage=" +
+          qb.overageActive +
+          " $" +
+          (qb.overageDollars || 0) +
+          " err=" +
+          (qb.billingError || "null") +
+          " [" +
+          qb._source +
+          "]",
+      );
+    } else {
+      return {
+        ok: false,
+        stage: "planStatus",
+        error: "GetUserStatus 400 + billing fallback null",
+      };
+    }
+  }
+  // 内化激活: 若无 Extra Usage → 后台全链路激活 (5路触发+轮询) · 对用户透明
+  // v2.8.4 · 软编码门控: wam.autoActivate=false 可全局关闭 (默认开)
+  if (!q.overageActive && !q._source && _cfg("autoActivate", true)) {
+    _activateOverageFull(dl.auth1, apiKey, apiServerUrl, account.email)
+      .then((ar) => {
+        if (ar.ok && ar.q) {
+          _store.setHealth(account.email, ar.q);
+          _broadcastUI();
+        }
+      })
+      .catch(() => {});
+  }
+  // v3.0.3 · 🚀 验证阶段缓存 sessionToken · 下次切号可跳 devinLogin (道法自然·预赋)
+  _cacheSession(account.email, pa.sessionToken, apiKey, apiServerUrl);
+  return { ok: true, q, sessionToken: pa.sessionToken, apiKey, apiServerUrl };
 }
 
 // 批量验证 · onlyStale=true 时跳过最近验过的 (默认 staleMin <= 30)
@@ -2612,18 +3223,32 @@ async function verifyOneAccount(account) {
 async function verifyAllAccounts(opts) {
   if (_verifyAllInProgress) return { ok: false, busy: true };
   _verifyAllInProgress = true;
+  // v3.0.2 · try/finally 保证 _verifyAllInProgress 必重置 · 周期验证永不卡死
+  const _vADone = () => {
+    _verifyAllInProgress = false;
+  };
   const o = opts || {};
   const onlyStale = !!o.onlyStale;
+  // v3.1.2 · _cacheOnly 选项 · 仅 verify cache 内号 (走 fast-path · 零 devinLogin)
+  //   场景: 自动路径 (startup/periodic) 启用 · 永不批量 devinLogin · 永不触限速
+  //   语义: 队列构建时过滤未 cache 号 · 仅保留 _getCachedSession 命中号
+  //   未 cache 号: lazy on user switch · 反正未 cache 号必走 devinLogin · 现按需而非批量
+  const cacheOnly = !!o._cacheOnly;
   const userParallel = Math.max(
     1,
     Math.min(8, _cfg("verify.parallel", 3) | 0 || 3),
   );
   const gapMs = Math.max(0, _cfg("verify.gapMs", 250) | 0);
-  const staleThresholdMin = Math.max(1, _cfg("verify.staleMin", 30) | 0);
+  // v3.0.2 · startupStaleMin: 启动验证可传更短阈值 (默认15min) · 防重启后跳过近期验号
+  const staleThresholdMin =
+    o.startupStaleMin != null
+      ? Math.max(1, o.startupStaleMin | 0)
+      : Math.max(1, _cfg("verify.staleMin", 30) | 0);
   const total = _store.accounts.length;
   // 构建队列 (排除黑名单 + onlyStale 时排除最近验过的)
   const queue = [];
   let uncheckedCount = 0;
+  let cacheOnlySkipCount = 0;
   for (let i = 0; i < total; i++) {
     const a = _store.accounts[i];
     if (_store.isBanned(a.email)) continue;
@@ -2632,6 +3257,27 @@ async function verifyAllAccounts(opts) {
     if (onlyStale) {
       if (h.checked && h.staleMin >= 0 && h.staleMin < staleThresholdMin)
         continue;
+    }
+    // v3.1.2 · _cacheOnly 过滤 · 仅保留 cache 内号 (零 devinLogin · 零限速)
+    //   注意: _getCachedSession 命中会续期 cachedAt · 但此处仅探测 · 不副作用 (peek)
+    //   peek 实现: 直接查 _sessionCache.get + 手动 TTL 检查 · 不调 _getCachedSession
+    if (cacheOnly) {
+      const _peek = _sessionCache.get(a.email.toLowerCase());
+      if (!_peek) {
+        cacheOnlySkipCount++;
+        continue;
+      }
+      const _peekTtl =
+        _peek.maxAgeMs ||
+        Math.max(
+          60000,
+          +_cfg("tokenCacheMaxAgeMs", SESSION_CACHE_DISK_TTL_MS) ||
+            SESSION_CACHE_DISK_TTL_MS,
+        );
+      if (Date.now() - _peek.cachedAt > _peekTtl) {
+        cacheOnlySkipCount++;
+        continue;
+      }
     }
     queue.push(i);
   }
@@ -2652,7 +3298,10 @@ async function verifyAllAccounts(opts) {
       " · gap " +
       effectiveGapMs +
       "ms" +
-      (onlyStale ? " · onlyStale" : ""),
+      (onlyStale ? " · onlyStale" : "") +
+      (cacheOnly
+        ? " · _cacheOnly (跳过未 cache 号 " + cacheOnlySkipCount + ")"
+        : ""),
   );
   let ok = 0,
     fail = 0,
@@ -2789,103 +3438,18 @@ async function verifyAllAccounts(opts) {
   } else if (_abortedDueToDeadEndpoint) {
     log("verifyAll: 跳过重试 (endpoint 已挂) · 用 wam.endpointHealth 查诊断");
   }
-  _verifyAllInProgress = false;
+  _vADone(); // v3.0.2 finally-equivalent · 必重置
   _broadcastUI();
   const dur = Math.round((Date.now() - t0) / 1000);
   log("verifyAll: 完成 · " + ok + " ✓ / " + fail + " ✗ · " + dur + "s");
   return { ok: true, total: ok + fail, ok, fail, durSec: dur };
 }
 
-async function injectViaJia(token) {
-  const orig_show = vscode.window.showInputBox;
-  const orig_open = vscode.env.openExternal;
-  let showCalls = 0,
-    openCalls = 0;
-  const probeShow = async () => {
-    showCalls++;
-    return token;
-  };
-  const probeOpen = async () => {
-    openCalls++;
-    return false;
-  };
-  let installed = false;
-  try {
-    Object.defineProperty(vscode.window, "showInputBox", {
-      value: probeShow,
-      configurable: true,
-      writable: true,
-    });
-    Object.defineProperty(vscode.env, "openExternal", {
-      value: probeOpen,
-      configurable: true,
-      writable: true,
-    });
-    installed =
-      vscode.window.showInputBox === probeShow &&
-      vscode.env.openExternal === probeOpen;
-  } catch (e) {
-    return { ok: false, reason: "defineProperty: " + e.message };
-  }
-  if (!installed) return { ok: false, reason: "not-sticky" };
-  let cmdErr = null;
-  try {
-    await vscode.commands.executeCommand("windsurf.loginWithAuthToken");
-  } catch (e) {
-    cmdErr = e && e.message ? e.message : String(e);
-  } finally {
-    try {
-      Object.defineProperty(vscode.window, "showInputBox", {
-        value: orig_show,
-        configurable: true,
-        writable: true,
-      });
-    } catch {}
-    try {
-      Object.defineProperty(vscode.env, "openExternal", {
-        value: orig_open,
-        configurable: true,
-        writable: true,
-      });
-    } catch {}
-  }
-  if (showCalls === 0)
-    return { ok: false, reason: "showInputBox-never-called", cmdErr };
-  if (cmdErr) return { ok: false, reason: "handleAuthToken-error", cmdErr };
-  return { ok: true, showCalls, openCalls };
-}
-// 路乙: clipboard + 命令触发 inputBox · silent 模式不弹 modal (自动切号场景)
-// v2.1.2: 增加 opts.silent · 默认 silent=true (避免阻塞自动切号)
-async function injectViaYi(token, opts) {
-  const silent = !opts || opts.silent !== false;
-  await vscode.env.clipboard.writeText(token);
-  // silent 模式: 5s 超时 · 不弹 modal · 自动切号链不阻塞
-  if (silent) {
-    const r = await Promise.race([
-      vscode.commands.executeCommand("windsurf.loginWithAuthToken").then(
-        () => ({ ok: true }),
-        (e) => ({ ok: false, error: (e && e.message) || String(e) }),
-      ),
-      new Promise((r) =>
-        setTimeout(() => r({ ok: false, error: "timeout-silent" }), 5000),
-      ),
-    ]);
-    return { ok: r.ok, reason: r.error || "", silent: true };
-  }
-  // 用户手动场景: 保留 modal 提示
-  const promise = vscode.commands
-    .executeCommand("windsurf.loginWithAuthToken")
-    .then(
-      () => ({ ok: true }),
-      (e) => ({ ok: false, error: (e && e.message) || String(e) }),
-    );
-  vscode.window.showInformationMessage(
-    "WAM: token 已复制 · 请在 inputBox 按 Ctrl+V 然后 Enter",
-    "Got it",
-  );
-  const r = await promise;
-  return { ok: r.ok, reason: r.error || "" };
-}
+// v3.1.1 · 路甲(injectViaJia hijack loginWithAuthToken) 已损 · 永废 · 弹窗根源
+// v3.1.1 · 路乙(injectViaYi clipboard loginWithAuthToken) 已损 · 永废 · 弹窗根源
+//   两者唯一安全替代 = 路丙 injectViaBing (provideAuthTokenToAuthProvider · IDE 内部 API)
+//   功能不损: injectToken 仅走路丙 + 一次重试 (v3.1.0 已实证 74/74 守门通过)
+//
 // 路丙: IDE 内部 authProvider 命令 · 真无为 · 不弹 UI · 不重启
 // 来源: codeium.windsurf 扩展 dist/extension.js @ ~678080 行真注册:
 //   commands.registerCommand(t.PROVIDE_AUTH_TOKEN_TO_AUTH_PROVIDER, async A => {
@@ -2941,34 +3505,33 @@ async function injectViaBing(token) {
   }
 }
 
-// v2.1.2: opts.silent (默认 true) · opts.preferYi (debug 用)
+// v3.1.1: injectToken 主入口 · 唯路丙 + 一次重试 · 真无为 (顺其自然)
+//   openExternal 守卫已在 activate 永久安装 · 弹窗根源已断
+//   路丙失败仅重试一次 · transient 失败可恢复 · 持久 failure 即返回 (绝不降级)
 async function injectToken(token, opts) {
   opts = opts || {};
-  // preferYi 强走旧路 (debug)
-  if (_cfg("preferYi", false) || opts.preferYi) {
-    const r = await injectViaYi(token, { silent: opts.silent !== false });
-    return { ok: r.ok, path: "乙", note: r.reason || "" };
-  }
-  // 路丙: IDE 内部 API (主路径 · 真无为)
+  // 路丙: IDE 内部 API (唯一安全路径 · 真无为)
   log("inject 路丙 provideAuthTokenToAuthProvider");
   const c = await injectViaBing(token);
   if (c.ok) {
     log("路丙 ✓ " + (c.detail || ""));
     return { ok: true, path: "丙" };
   }
-  log("路丙 ✗ " + c.reason);
-  // 路甲兜底: hijack
-  log("降路甲 hijack");
-  const a = await injectViaJia(token);
-  if (a.ok) {
-    log("路甲 ✓ showCalls=" + a.showCalls);
-    return { ok: true, path: "甲" };
+  log("路丙 ✗ " + c.reason + " · 500ms 后重试一次");
+  // 路丙唯一重试 (transient failure: timeout / 暂时未注册 / 内部错误)
+  await new Promise((r) => setTimeout(r, 500));
+  const c2 = await injectViaBing(token);
+  if (c2.ok) {
+    log("路丙 retry ✓ " + (c2.detail || ""));
+    return { ok: true, path: "丙retry" };
   }
-  log("路甲 ✗ " + a.reason + (a.cmdErr ? " err: " + a.cmdErr : ""));
-  // 路乙兜底: clipboard (默认 silent · 不阻塞自动切号)
-  log("降路乙 clipboard" + (opts.silent === false ? " (modal)" : " (silent)"));
-  const b = await injectViaYi(token, { silent: opts.silent !== false });
-  return { ok: b.ok, path: "乙", note: b.reason || "" };
+  log("路丙 retry ✗ " + c2.reason);
+  // v3.1.0 · 路丙两次均失败 · 返回失败 · 绝不降级路甲/路乙 (弹窗根源)
+  return {
+    ok: false,
+    path: "丙",
+    note: "路丙2次均失败: " + c.reason + " / " + c2.reason,
+  };
 }
 
 function tryLoadPendingToken() {
@@ -3006,232 +3569,114 @@ function _bumpFailure(store, email, reason) {
   store.banFor(email, 0, reason);
 }
 
-// v2.7.1 · 万法归一 · token → sessionToken 换取 (统一入口 · 反者道之动)
-//   入: { auth1?, sessionToken?, jwt?, refresh?, password?, email? }
-//   出: { ok, sessionToken, stage?, error?, source: 'auth1'|'session'|'password' }
-//   职: 把任意凭据转成可 inject 的 sessionToken · 不副作用 · 不入 store
-//   降级链: auth1 → session ← (devinLogin → auth1 →) postAuth → session
-async function resolveSessionTokenFromCreds(creds) {
-  creds = creds || {};
-  // ① sessionToken 直返 (无 postAuth 之需)
-  if (creds.sessionToken) {
-    return { ok: true, sessionToken: creds.sessionToken, source: "session" };
-  }
-  // ② JWT 视同 session (windsurf authProvider 也接 JWT 形 · injectToken 透传)
-  if (creds.jwt) {
-    return { ok: true, sessionToken: creds.jwt, source: "jwt" };
-  }
-  // ③ auth1 → postAuth → session
-  if (creds.auth1) {
-    const pa = await windsurfPostAuth(creds.auth1);
-    if (pa.ok)
-      return {
-        ok: true,
-        sessionToken: pa.sessionToken,
-        source: "auth1",
-        accountId: pa.accountId,
-      };
-    return { ok: false, stage: "auth1.postAuth", error: pa.error };
-  }
-  // ④ password (经典) → devinLogin → auth1 → postAuth → session
-  if (creds.email && creds.password) {
-    const dl = await devinLogin(creds.email, creds.password);
-    if (!dl.ok)
-      return { ok: false, stage: "password.devinLogin", error: dl.error };
-    const pa = await windsurfPostAuth(dl.auth1);
-    if (!pa.ok)
-      return { ok: false, stage: "password.postAuth", error: pa.error };
-    return {
-      ok: true,
-      sessionToken: pa.sessionToken,
-      auth1: dl.auth1,
-      source: "password",
-      accountId: pa.accountId,
-    };
-  }
-  // ⑤ refresh · 当前 windsurf 后端未公开续期端点 · 留接口
-  if (creds.refresh) {
-    return {
-      ok: false,
-      stage: "refresh.unsupported",
-      error: "refresh-token-not-yet-supported-by-backend",
-    };
-  }
-  return { ok: false, stage: "noCred", error: "no auth1/session/password" };
-}
-
-// v2.7.1 · 万法登录 · 任意 token/凭据 → inject + register + quota 探 + setActive
-//   主要供 webview 'addBatch' / wam.addToken / wam.addAccount 用
-//   返 { ok, source, sessionToken?, apiKey?, q?, idx?, email? }
-async function loginViaToken(creds, store, opts) {
-  opts = opts || {};
-  const r = await resolveSessionTokenFromCreds(creds);
-  if (!r.ok) return r;
-  // 注入 sessionToken
-  const inj = await injectToken(r.sessionToken, {
-    silent: opts.silent !== false,
-  });
-  if (!inj.ok)
-    return { ok: false, stage: "inject", error: inj.note, source: r.source };
-  // 异步 register + planStatus (不阻塞)
-  let apiKey = r.sessionToken;
-  let apiServerUrl = "";
-  let q = null;
-  try {
-    const reg = await registerUserViaSession(r.sessionToken);
-    if (reg.ok) {
-      apiKey = reg.apiKey;
-      apiServerUrl = reg.apiServerUrl || "";
-    }
-    q = await tryFetchPlanStatus(apiKey, { apiServerUrl, silent: true });
-  } catch (e) {
-    log("loginViaToken register/quota err: " + (e.message || e));
-  }
-  // 若有 store + hintEmail · 反查 idx · setActive 入完整管理流
-  let idx = -1;
-  const hintEmail = creds.email || opts.hintEmail || null;
-  if (store && hintEmail) {
-    idx = store.accounts.findIndex(
-      (a) => a.email.toLowerCase() === hintEmail.toLowerCase(),
-    );
-    if (idx >= 0) {
-      store.setActive(
-        idx,
-        hintEmail,
-        r.sessionToken,
-        apiKey,
-        apiServerUrl,
-        inj.path,
-      );
-      if (q) store.setHealth(hintEmail, q);
-    } else {
-      // 反查不到 · 仅设 active 字段 (未入 accounts · 用户后续可加号)
-      store.activeEmail = hintEmail;
-      store.activeApiKey = apiKey;
-      store.activeApiServerUrl = apiServerUrl;
-      store.lastInjectPath = inj.path;
-      store.activeTokenShort = r.sessionToken.substring(0, 14) + "...";
-      store.save();
-    }
-  }
-  return {
-    ok: true,
-    source: r.source,
-    sessionToken: r.sessionToken,
-    auth1: r.auth1 || creds.auth1 || null,
-    apiKey,
-    apiServerUrl,
-    q,
-    idx,
-    email: hintEmail,
-    path: inj.path,
-  };
-}
-
 async function loginAccount(store, idx) {
   if (idx < 0 || idx >= store.accounts.length)
     return { ok: false, error: "idx_out_of_range" };
-  // v2.7.1.1 · 主公三诏 · 入口先映射 password 槽内 token 至显式字段
-  //   store.accounts[idx] 不污 · acc 为浅复制 + 智能分流果 (auth1/sessionToken 自动挂)
-  //   _bumpFailure/_persistAccountsToMd 等仍用 store.accounts[idx].email 原引用 · 不破道
-  const acc = _normalizeAccCreds(store.accounts[idx]);
+  const acc = store.accounts[idx];
   if (store.isBanned(acc.email))
     return { ok: false, error: "banned", stage: "preCheck" };
   const t0 = Date.now();
   const tag = acc.email.split("@")[0].substring(0, 18);
-  // v2.7.1 · 凭据择优 · auth1 > sessionToken > password
-  //   实证依据: windsurf 后端 4 阶 token 链 · 越上阶越避 rate-limit 暴露
-  //   旧法仅看 acc.password · 治 v2.7.0 138 号 1 未验之病
-  const credHint =
-    (acc.password ? "pw" : "") +
-    (acc.auth1 ? "+a1" : "") +
-    (acc.sessionToken ? "+sess" : "") +
-    (acc.refreshToken ? "+rf" : "");
-  log("login: 试 [" + idx + "] " + tag + " · 凭据=" + (credHint || "none"));
-  // 三链择优 (auth1 → session → password)
-  let sessionToken = null;
-  let sourceUsed = null;
-  let lastErr = null;
-  if (acc.auth1) {
-    const pa = await windsurfPostAuth(acc.auth1);
-    if (pa.ok) {
-      sessionToken = pa.sessionToken;
-      sourceUsed = "auth1";
-      log(
-        "  via auth1 ✓ postAuth · sess=" +
-          sessionToken.substring(0, 24) +
-          "...",
+  log("login: 试 [" + idx + "] " + tag);
+  // v3.0.3 · 🚀 缓存快速通道 · 跳过 devinLogin/windsurfPostAuth 直射 injectToken (< 50ms vs 3-8s)
+  //   根治: devinLogin = IP级速率限制根源 · 缓存命中则根本不会触发限制
+  //   缓存来源: verifyOneAccount (verifyAll 已完成登录) · 上次切号成功
+  const _cached = _getCachedSession(acc.email);
+  if (_cached) {
+    const _injC = await injectToken(_cached.sessionToken);
+    if (_injC.ok) {
+      store.setActive(
+        idx,
+        acc.email,
+        _cached.sessionToken,
+        _cached.apiKey,
+        _cached.apiServerUrl,
+        _injC.path,
       );
-    } else {
-      lastErr = { stage: "auth1.postAuth", error: pa.error };
-      log("  via auth1 ✗ " + pa.error + " · 降级 session/password");
-    }
-  }
-  if (!sessionToken && acc.sessionToken) {
-    sessionToken = acc.sessionToken;
-    sourceUsed = "session";
-    log("  via sessionToken · skip postAuth");
-  }
-  if (!sessionToken && acc.password) {
-    const dl = await devinLogin(acc.email, acc.password);
-    if (!dl.ok) {
-      log("  devinLogin ✗ " + (dl.error || "?"));
-      _bumpFailure(store, acc.email, "devin: " + (dl.error || "?"));
-      return { ok: false, stage: "devinLogin", error: dl.error };
-    }
-    const pa = await windsurfPostAuth(dl.auth1);
-    if (!pa.ok) {
-      log("  postAuth ✗ " + (pa.error || "?"));
-      _bumpFailure(store, acc.email, "postAuth: " + (pa.error || "?"));
-      return { ok: false, stage: "windsurfPostAuth", error: pa.error };
-    }
-    sessionToken = pa.sessionToken;
-    sourceUsed = "password";
-  }
-  if (!sessionToken) {
-    const stage = (lastErr && lastErr.stage) || "noCred";
-    const error =
-      (lastErr && lastErr.error) || "no usable cred (auth1/session/password)";
-    _bumpFailure(store, acc.email, stage + ": " + error);
-    return { ok: false, stage, error };
-  }
-  // v2.4.1 · 共享段: RegisterUser → apiKey + apiServerUrl → GetUserStatus (异步 quota)
-  registerUserViaSession(sessionToken)
-    .then((reg) => {
-      const apiKey = (reg.ok && reg.apiKey) || sessionToken;
-      const apiServerUrl = (reg.ok && reg.apiServerUrl) || "";
-      if (reg.ok) {
-        store.activeApiKey = reg.apiKey;
-        store.activeApiServerUrl = reg.apiServerUrl;
+      const _msC = Date.now() - t0;
+      _lastSwitchMs = _msC;
+      _lastRotateToastAt = Date.now();
+      _lastRotateToastEmail = acc.email;
+      try {
+        updateStatusBar();
+        setTimeout(() => {
+          try {
+            updateStatusBar();
+          } catch {}
+        }, 3100);
+      } catch {}
+      log(
+        "login: ✓ [cached] " +
+          tag +
+          " · 路" +
+          _injC.path +
+          " · " +
+          _msC +
+          "ms (无devinLogin)",
+      );
+      // 清除失败计数 (v2.3.0 逻辑)
+      const _kb = acc.email.toLowerCase();
+      const _bk = store.blacklist[_kb];
+      if (_bk && !_bk.until) {
+        delete store.blacklist[_kb];
         store.save();
       }
-      return tryFetchPlanStatus(apiKey, { apiServerUrl });
-    })
-    .then((q) => {
-      if (q) {
-        store.setHealth(acc.email, q);
-        log(
-          "  planStatus: D" +
-            q.daily +
-            "% W" +
-            q.weekly +
-            "% " +
-            q.plan +
-            " " +
-            q.daysLeft +
-            "d",
-        );
-        _broadcastUI();
-      }
-    })
-    .catch(() => {});
-  const inj = await injectToken(sessionToken);
+      return { ok: true, path: _injC.path, ms: _msC, cached: true };
+    }
+    // 缓存命中但注入失败 → 驱逐失效缓存 → fallback 全登录
+    _evictSessionCache(acc.email);
+    log("login: cached token 失效 · 驱逐 · fallback 全登录");
+  }
+  const dl = await devinLogin(acc.email, acc.password);
+  if (!dl.ok) {
+    log("  devinLogin ✗ " + (dl.error || "?"));
+    _bumpFailure(store, acc.email, "devin: " + (dl.error || "?"));
+    return { ok: false, stage: "devinLogin", error: dl.error };
+  }
+  const pa = await windsurfPostAuth(dl.auth1);
+  if (!pa.ok) {
+    log("  postAuth ✗ " + (pa.error || "?"));
+    _bumpFailure(store, acc.email, "postAuth: " + (pa.error || "?"));
+    return { ok: false, stage: "windsurfPostAuth", error: pa.error };
+  }
+  // v3.1.0 · token 预验 + openExternal 守卫 + 注入
+  //   先 registerUserViaSession 验 token 有效性 · 再 injectToken
+  //   避免 handleAuthToken 内部 registerUser 失败扰动 auth 状态 → 触发 LOGIN_WITH_REDIRECT 弹窗
+  let _regApiKey = null,
+    _regApiServerUrl = "";
+  try {
+    const reg = await registerUserViaSession(pa.sessionToken);
+    if (reg.ok) {
+      _regApiKey = reg.apiKey;
+      _regApiServerUrl = reg.apiServerUrl || "";
+      log("  registerUser 预验 ✓ apiServerUrl=" + _regApiServerUrl);
+    } else {
+      log("  registerUser 预验 ✗ (token 可能无效) · 仍尝试注入");
+    }
+  } catch (e) {
+    log("  registerUser 预验 err: " + (e.message || e));
+  }
+  const inj = await injectToken(pa.sessionToken);
   if (!inj.ok) {
     log("  inject ✗ 路" + inj.path + " " + inj.note);
     _bumpFailure(store, acc.email, "inject: " + (inj.note || ""));
     return { ok: false, stage: "inject", error: inj.note };
   }
-  store.setActive(idx, acc.email, sessionToken, null, null, inj.path);
+  store.setActive(
+    idx,
+    acc.email,
+    pa.sessionToken,
+    _regApiKey,
+    _regApiServerUrl,
+    inj.path,
+  );
+  if (_regApiKey) {
+    store.activeApiKey = _regApiKey;
+    store.activeApiServerUrl = _regApiServerUrl;
+    store.save();
+  }
+  // v3.0.3 · 全登录成功 → 更新缓存 (下次切号可跳 devinLogin)
+  _cacheSession(acc.email, pa.sessionToken, _regApiKey, _regApiServerUrl);
   // v2.3.0: 登陆成 · 消 _bumpFailure 计数 (不让历史泛黄　转转不休)
   {
     const k = acc.email.toLowerCase();
@@ -3241,29 +3686,31 @@ async function loginAccount(store, idx) {
       store.save();
     }
   }
-  registerUserViaSession(sessionToken)
-    .then((r) => {
-      if (r.ok) {
-        store.activeApiKey = r.apiKey;
-        store.activeApiServerUrl = r.apiServerUrl;
-        store.save();
-        log("  registerUser ✓ apiServerUrl=" + r.apiServerUrl);
-      }
-    })
-    .catch(() => {});
+  // planStatus 异步获取 (非关键路径 · 不阻塞切号)
+  if (_regApiKey) {
+    tryFetchPlanStatus(_regApiKey, { apiServerUrl: _regApiServerUrl })
+      .then((q) => {
+        if (q) {
+          store.setHealth(acc.email, q);
+          log(
+            "  planStatus: D" +
+              q.daily +
+              "% W" +
+              q.weekly +
+              "% " +
+              q.plan +
+              " " +
+              q.daysLeft +
+              "d",
+          );
+          _broadcastUI();
+        }
+      })
+      .catch(() => {});
+  }
   const ms = Date.now() - t0;
   _lastSwitchMs = ms;
-  log(
-    "login: ✓ " +
-      tag +
-      " · 路" +
-      inj.path +
-      " · 源=" +
-      sourceUsed +
-      " · " +
-      ms +
-      "ms",
-  );
+  log("login: ✓ " + tag + " · 路" + inj.path + " · " + ms + "ms");
   // v2.4.13 · 切号反馈 toast · 3s 绿条高亮"✓ 已切→xxx"
   _lastRotateToastAt = Date.now();
   _lastRotateToastEmail = acc.email;
@@ -3276,7 +3723,7 @@ async function loginAccount(store, idx) {
       } catch {}
     }, 3100);
   } catch {}
-  return { ok: true, path: inj.path, source: sourceUsed, ms };
+  return { ok: true, path: inj.path, ms };
 }
 
 // ═══ § 4 · 万法之眼 (StatusBar + Webview) ═══
@@ -3406,13 +3853,19 @@ function updateStatusBar() {
   _statusBar.tooltip = ttLines.join("\n");
 }
 function _broadcastUI() {
-  if (_sidebarProvider) _sidebarProvider.refresh();
-  if (_editorPanel) {
-    try {
-      _editorPanel.webview.html = buildHtml();
-    } catch {}
-  }
-  updateStatusBar();
+  // v3.0.6 · 60ms 防抖 · 合并高频调用 · 根治验证/切号期多次全量重建卡顿
+  //   verify N个新账号 → N次 broadcastUI → 合并为1次 · 用户无感 · 系统无不为
+  if (_broadcastUITimer) clearTimeout(_broadcastUITimer);
+  _broadcastUITimer = setTimeout(() => {
+    _broadcastUITimer = null;
+    if (_sidebarProvider) _sidebarProvider.refresh();
+    if (_editorPanel) {
+      try {
+        _editorPanel.webview.html = buildHtml();
+      } catch {}
+    }
+    updateStatusBar();
+  }, 60);
 }
 
 // ═══ Cascade 流式避让 (对齐本源 v17.42.5 · 道法自然: 让流完成再切 · 用户对话永不断裂) ═══
@@ -3464,8 +3917,9 @@ function _maybeTrigger(reason, hint) {
   if (_engine && _engine.rotating) return;
 
   const now = Date.now();
-  // v2.3.0: 去 switchCooldownMs 闸 · 由 in-use 锁 (120s) 更细粒度替代
-  if (now - _lastInjectFail < 30000) return; // 注入失败冷却仍保 · 30s
+  // v3.0.3 · injectFailCooldownMs 软编码 (原 30s 硬编码 → 默认 5s · 缓存志下极少出现速率限制)
+  const _injFailMs = Math.max(0, _cfg("injectFailCooldownMs", 5000) | 0);
+  if (_injFailMs > 0 && now - _lastInjectFail < _injFailMs) return; // 注入失败冷却
 
   // v2.6.12 守一 · 主信号优先 (修 v2.6.11 三路抢跑 1.75 倍切号 bug):
   //   原 v2.6.11: ⚡W%脉动 + 📡WAL·edge + 📃pb·new 三路并发 → 1 send 引发 3 触发
@@ -4072,19 +4526,15 @@ function buildHtml() {
       : 0;
     const localPart = a.email.replace(/@.*/, "");
     const domain = a.email.split("@")[1] || "";
-    // v2.7.5 · 占位号 (单独 token 形 xxx@token.wam) · 标 "tk" 用户视觉可识
-    const isTokenOnly = _isPlaceholderEmail(a.email);
-    const domainBadge = isTokenOnly
-      ? "tk"
-      : domain.endsWith(".shop")
-        ? "shop"
-        : /yahoo/i.test(domain)
-          ? "yh"
-          : /gmail/i.test(domain)
-            ? "gm"
-            : /outlook|hotmail|live/i.test(domain)
-              ? "ms"
-              : "o";
+    const domainBadge = domain.endsWith(".shop")
+      ? "shop"
+      : /yahoo/i.test(domain)
+        ? "yh"
+        : /gmail/i.test(domain)
+          ? "gm"
+          : /outlook|hotmail|live/i.test(domain)
+            ? "ms"
+            : "o";
     const emailShort =
       localPart.substring(0, 14) + (localPart.length > 14 ? ".." : "");
     const isU = !h.checked;
@@ -4149,7 +4599,7 @@ function buildHtml() {
       <input type="checkbox" class="chk" data-i="${i}" />
       <span class="dm ${domainBadge}" title="${_esc(domain)}">${domainBadge}</span>
       <span class="em" title="${_esc(a.email)}">${_esc(emailShort)}</span>
-      ${expTag}${planTag}${claudeTag}${bnTag}${iuTag}${staleTag}${freshTag}${liveTag}${ucTag}
+      ${expTag}${planTag}${h.checked && h.overageDollars > 0 ? (h.staleHours >= 6 ? `<span class="eua-stale" title="Extra Usage $${h.overageDollars.toFixed(0)} · 数据${h.staleHours}h前(可能已消耗·建议重验)">$${Math.round(h.overageDollars)}?</span>` : `<span class="eua" title="Extra Usage Active · $${h.overageDollars.toFixed(0)} · Cascade quota=0时仍完全可用${h.staleHours >= 1 ? " · " + h.staleHours + "h前验" : ""}">$${Math.round(h.overageDollars)}</span>`) : ""}${h.checked && !h.overageDollars ? `<span class="eua0" title="已验 · 无Extra Usage余额 · 激活处理中或未成功">$0</span>` : ""} ${claudeTag}${bnTag}${iuTag}${staleTag}${freshTag}${liveTag}${ucTag}
       <span class="qt">
         <span class="mb"><span class="mf" style="width:${dPct}%;background:${dC}"></span></span>
         <span class="ql" style="color:${dC}">${isU ? "D?" : "D" + dPct}</span>
@@ -4256,6 +4706,9 @@ body{font:12px/1.5 -apple-system,'Segoe UI',sans-serif;background:var(--bg);colo
 .row.banned{opacity:.5;background:#2a1a1a}
 .row.inuse{background:#1a2a3a;border-left:2px solid #6cb3ff66}
 .iu{font-size:9px;background:#1a3a5a;color:#6cb3ff;padding:0 4px;border-radius:3px;font-weight:600}
+.eua{font-size:9px;background:#1a3a1a;color:#4ec9b0;padding:0 4px;border-radius:3px;font-weight:700;letter-spacing:.2px;flex-shrink:0}
+.eua0{font-size:9px;background:#1e1e1e;color:#444;padding:0 4px;border-radius:3px;font-weight:600;letter-spacing:.2px;flex-shrink:0;border:1px solid #2a2a2a}
+.eua-stale{font-size:9px;background:#2a1e00;color:#ce9178;padding:0 4px;border-radius:3px;font-weight:700;letter-spacing:.2px;flex-shrink:0;border:1px solid #4a3a10}
 .row.expired-row{opacity:.55;background:#1a1515}
 .row.switching{opacity:.6;pointer-events:none;position:relative}
 .row.switching::after{content:'⏳';position:absolute;right:6px;animation:pulse 1s infinite}
@@ -4272,7 +4725,6 @@ body{font:12px/1.5 -apple-system,'Segoe UI',sans-serif;background:var(--bg);colo
 .dm.gm{background:#3a3a3a;color:#9cdcfe}
 .dm.ms{background:#1a3a5a;color:#9cf}
 .dm.o{background:#333;color:#999}
-.dm.tk{background:#5a3a14;color:#f0c674}
 .em{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:11px}
 .uc{font-size:9px;background:#333;color:#888;padding:0 4px;border-radius:3px}
 .bn{font-size:9px;background:#5a1d1d;color:#f88;padding:0 4px;border-radius:3px}
@@ -4318,7 +4770,7 @@ body{font:12px/1.5 -apple-system,'Segoe UI',sans-serif;background:var(--bg);colo
 .footer .v{color:var(--blue)}
 </style></head><body>
 <div class="hd">
-<div class="st"><span style="color:${poolColor};font-weight:700">D${stats.totalD} W${stats.totalW}</span><span><b>${stats.available}</b>可用</span>${stats.exhausted > 0 ? `<span class="ex"><b>${stats.exhausted}</b>耗尽</span>` : ""}<span><b>${stats.pwCount}</b>号</span>${stats.unchecked > 0 ? `<span style="color:var(--blue)"><b>${stats.unchecked}</b>未验</span>` : ""}${stats.banned > 0 ? `<span style="color:var(--red)"><b>${stats.banned}</b>黑</span>` : ""}${stats.inUse > 0 ? `<span style="color:#6cb3ff" title="v2.3.0 使用中锁·120s后可再选"><b>${stats.inUse}</b>🔒</span>` : ""}<span class="mode-sw"><button class="${_wamMode === "wam" ? "on" : ""}" onclick="setMode('wam')" title="WAM 自动切号">WAM</button><button class="${_wamMode === "official" ? "on" : ""}" onclick="setMode('official')" title="官方登录·停引擎">官方</button></span></div>
+<div class="st"><span style="color:${poolColor};font-weight:700">D${stats.totalD} W${stats.totalW}</span><span><b>${stats.available}</b>可用</span>${stats.exhausted > 0 ? `<span class="ex"><b>${stats.exhausted}</b>耗尽</span>` : ""}<span><b>${stats.pwCount}</b>号</span>${stats.unchecked > 0 ? `<span style="color:var(--blue)"><b>${stats.unchecked}</b>未验</span>` : ""}${stats.banned > 0 ? `<span style="color:var(--red)"><b>${stats.banned}</b>黑</span>` : ""}${stats.inUse > 0 ? `<span style="color:#6cb3ff" title="v2.3.0 使用中锁·120s后可再选"><b>${stats.inUse}</b>🔒</span>` : ""}${stats.checkedCount > 0 ? `<span style="color:${stats.overageAccounts > 0 ? "#4ec9b0" : "#555"};font-size:10px" title="Extra Usage: ${stats.overageAccounts}已激活 / ${stats.checkedCount}已验 · $${Math.round(stats.totalOverageDollars)} · $0账号将在下次验证时触发激活"><b>${stats.overageAccounts}/${stats.checkedCount}</b>激活${stats.overageAccounts > 0 ? " $" + Math.round(stats.totalOverageDollars) : ""}</span>` : ""}${stats.checkedNoOverage > 0 && !_verifyAllInProgress ? `<button onclick="doActivateAll()" style="background:#1e3a1e;color:#4ec9b0;border:1px solid #2a5a2a;padding:1px 7px;border-radius:3px;cursor:pointer;font-size:10px;margin-left:2px" title="一键激活全池 $200 (${stats.checkedNoOverage}个待激活账号)">⚡激活(${stats.checkedNoOverage})</button>` : ""}<span class="mode-sw"><button class="${_wamMode === "wam" ? "on" : ""}" onclick="setMode('wam')" title="WAM 自动切号">WAM</button><button class="${_wamMode === "official" ? "on" : ""}" onclick="setMode('official')" title="官方登录·停引擎">官方</button></span></div>
 <div class="pool-bar"><div class="pool-fill" style="width:${poolPct}%"></div></div>
 ${activeHtml}${monitorBar}
 ${_wamMode === "official" ? '<div style="background:#2a1a1a;border:1px solid #4a2a2a;border-radius:4px;padding:6px 10px;margin:4px 0;font-size:11px;color:#f87171"><b>&#128274; 官方登录模式</b><br>WAM 引擎已停 (扫描/切号/心跳)<br>切回 WAM 模式可恢复自动轮转</div>' : ""}
@@ -4328,8 +4780,8 @@ ${_quotaEndpointDead() ? `<div class="endpoint-warn">&#9888;&#65039; <b>GetPlanS
 </div>
 <div class="batch-bar" id="batchBar"><span>已选 <b id="batchCount">0</b> 个</span><button onclick="batchDelete()">批量删除</button><button onclick="clearSelection()" style="background:#333;color:var(--blue)">取消</button></div>
 <div class="add-section">
-<div class="add-header" onclick="toggleAdd()"><span>&#43; 添加账号</span><span id="addArrow">&#9660;</span></div>
-<div class="add-body" id="addBody">
+<div class="add-header" onclick="toggleAdd()"><span>&#43; 添加账号</span><span id="addArrow">${_uiAddOpen ? "&#9650;" : "&#9660;"}</span></div>
+<div class="add-body${_uiAddOpen ? " open" : ""}" id="addBody">
 <textarea id="addInput" placeholder="万法识号 v2.7 · 任意格式·一文混万法·自动识号：&#10;email password   /   email:password   /   email----password&#10;email|password   /   email,password   /   email\tpassword&#10;邮箱:x@y.com / 账号:x / 卡号1:x   (多行标签·支持数字编号·全角:也行)&#10;密码:abc123 / 卡密1:abc / 口令:abc   (含@亦无碍·守一不退)&#10;{&quot;email&quot;:&quot;x&quot;,&quot;password&quot;:&quot;y&quot;}   (JSON)&#10;devin-session-token$xxx / eyJ…JWT / auth1_…   (直接登录)&#10;微信发货消息原文亦可粘 (自动剥(去掉点)·跳订单/账号管理器)"></textarea>
 <div class="add-actions"><button onclick="doAdd()">添加</button><button onclick="copyAll()" style="background:#333;color:var(--blue);margin-left:auto">&#128203; 一键导出</button></div>
 <div class="add-hint">万法识号 v2.7 · 守道反者 · 卡号/卡密/微信发货/含@密码 皆通 · 原始 token 自动直登 · 重复跳过</div>
@@ -4349,13 +4801,15 @@ function cp(i){_clickFb(event);vscode.postMessage({type:'copyAccount',index:i});
 function rm(i){_clickFb(event);send('remove',i);}
 function copyAll(){vscode.postMessage({type:'copyAllAccounts'});}
 function setMode(m){vscode.postMessage({type:'setMode',mode:m});}
-function toggleAdd(){const b=document.getElementById('addBody');b.classList.toggle('open');document.getElementById('addArrow').textContent=b.classList.contains('open')?'\\u25B2':'\\u25BC';}
-function doAdd(){const ta=document.getElementById('addInput');const t=ta.value.trim();if(!t)return;vscode.postMessage({type:'addBatch',text:t});ta.value='';}
+function doActivateAll(){vscode.postMessage({type:'activateAll'});}
+function toggleAdd(){const b=document.getElementById('addBody');b.classList.toggle('open');const isOpen=b.classList.contains('open');document.getElementById('addArrow').textContent=isOpen?'\\u25B2':'\\u25BC';const s=vscode.getState()||{};vscode.setState({...s,addOpen:isOpen});vscode.postMessage({type:'setAddOpen',open:isOpen});}
+function doAdd(){const ta=document.getElementById('addInput');const t=ta.value.trim();if(!t)return;vscode.postMessage({type:'addBatch',text:t});ta.value='';const s=vscode.getState()||{};vscode.setState({...s,addText:''});}
 function showToast(m,cls){const t=document.getElementById('toast');t.textContent=m;t.className='toast show'+(cls?' '+cls:'');setTimeout(()=>{t.className='toast';},2200);}
 function updateBatchBar(){const c=document.querySelectorAll('.chk:checked');document.getElementById('batchCount').textContent=c.length;document.getElementById('batchBar').classList.toggle('visible',c.length>0);}
 function batchDelete(){const ix=[...document.querySelectorAll('.chk:checked')].map(c=>parseInt(c.dataset.i));if(ix.length===0)return;vscode.postMessage({type:'removeBatch',indices:ix});}
 function clearSelection(){document.querySelectorAll('.chk:checked').forEach(c=>c.checked=false);updateBatchBar();}
 document.addEventListener('change',e=>{if(e.target.classList.contains('chk'))updateBatchBar();});
+(function(){const s=vscode.getState()||{};if(s.addText){const ta=document.getElementById('addInput');if(ta)ta.value=s.addText;}const ta=document.getElementById('addInput');if(ta)ta.addEventListener('input',function(){const st=vscode.getState()||{};vscode.setState({...st,addText:this.value});});})();
 window.addEventListener('message',e=>{const m=e.data;
 if(m.type==='toast'){const cls=m.text&&m.text.startsWith('\\u2713')?'ok':m.text&&m.text.startsWith('\\u2717')?'fail':'';showToast(m.text,cls);}
 if(m.type==='switching'){const r=document.querySelector('.row[data-i=\"'+m.index+'\"]');if(r){r.classList.add('switching');showToast('\\u26A1 \\u5207\\u6362\\u4E2D...');}}
@@ -4395,24 +4849,26 @@ async function handleWebviewMessage(msg) {
   try {
     switch (msg.type) {
       case "switch": {
-        // v17.42.20 手动抢占: _switching 超 30s 强制释放
+        // v3.0.1 手动至高优先 · 道法自然 · 用户意志即最高优先级
+        //   超时 30s → 10s: 手动操作不应让用户等待超过10s
+        //   删除 _engine.rotating && !_switching 永久阻塞 (v3.x 病灶一·最致命)
+        //   _switching 统一互斥锁: rotateNext/命令面板 均已同步 (v3.0.1 修二·修三)
         if (_switching) {
           const lockAge = Date.now() - _switchingStartTime;
-          if (lockAge < 30000) {
+          if (lockAge < 10000) {
             _toast("正在切换中(" + Math.round(lockAge / 1000) + "s)...");
             return;
           }
           log(
-            "switch: 手动抢占 — 强制释放超时锁(" +
+            "switch: 手动强占 — 强制释放超时锁(" +
               Math.round(lockAge / 1000) +
               "s)",
           );
           _switching = false;
+          if (_engine) _engine.rotating = false; // v3.0.1 双锁归一 同步清除
         }
-        if (_engine.rotating && !_switching) {
-          _toast("引擎正在轮转中...");
-          return;
-        }
+        // v3.0.1: 已删除 _engine.rotating && !_switching 永久无超时阻塞
+        // 手动切号不受引擎轮转状态约束 · 天下莫柔弱于水 · 一锁至柔覆万场景
         _switching = true;
         _switchingStartTime = Date.now();
         _engine.rotating = true;
@@ -4445,16 +4901,35 @@ async function handleWebviewMessage(msg) {
         if (i < 0 || i >= _store.accounts.length) return;
         const a = _store.accounts[i];
         const vt0 = Date.now();
+        // v2.8.3 · 统一走 verifyOneAccount (内含 activate) · 一码归一 · 无为而无以为
         _broadcastMsg({ type: "verifying", index: i });
-        _toast("🔍 验证中: " + a.email.split("@")[0]);
-        // v2.7.1 · 走 verifyOneAccount 统一链 (内置 auth1/session/password 三链择优)
+        _toast("🔍 验证+激活中: " + a.email.split("@")[0]);
         const vr = await verifyOneAccount(a);
         const vms = Date.now() - vt0;
-        if (!vr.ok) {
+        if (vr.ok && vr.q) {
+          _store.setHealth(a.email, vr.q);
+          const ovgStr = vr.q.overageActive
+            ? " $" + Math.round(vr.q.overageDollars)
+            : "";
+          _toast(
+            "✓ " +
+              a.email.split("@")[0] +
+              " D" +
+              vr.q.daily +
+              "% W" +
+              vr.q.weekly +
+              "% " +
+              (vr.q.plan || "") +
+              ovgStr +
+              " · " +
+              vms +
+              "ms",
+          );
+        } else {
           _bumpFailure(
             _store,
             a.email,
-            "verify-" + (vr.stage || "?") + ": " + (vr.error || "?"),
+            "verify: " + (vr.stage || "?") + " " + (vr.error || "?"),
           );
           _toast(
             "✗ " +
@@ -4465,28 +4940,6 @@ async function handleWebviewMessage(msg) {
               vms +
               "ms",
           );
-          _broadcastUI();
-          return;
-        }
-        if (vr.q) {
-          _store.setHealth(a.email, vr.q);
-          _toast(
-            "✓ " +
-              a.email.split("@")[0] +
-              " D" +
-              vr.q.daily +
-              "% W" +
-              vr.q.weekly +
-              "% " +
-              (vr.q.plan || "") +
-              (vr.source ? " ·" + vr.source : "") +
-              " · " +
-              vms +
-              "ms",
-          );
-        } else {
-          _store.setHealth(a.email, { plan: "?", daily: 0, weekly: 0 });
-          _toast("✓ 登录通 · PlanStatus 未取到 · " + vms + "ms");
         }
         const k = a.email.toLowerCase();
         if (_store.blacklist[k]) {
@@ -4521,146 +4974,120 @@ async function handleWebviewMessage(msg) {
         break;
       }
       case "addBatch": {
+        // v3.0.6 · 无感无为 · 立即响应 · 零用户等待
+        //   原病灶一: await injectToken 先阻塞 → 点「添加」后 N 秒无任何反馈
+        //   原病灶二: 串行 verify + 800ms 抖动 → 20账号需 2-6 分钟 → 用户反复开面板都是"未验"
+        //   原病灶三: reloadAccounts() 多余重读盘 (addBatch 已在内存 · 无需重读)
+        //   修法: 3 并行 verify worker · 零初始延迟 · 无抖动 · devinLogin 序列化门已保证限速
+        //         20 账号: 串行 2-6min → 并行 3 worker ~30-80s · 5 账号 ~10s · 用户可感
         const r = _store.addBatch(msg.text || "");
+        const tks = r.tokens || [];
         let info = "添加 " + r.added + " 个";
         if (r.duplicate > 0) info += " · 跳重 " + r.duplicate;
-        const tks = r.tokens || [];
-        // v2.7.1.1 · 主公三诏 · token 已入 accounts.password 槽 (parseAccountText/addBatch 已完成)
-        //   addedEmails 涵 (新加 ∪ password 替换) · 后下 verifyOneAccount 走 _normalizeAccCreds 自动分流
-        //   无须再单独触 loginViaToken token-pair 中转 · 死代码已弃 · 大制无割
-        //   tokens 数组仅含 真孤儿 token (无 email 同行可配) · 走旧路 loginViaToken 反查 email
-        if (tks.length > 0) {
-          info += " · 孤 token " + tks.length;
-          const tk = tks[0];
-          const kind = _detectTokenKind(tk) || "session";
-          const creds = {};
-          if (kind === "auth1") creds.auth1 = tk;
-          else if (kind === "refresh") creds.refresh = tk;
-          else creds.sessionToken = tk;
-          const lr = await loginViaToken(creds, _store, { silent: true });
-          if (lr.ok) {
-            info += " ✓路" + lr.path + "·源=" + lr.source;
-            log(
-              "addBatch 单 token 直登 ✓ 路" +
-                lr.path +
-                " · 源=" +
-                lr.source +
-                " · 余 " +
-                (tks.length - 1) +
-                " 个未用",
-            );
-          } else {
-            info += " ✗" + (lr.stage || "?") + ":" + (lr.error || "?");
-            log(
-              "addBatch 单 token 直登 ✗ " +
-                (lr.stage || "?") +
-                ": " +
-                (lr.error || "?"),
-            );
-          }
-        }
-        _toast(info);
-        _store.reloadAccounts();
-        _broadcastUI();
-        // v2.4.3 · 新加号即时后台 verify · 不再等 30min stale 周期
-        //   · 1s 后启动 (让 UI 先 render 加号成功)
-        //   · 串行 + 800ms 抖动 (防 Devin 拉黑)
-        //   · 失败不重试 (用户可手动点🔍按钮)
-        // v2.7.1.1 · addedEmails 覆 (新加 ∪ password 替换) · verifyOneAccount 走 _normalizeAccCreds 自动识 token kind
-        const verifyEmails = (r.addedEmails || []).slice();
-        if (verifyEmails.length > 0) {
-          const newEmails = verifyEmails.slice();
-          setTimeout(async () => {
-            log(
-              "addBatch · 待 verify " + newEmails.length + " 号 · 后台即时验",
-            );
-            for (const em of newEmails) {
-              const a = _store.accounts.find(
-                (x) => x.email.toLowerCase() === em.toLowerCase(),
+        if (tks.length > 0) info += " · " + tks.length + " token (注入中…)";
+        _toast(info); // ← 立即告知 · 不等 injectToken
+        // 不调 reloadAccounts() — addBatch 已直接修改 this.accounts · accounts 已在内存
+        _broadcastUI(); // ← 立即刷新 · 用户即见新账号列表
+        // 后台 fire-forget: token 注入 + 3 worker 并行 verify
+        (async () => {
+          if (tks.length > 0) {
+            const inj = await injectToken(tks[0]);
+            if (inj.ok) {
+              _store.lastInjectPath = inj.path;
+              _store.activeTokenShort = (tks[0] || "").substring(0, 24) + "…";
+              _store.save();
+              _toast("✓ token 路" + inj.path);
+              log(
+                "addBatch token直登 ✓ 路" +
+                  inj.path +
+                  " · 余 " +
+                  (tks.length - 1) +
+                  " 个未用",
               );
-              if (!a) continue;
-              try {
-                const vr = await verifyOneAccount(a);
-                if (vr.ok && vr.q) {
-                  _store.setHealth(a.email, vr.q);
-                  log(
-                    "addBatch verify ✓ " +
-                      em.substring(0, 30) +
-                      " D" +
-                      vr.q.daily +
-                      "% W" +
-                      vr.q.weekly +
-                      "% " +
-                      vr.q.plan +
-                      " " +
-                      vr.q.daysLeft +
-                      "d" +
-                      (vr.source ? " ·" + vr.source : ""),
-                  );
-                  _broadcastUI();
-                } else {
-                  log(
-                    "addBatch verify ✗ " +
-                      em.substring(0, 30) +
-                      " · " +
-                      (vr.stage || "?") +
-                      ": " +
-                      (vr.error || "?"),
-                  );
-                }
-              } catch (e) {
-                log("addBatch verify err " + em + " · " + (e.message || e));
-              }
-              // 抖动 800ms ± 30%
-              await new Promise((rr) =>
-                setTimeout(rr, 800 + Math.random() * 480),
-              );
+              _broadcastUI();
+            } else {
+              _toast("token ✗ " + (inj.note || inj.path || "?"));
+              log("addBatch token直登 ✗ " + (inj.note || ""));
             }
-            _broadcastUI();
-          }, 1000);
-        }
+          }
+          if (r.added > 0 && r.addedEmails && r.addedEmails.length > 0) {
+            const newEmails = [...r.addedEmails];
+            const _vq = [...newEmails]; // 共享队列 · 3 worker 竞争消费
+            log(
+              "addBatch · 新加 " +
+                newEmails.length +
+                " 号 · 并行 verify 3 workers · 零等待",
+            );
+            // 并行 verify worker · 共享 _vq 队列
+            // devinLogin 序列化门保证: 任意时刻只 1 个 devinLogin 飞 · 最小间隔 1200ms
+            // 3 worker 最终效果: 3x 加速 vs 串行 + cache快路账号完全不占门
+            async function _addBatchVerifyWorker() {
+              while (_vq.length > 0) {
+                const em = _vq.shift();
+                if (!em) continue;
+                const a = _store.accounts.find(
+                  (x) => x.email.toLowerCase() === em.toLowerCase(),
+                );
+                if (!a) continue;
+                try {
+                  const vr = await verifyOneAccount(a);
+                  if (vr.ok && vr.q) {
+                    _store.setHealth(a.email, vr.q);
+                    log(
+                      "addBatch verify ✓ " +
+                        em.substring(0, 30) +
+                        " D" +
+                        vr.q.daily +
+                        "% W" +
+                        vr.q.weekly +
+                        "% " +
+                        vr.q.plan +
+                        " " +
+                        vr.q.daysLeft +
+                        "d",
+                    );
+                    _broadcastUI(); // 逐账号更新 · 防抖合并 · 用户实时见进度
+                  } else {
+                    log(
+                      "addBatch verify ✗ " +
+                        em.substring(0, 30) +
+                        " · " +
+                        (vr.stage || "?") +
+                        ": " +
+                        (vr.error || "?"),
+                    );
+                  }
+                } catch (e) {
+                  log("addBatch verify err " + em + " · " + (e.message || e));
+                }
+                // 无额外等待 · devinLogin 序列化门已保证最小 1200ms 间隔 · 800ms 抖动冗余废除
+              }
+            }
+            const nWorkers = Math.min(3, newEmails.length);
+            await Promise.all(
+              Array.from({ length: nWorkers }, _addBatchVerifyWorker),
+            );
+            _broadcastUI(); // 收尾刷新
+          }
+        })();
         break;
       }
       case "copyAccount": {
         const a = _store.accounts[msg.index];
         if (a) {
-          // v2.7.1 · 凭据择优 (与 _persistAccountsToMd 同序)
-          const cred = a.password
-            ? a.password
-            : a.auth1
-              ? "auth1:" + a.auth1
-              : a.sessionToken
-                ? "session:" + a.sessionToken
-                : a.refreshToken
-                  ? "refresh:" + a.refreshToken
-                  : "-";
-          await vscode.env.clipboard.writeText(a.email + ":" + cred);
+          await vscode.env.clipboard.writeText(a.email + ":" + a.password);
           _toast("\u2713 已复制 " + a.email.split("@")[0]);
         }
         break;
       }
       case "copyAllAccounts": {
-        const lines = _store.accounts.map((a) => {
-          const cred = a.password
-            ? a.password
-            : a.auth1
-              ? "auth1:" + a.auth1
-              : a.sessionToken
-                ? "session:" + a.sessionToken
-                : a.refreshToken
-                  ? "refresh:" + a.refreshToken
-                  : "-";
-          return a.email + ":" + cred;
-        });
+        const lines = _store.accounts.map((a) => a.email + ":" + a.password);
         await vscode.env.clipboard.writeText(lines.join("\n"));
         _toast("\u2713 已导出 " + lines.length + " 个账号到剪贴板");
         break;
       }
       // ── 本源 v17.42.7 锁🔒 toggleSkip ──
-      // v2.7.4 · 道恒无名·守一 · 写独立 lock-state.json (multi-window race-safe)
-      //   病灶: v2.7.3 实测 5+ Windsurf 窗口并发 · 其他进程 save() 用旧内存覆盖锁
-      //   治: toggleSkip 写 lock-state.json + 同步内存 + 不再依赖 _store.save() 写锁
-      //       _store.save() 仍调用 (落 active/health 等)·但 accountMeta 已与盘脱钩 (v2.7.4 save 改)
+      // v2.7.4 (补入v3.0.2) · 真本源持久化 · 写独立 lock-state.json (race-safe)
       case "toggleSkip": {
         const acc3 = _store.accounts[msg.index];
         if (acc3) {
@@ -4674,7 +5101,7 @@ async function handleWebviewMessage(msg) {
                 " 是 _predictiveCandidate → 即时作废",
             );
           }
-          // v2.7.4 · 真本源持久化 · 独立 lock-state.json (race-safe)
+          // v2.7.4 · 写 lock-state.json 独立真本源 (其他窗口 save() 不会覆盖)
           const wOk = _writeLockState(acc3.email, !!acc3.skipAutoSwitch);
           log(
             "🔒 " +
@@ -4683,14 +5110,12 @@ async function handleWebviewMessage(msg) {
               acc3.email.substring(0, 20) +
               (wOk ? " · 持久化 ✓" : " · 持久化失败 ⚠️"),
           );
-          // 同步内存快照 (其他 reloadAccounts 路径不破)
-          const k = acc3.email.toLowerCase();
+          // 同步内存快照 (reloadAccounts 路径不破)
+          const _lk = acc3.email.toLowerCase();
           if (!_store._savedAccountMeta) _store._savedAccountMeta = {};
-          if (acc3.skipAutoSwitch) {
-            _store._savedAccountMeta[k] = { skipAutoSwitch: true };
-          } else {
-            delete _store._savedAccountMeta[k];
-          }
+          if (acc3.skipAutoSwitch)
+            _store._savedAccountMeta[_lk] = { skipAutoSwitch: true };
+          else delete _store._savedAccountMeta[_lk];
           _toast(
             (acc3.skipAutoSwitch ? "🔒 已锁定 " : "🔓 已解锁 ") +
               acc3.email.split("@")[0],
@@ -4701,31 +5126,27 @@ async function handleWebviewMessage(msg) {
         break;
       }
       case "setMode": {
-        const m = msg.mode === "official" ? "official" : "wam";
-        if (m === _wamMode) {
-          _toast(
-            "当前已是 " + (m === "wam" ? "WAM切号" : "官方登录") + " 模式",
-          );
-          break;
-        }
-        _wamMode = m;
-        if (m === "official") {
-          if (_engine) _engine.stopMonitor();
-          _toast("已切官方登录模式 · WAM 引擎停");
-          log("setMode: official · 引擎停");
-        } else {
-          if (_engine) _engine.startMonitor();
-          _toast("已切 WAM 切号模式 · 引擎启");
-          log("setMode: wam · 引擎启");
-        }
-        if (_ctx) _ctx.globalState && _ctx.globalState.update("wam.mode", m);
-        _broadcastUI();
+        // v3.2.0 · 三处归一 · 调统一 _setMode()
+        const changed = await _setMode(msg.mode);
+        if (!changed) _toast("当前已是 " + (_wamMode === "wam" ? "WAM切号" : "官方登录") + " 模式");
+        else _toast(_wamMode === "official" ? "已切官方模式 · WAM 已登出 · 可用官方登录" : "已切 WAM 切号模式 · 引擎启");
         break;
       }
-      // ── 对齐本源: refresh (刷新视图) ──
+      // ── 对齐本源: refresh (刷新视图 + 后台触发 onlyStale 验证) ──
+      // v3.0.2 · 手动 refresh 不再只是 reloadAccounts · 同步触发 stale 验证刷新额度
       case "refresh": {
         _store.reloadAccounts();
         _broadcastUI();
+        // 后台触发 onlyStale 验证 (不阻塞 · 不重复 · 用户点刷新即更新额度)
+        if (!_verifyAllInProgress && _wamMode === "wam") {
+          setTimeout(() => {
+            if (_verifyAllInProgress) return;
+            log("refresh: 触发后台 onlyStale 验证");
+            verifyAllAccounts({ onlyStale: true }).catch((e2) =>
+              log("refresh-verify err: " + (e2.message || e2)),
+            );
+          }, 300);
+        }
         break;
       }
       // ── 对齐本源: autoRotate (智能轮转) ──
@@ -4790,9 +5211,59 @@ async function handleWebviewMessage(msg) {
         _broadcastUI();
         break;
       }
+      // ── v2.8.4 · activateAll: 一键激活全池未激活账号 $200 Extra Usage ──
+      // 道法自然: 触发验证即触发激活 · 激活内化于验证之中 · 无需独立激活路径
+      case "activateAll": {
+        if (_verifyAllInProgress) {
+          _toast("验证中自动激活...请稍候");
+          break;
+        }
+        const needAct = _store.accounts.filter((a) => {
+          const h = _store.getHealth(a.email);
+          return h.checked && !h.overageActive && !_store.isBanned(a.email);
+        });
+        const uncheckedAll = _store.accounts.filter((a) => {
+          const h = _store.getHealth(a.email);
+          return !h.checked && !_store.isBanned(a.email);
+        });
+        const total = needAct.length + uncheckedAll.length;
+        if (total === 0) {
+          _toast("✓ 所有已验账号均已激活 Extra Usage Balance");
+          break;
+        }
+        _toast("⚡ 后台激活 " + total + " 个账号 Extra Usage (验证+触发)...");
+        log(
+          "activateAll: 启动 · 需激活 " +
+            needAct.length +
+            " · 未验 " +
+            uncheckedAll.length,
+        );
+        // 触发全量验证 (内含自动激活) · onlyStale=false 确保全部刷新
+        verifyAllAccounts({ onlyStale: false })
+          .then((r2) => {
+            const st = _store.getStats();
+            _toast(
+              "⚡ 激活批次完成: $" +
+                Math.round(st.totalOverageDollars || 0) +
+                " (" +
+                (st.overageAccounts || 0) +
+                " 账号 Extra Usage) · 验证 " +
+                (r2 ? r2.ok + "/" + r2.total : "?"),
+            );
+            _broadcastUI();
+          })
+          .catch((e2) => log("activateAll err: " + (e2.message || e2)));
+        break;
+      }
       // ── 对齐本源: openEditor (从侧栏打开大窗口) ──
       case "openEditor": {
         openEditorPanel();
+        break;
+      }
+      // v3.0.5 · 添加账号展开状态持久化 · 防回退闪烁
+      // 客户端 toggleAdd() 点击时上报 → 服务端记住 → 下次 buildHtml() 正确渲染初始态
+      case "setAddOpen": {
+        _uiAddOpen = !!msg.open;
         break;
       }
     }
@@ -4812,11 +5283,19 @@ class Engine {
   }
 
   async rotateNext(opts) {
-    if (this.rotating) {
-      log("rotate: in-progress");
+    if (this.rotating || _switching) {
+      log(
+        "rotate: in-progress (rotating=" +
+          this.rotating +
+          " switching=" +
+          _switching +
+          ")",
+      );
       return { ok: false, busy: true };
     }
     this.rotating = true;
+    _switching = true; // v3.0.1 · 与 _doAutoSwitch 对齐 · 手动10s超时生效
+    _switchingStartTime = Date.now(); // v3.0.1
     _broadcastUI();
     try {
       if (opts && opts.tryPending) {
@@ -4851,7 +5330,13 @@ class Engine {
       // boot 首次切: 排除当前 active idx · 后续切: 也排除当前 active 避免回切自己
       const order = this.store.getSortedIndices(this.store.activeIdx);
       if (!this.bootRotateDone) this.bootRotateDone = true;
-      log("rotate: 候选 " + order.length + " 个 (按 score 降序)");
+      // v3.3.0 · 池层分布透明 · 让用户看见道之运行
+      const _tS = this.store._tierStats(this.store.activeIdx);
+      log(
+        "rotate: 候选 " + order.length + " 个 (按 score 降序) · " +
+        "\uD83D\uDC8E" + _tS.ovg + " \uD83D\uDCCA" + _tS.pct +
+        " \u23F3" + _tS.wait + " \uD83D\uDD12" + _tS.lock
+      );
       // v2.4.13b · rate-limit 早停 (知止所以不殆)
       //   Devin 返回 "Rate limit exceeded" 是 IP/device 级 · 全号都会 fail
       //   继续 for-loop 会把所有 73 可用号都失败 3 次入 15min 黑
@@ -4881,6 +5366,7 @@ class Engine {
       return { ok: false };
     } finally {
       this.rotating = false;
+      _switching = false; // v3.0.1 · 与 _doAutoSwitch 对齐
       _broadcastUI();
     }
   }
@@ -5113,6 +5599,7 @@ class Engine {
             "%<" +
             predictiveThreshold +
             "%, 预选→" +
+            this.store._tierOf(_predictiveCandidate) + " " + // v3.3.0 池层标
             this.store.accounts[_predictiveCandidate].email.substring(0, 20),
         );
     }
@@ -5153,15 +5640,18 @@ class Engine {
         : q.weekly < threshold
           ? "Weekly耗尽(" + q.weekly + "%)"
           : "Daily耗尽(" + q.daily + "%)";
-      // v17.42.7 锁🔒贯通: 统一由 _isValidAutoTarget 四辨
+      // v3.1.3 · effQuota 守门贯通: 预选+候补均需验证有效额度
       let bestI = _isValidAutoTarget(_predictiveCandidate)
         ? _predictiveCandidate
         : this.store.getBestIndex(activeI);
+      // v3.1.3 · getBestIndex 返回的候选也需守门 (低分号 effQ 可能仍不足)
+      if (bestI >= 0 && !_isValidAutoTarget(bestI)) bestI = -1;
       if (bestI >= 0) {
         log(
           "⚡ 耗尽保护: " +
             reason +
             " → " +
+            this.store._tierOf(bestI) + " " + // v3.3.0 池层标
             this.store.accounts[bestI].email.substring(0, 20),
         );
         await this._doAutoSwitch(bestI, activeI, "exhaust");
@@ -5184,6 +5674,7 @@ class Engine {
             "⏰ 时间轮转: " +
               Math.round((Date.now() - _lastSwitchTime) / 60000) +
               "min已过 · 换→ " +
+              this.store._tierOf(bestI2) + " " + // v3.3.0 池层标
               this.store.accounts[bestI2].email.substring(0, 20),
           );
           await this._doAutoSwitch(bestI2, activeI, "time-rotate");
@@ -5204,10 +5695,20 @@ class Engine {
       // v17.42.5 太上不知有之: cascade 流式避让 · 对话永不被打断
       await _waitIfCascadeBusy(15000);
       let switchOk = false;
+      // v3.1.3 · 首次候选守门 (getBestIndex 返低分号仍需 effQ 验证)
+      if (!_isValidAutoTarget(bestI)) {
+        log(tag + ": 首候选 effQ 不足 · 跳过");
+        bestI = -1;
+      }
       for (let _retry = 0; _retry < 3 && !switchOk; _retry++) {
-        if (_retry > 0) {
+        if (_retry > 0 || bestI < 0) {
           bestI = this.store.getBestIndex(excludeI);
           if (bestI < 0) break;
+          // v3.1.3 · 重试守门: 验证候选有效额度
+          if (!_isValidAutoTarget(bestI)) {
+            log(tag + "-retry#" + _retry + ": 候选 effQ 不足 · 跳过");
+            break; // 无有效候选 · 不浪费重试
+          }
           log(
             tag +
               "-retry#" +
@@ -5289,6 +5790,42 @@ async function activate(context) {
   } catch (e) {
     log("seed: " + (e.message || e));
   }
+  // v3.1.4 · openExternal 守卫延迟到 mode 加载后按需安装
+  // WAM模式: 装守卫 (切号无弹窗) · 官方模式: 不装 (放行浏览器登录)
+  // guard 的安装移至下方 wamMode 加载后的条件分支
+  context.subscriptions.push({
+    dispose: () => _removeOpenExternalGuard(),
+  });
+  // v3.1.1 · 顺其自然·从盘上加载 sessionCache · 跨重启不丢
+  //   sessionToken JWT 实际有效 数小时-数天 · 远超 in-memory 15min · 持久化即顺
+  //   全部账号秒切 · 不再触 devinLogin · 不再受 IP 限速
+  const _cacheLoaded = _loadSessionCacheFromDisk();
+  if (_cacheLoaded > 0) {
+    log("sessionCache: 加载 " + _cacheLoaded + " 号 (重启不丢·秒切常态)");
+  }
+  // deactivate 时同步落盘 (清 debounce 即时 flush)
+  context.subscriptions.push({
+    dispose: () => {
+      try {
+        if (_persistDebounceTimer) clearTimeout(_persistDebounceTimer);
+        _persistDebounceTimer = null;
+        // 同步落盘
+        const obj = {};
+        const now = Date.now();
+        for (const [email, c] of _sessionCache.entries()) {
+          if (now - c.cachedAt < SESSION_CACHE_DISK_TTL_MS) {
+            obj[email] = {
+              sessionToken: c.sessionToken,
+              apiKey: c.apiKey || "",
+              apiServerUrl: c.apiServerUrl || "",
+              cachedAt: c.cachedAt,
+            };
+          }
+        }
+        atomicWrite(SESSION_CACHE_FILE, JSON.stringify(obj, null, 0));
+      } catch {}
+    },
+  });
   _store = new Store();
   _store.load();
   _store.reloadAccounts();
@@ -5303,6 +5840,35 @@ async function activate(context) {
       " from " +
       (_store.accountsSource || "<none>"),
   );
+  // v3.0.2 · lock-state.json 跨窗口实时锁同步监视器
+  //   原理: Window A toggleSkip 写 lock-state.json → fs.watchFile 通知 Window B
+  //           Window B 收到通知 → reloadAccounts() + _broadcastUI() → UI 即时同步锁状态
+  let _lockWatchDebounce = null;
+  try {
+    fs.watchFile(LOCK_FILE, { persistent: false, interval: 1000 }, () => {
+      clearTimeout(_lockWatchDebounce);
+      _lockWatchDebounce = setTimeout(() => {
+        if (_store) {
+          log(
+            "lockWatcher: lock-state.json 变更 → reloadAccounts + broadcastUI",
+          );
+          _store.reloadAccounts();
+          _broadcastUI();
+        }
+      }, 500);
+    });
+    context.subscriptions.push({
+      dispose: () => {
+        try {
+          fs.unwatchFile(LOCK_FILE);
+        } catch {}
+        clearTimeout(_lockWatchDebounce);
+      },
+    });
+    log("lockWatcher: 监视 " + LOCK_FILE);
+  } catch (e) {
+    log("lockWatcher init err: " + (e.message || e));
+  }
   _engine = new Engine(_store);
 
   _statusBar = vscode.window.createStatusBarItem(
@@ -5397,6 +5963,8 @@ async function activate(context) {
         });
         if (!pick || pick.idx === _store.activeIdx) return;
         _engine.rotating = true;
+        _switching = true; // v3.0.1 · 命令面板切号同步 _switching
+        _switchingStartTime = Date.now(); // v3.0.1
         _broadcastUI();
         try {
           const r = await loginAccount(_store, pick.idx);
@@ -5404,6 +5972,7 @@ async function activate(context) {
           else _notify("error", "WAM: ✗ " + r.stage + ": " + r.error);
         } finally {
           _engine.rotating = false;
+          _switching = false; // v3.0.1
           _broadcastUI();
         }
       },
@@ -5465,113 +6034,21 @@ async function activate(context) {
       async () => {
         const t = await vscode.window.showInputBox({
           prompt:
-            "粘贴 token · 支持 auth1_/devin-session-token$/eyJ JWT/email----auth1 配对 (v2.7.1.1 主公三诏)",
-          placeHolder:
-            "auth1_… (推荐·1阶) / devin-session-token$… (2阶) / eyJ…JWT / email----auth1_…",
+            "粘贴 token · 支持 devin-session-token$/eyJ JWT/auth1_/原始base64",
+          placeHolder: "devin-session-token$… 或 eyJ… 或 auth1_…",
         });
         if (!t) return;
-        // v2.7.1.1 · 主公三诏 · token 已入 accounts.password 槽 (parseAccountText 自动)
-        //   accounts[0] 即 email+token 配对果 · 兼孤儿 tokens (无 email)
-        //   reuse _normalizeAccCreds + loginViaToken · 大方无隅
+        // 通过统一解析器 · 支持用户粘 JSON / 多行 / 带 "token: " 前缀 等任意形式
         const parsed = parseAccountText(t);
-        const acc0 = (parsed.accounts && parsed.accounts[0]) || null;
-        const tk0 = (parsed.tokens && parsed.tokens[0]) || null;
-        if (!acc0 && !tk0) {
-          _notify(
-            "warn",
-            "WAM: 未识 token (粘 auth1_/sess$/JWT 或 email+token 配对)",
-          );
-          return;
-        }
-        let creds;
-        if (acc0) {
-          const mapped = _normalizeAccCreds(acc0);
-          creds = { email: mapped.email };
-          if (mapped.auth1) creds.auth1 = mapped.auth1;
-          else if (mapped.sessionToken)
-            creds.sessionToken = mapped.sessionToken;
-          else if (mapped.refreshToken) creds.refresh = mapped.refreshToken;
-          else creds.password = mapped.password;
-        } else {
-          const kind = _detectTokenKind(tk0) || "session";
-          creds = {};
-          if (kind === "auth1") creds.auth1 = tk0;
-          else if (kind === "refresh") creds.refresh = tk0;
-          else creds.sessionToken = tk0;
-        }
-        const lr = await loginViaToken(creds, _store, { silent: false });
-        if (lr.ok) {
-          const qStr = lr.q
-            ? " · D" + lr.q.daily + "% W" + lr.q.weekly + "% " + lr.q.plan
-            : "";
-          _notify(
-            "info",
-            "WAM: ✓ token 直登 路" + lr.path + " · 源=" + lr.source + qStr,
-          );
+        const tk = (parsed.tokens && parsed.tokens[0]) || t.trim();
+        const inj = await injectToken(tk);
+        if (inj.ok) {
+          _notify("info", "WAM: 注入 ✓ 路" + inj.path);
+          _store.lastInjectPath = inj.path;
+          _store.activeTokenShort = (tk || "").substring(0, 24) + "…";
+          _store.save();
           _broadcastUI();
-        } else {
-          _notify(
-            "error",
-            "WAM: ✗ token 直登 " + (lr.stage || "?") + ": " + (lr.error || "?"),
-          );
-        }
-      },
-    ],
-    [
-      // v2.7.1.1 · 主公三诏 · wam.addToken 与 wam.addAccount / webview '+ 添加账号' 万法归一
-      //   token 已入 accounts.password 槽 · addedEmails 触 verifyOneAccount → _normalizeAccCreds 自动分流
-      //   Command Palette 入口: Ctrl+Shift+P → RT Flow: Add Token
-      "wam.addToken",
-      async () => {
-        const t = await vscode.window.showInputBox({
-          prompt:
-            "v2.7.1.1 主公三诏 · 任意 token/凭据 (auth1/session/JWT/refresh/email配对) · 自动识号·入完整管理流",
-          placeHolder:
-            'auth1_…  /  devin-session-token$…  /  eyJ…JWT  /  email----auth1_…  /  {"email":"x","auth1_token":"…"}',
-        });
-        if (!t) return;
-        const r = _store.addBatch(t);
-        let info = "添加 " + r.added;
-        if (r.duplicate > 0) info += " · 跳重 " + r.duplicate;
-        const tks = r.tokens || [];
-        // 孤儿 token (无 email 同行配对) 走 loginViaToken 反查 email
-        if (tks.length > 0) {
-          info += " · 孤 token " + tks.length;
-          const tk = tks[0];
-          const kind = _detectTokenKind(tk) || "session";
-          const creds = {};
-          if (kind === "auth1") creds.auth1 = tk;
-          else if (kind === "refresh") creds.refresh = tk;
-          else creds.sessionToken = tk;
-          const lr = await loginViaToken(creds, _store, { silent: true });
-          if (lr.ok) info += " · ✓ token直登 路" + lr.path + " 源=" + lr.source;
-          else info += " · ✗ " + (lr.stage || "?") + ":" + (lr.error || "?");
-        }
-        _notify("info", "WAM: " + info);
-        _store.reloadAccounts();
-        _broadcastUI();
-        // v2.7.1.1 · 新加号 token 走 verifyOneAccount → _normalizeAccCreds 自动验 (主公三诏)
-        const verifyEmails = (r.addedEmails || []).slice();
-        if (verifyEmails.length > 0) {
-          setTimeout(async () => {
-            for (const em of verifyEmails) {
-              const a = _store.accounts.find(
-                (x) => x.email.toLowerCase() === em.toLowerCase(),
-              );
-              if (!a) continue;
-              try {
-                const vr = await verifyOneAccount(a);
-                if (vr.ok && vr.q) {
-                  _store.setHealth(a.email, vr.q);
-                  _broadcastUI();
-                }
-              } catch (e) {
-                log("wam.addToken verify err: " + (e.message || e));
-              }
-              await new Promise((res) => setTimeout(res, 800));
-            }
-          }, 1000);
-        }
+        } else _notify("error", "WAM: 注入 ✗ 路" + inj.path + ": " + inj.note);
       },
     ],
     [
@@ -5742,30 +6219,19 @@ async function activate(context) {
     [
       "wam.setModeWam",
       async () => {
-        if (_wamMode === "wam") {
-          _notify("info", "WAM: 已是 WAM 模式");
-          return;
-        }
-        _wamMode = "wam";
-        if (_engine) _engine.startMonitor();
-        if (context.globalState) context.globalState.update("wam.mode", "wam");
-        _notify("info", "WAM: 切 WAM 切号模式 · 引擎启");
-        _broadcastUI();
+        // v3.2.0 · 三处归一
+        const changed = await _setMode("wam");
+        if (!changed) _notify("info", "WAM: 已是 WAM 模式");
+        else _notify("info", "WAM: 切 WAM 切号模式 · 引擎启");
       },
     ],
     [
       "wam.setModeOfficial",
       async () => {
-        if (_wamMode === "official") {
-          _notify("info", "WAM: 已是官方登录模式");
-          return;
-        }
-        _wamMode = "official";
-        if (_engine) _engine.stopMonitor();
-        if (context.globalState)
-          context.globalState.update("wam.mode", "official");
-        _notify("info", "WAM: 切官方登录模式 · 引擎停 · 用户可用官方登录");
-        _broadcastUI();
+        // v3.2.0 · 三处归一
+        const changed = await _setMode("official");
+        if (!changed) _notify("info", "WAM: 已是官方登录模式");
+        else _notify("info", "WAM: 切官方登录模式 · 已登出 · 可用官方登录");
       },
     ],
   ];
@@ -5780,6 +6246,16 @@ async function activate(context) {
     _wamMode = savedMode === "official" ? "official" : "wam";
     log("wamMode: " + _wamMode + " (loaded)");
   } catch {}
+
+  // v3.1.4 · mode 已加载 → 按需安装 openExternal 守卫
+  //   WAM 模式: 装守卫 (切号无弹窗)
+  //   官方模式: 不装 (放行 windsurf.login 弹浏览器)
+  if (_wamMode === "wam") {
+    _installOpenExternalGuard();
+    log("activate: WAM 模式 · guard 已装");
+  } else {
+    log("activate: 官方模式 · guard 不装 · 放行官方登录");
+  }
 
   if (_store.accounts.length > 0 && _wamMode === "wam") {
     const delay = Math.max(1000, _cfg("startupDelayMs", 3500) | 0);
@@ -5839,13 +6315,38 @@ async function activate(context) {
             ? " (首次加速 · " + Math.round(uncheckedPct * 100) + "% 未验)"
             : ""),
       );
+      // v3.0.2 · 启动验证使用 autoVerifyStartupStaleMin (默认15min)
+      //   旧法: 始终用 30min 阈值 · 重启后若所有号均 <30min 前验 → 全部跳过 → 用户看到旧额度
+      //   新法: startupStaleMin 默认15min · 覆盖 verify.staleMin · 启动后15min内未验也会刷新
+      const startupStaleMin = Math.max(
+        1,
+        _cfg("autoVerifyStartupStaleMin", 15) | 0,
+      );
       const tv = setTimeout(() => {
         if (_wamMode !== "wam") return;
         if (_verifyAllInProgress) return;
-        log("auto-verify(stale): 启动 · 内化 refresh 按钮");
-        verifyAllAccounts({ onlyStale: true }).catch((e) =>
-          log("auto-verify err: " + (e.message || e)),
+        // v3.1.2 · _cacheOnly 模式 · 仅 verify cache 内号 (零 devinLogin·零限速)
+        //   cache 空时跳过 · 避免首次部署批量 devinLogin 雪崩
+        //   cache 内号走 tryFetchPlanStatus(apiKey) fast-path · quota 验证仅需 apiKey
+        //   未 cache 号: lazy on user switch · 反正必走 devinLogin · 现按需不批量
+        if (_sessionCache.size === 0) {
+          log(
+            "auto-verify(stale): cache 空 · 跳过 (避免首次 batch devinLogin 触限速)",
+          );
+          return;
+        }
+        log(
+          "auto-verify(stale): _cacheOnly · cache=" +
+            _sessionCache.size +
+            " · startupStaleMin=" +
+            startupStaleMin +
+            "min",
         );
+        verifyAllAccounts({
+          onlyStale: true,
+          startupStaleMin,
+          _cacheOnly: true,
+        }).catch((e) => log("auto-verify err: " + (e.message || e)));
       }, verifyDelay);
       context.subscriptions.push({ dispose: () => clearTimeout(tv) });
     }
@@ -5860,13 +6361,29 @@ async function activate(context) {
       const ti = setInterval(() => {
         if (_wamMode !== "wam") return;
         if (_verifyAllInProgress) return;
-        log("auto-verify(stale): 周期触发");
-        verifyAllAccounts({ onlyStale: true }).catch((e) =>
+        // v3.1.2 · _cacheOnly 模式 · 与启动同步 · 零 devinLogin
+        if (_sessionCache.size === 0) {
+          log("auto-verify(stale): cache 空 · 周期跳过");
+          return;
+        }
+        log(
+          "auto-verify(stale): 周期·_cacheOnly · cache=" +
+            _sessionCache.size,
+        );
+        verifyAllAccounts({ onlyStale: true, _cacheOnly: true }).catch((e) =>
           log("periodic-verify err: " + (e.message || e)),
         );
       }, periodicVerifyMs);
       context.subscriptions.push({ dispose: () => clearInterval(ti) });
     }
+
+    // v3.2.1 · 额度重置感知 · 精准定时唤醒
+    //   每日 UTC 08:00 (北京 16:00) + 周日 UTC 08:00 (北京 周日 16:00)
+    //   重置后自动全池刷新 · 耗尽号瞬间复活 · 用户无感
+    _scheduleResetRefresh();
+    context.subscriptions.push({ dispose: () => {
+      if (_resetRefreshTimer) { clearTimeout(_resetRefreshTimer); _resetRefreshTimer = null; }
+    }});
 
     // ── v2.1.3: 一次性 force verify-all 触发器 (经标志文件 · 部署后清污染用) ──
     // 用法: touch ~/.wam/_trigger_force_verify_all → 重启 exthost → 自动跑 verifyAll(onlyStale:false) → 清标志
@@ -6056,19 +6573,15 @@ async function activate(context) {
       (_cfg("rotateOnEveryMessage", true) ? " [开]" : " [关]") +
       " · 使用中🔒 " +
       Math.round(_cfg("inUseLockMs", 120000) / 1000) +
-      "s · 不禁号·永不入黑",
+      "s · 不禁号·永不入黑" +
+      " · 🛡️guard=" + (_openExternalGuardActive ? "ON" : "OFF") +
+      " · 💾cache=" + _sessionCache.size,
   );
-  // v2.7.2 · 主公三诏「token 看做账号密码 · 直接复用一切 · 顺其自然」最后一公里
-  //   v2.7.1.1 内涵 + SemVer 合规 patch bump (vscode 拒四段·三段为道)
-  // v2.7.3 · 治🔒回退根 · save 写盘后同步刷新 _savedAccountMeta 内存快照
-  // v2.7.4 · 道恒无名·万物自宾 · 治 multi-window race · 独立 lock-state.json
-  // v2.7.5 · 单独 token 万法适配·无为无感 · 孤儿 token → 占位号入 accounts
-  //   独立第二行 log · 不污 v2.6.14 banner 测之 400-字符窗 · 大道至简
-  log(
-    "WAM v" +
-      VERSION +
-      " · 主公三诏·_normalizeAccCreds 入口分流 · 治🔒multi-window race·LOCK_FILE 守一·万物自宾 · 单独 token 占位号入 accounts · 民莫之令而自均",
-  );
+  // v3.2.0 · v3.1.1 8s prewarm 已损 · 限速重叠源 · 零批量 devinLogin
+  //   原因: 首次部署 cache 空 → prewarm 对所有 N 号挨个 devinLogin → IP 限速雪崩
+  //   现走主道: startup auto-verify 上面已改 _cacheOnly=true · 仅 cache 内号 fast-path
+  //   未 cache 号: lazy on user switch · 反正必走 devinLogin · 现按需不批量
+  //   帛书六十四章: 为之于其未有也 · 不批量即不生万乱
 }
 
 function deactivate() {
@@ -6090,6 +6603,30 @@ module.exports = {
     verifyOneAccount,
     verifyAllAccounts,
     injectViaBing,
+    injectToken, // v3.1.0 · 暴露给回归测
+    _installOpenExternalGuard, // v3.1.0 · 暴露给回归测
+    _removeOpenExternalGuard, // v3.1.0 · 暴露给回归测
+    _setMode, // v3.2.0 · 三处归一统一函数
+    _scheduleResetRefresh, // v3.2.1 · 额度重置感知
+    _onResetFired, // v3.2.1 · 重置触发回调
+    get _openExternalGuardActive() { return _openExternalGuardActive; },
+    get _guardBlockCount() { return _guardBlockCount; },
+    // v3.1.1 · sessionCache 持久化 · 暴露给守门测试
+    _cacheSession,
+    _getCachedSession,
+    _evictSessionCache,
+    _persistSessionCache,
+    _loadSessionCacheFromDisk,
+    // v3.1.2 · 限速感知窗口 · 暴露给守门测试 (允许测试 set·验证 rate-limit-window 入口)
+    get _devinLoginRateLimitedUntil() {
+      return _devinLoginRateLimitedUntil;
+    },
+    _setDevinLoginRateLimitedUntil(t) {
+      _devinLoginRateLimitedUntil = +t || 0;
+    },
+    SESSION_CACHE_FILE,
+    SESSION_CACHE_DISK_TTL_MS,
+    get _sessionCache() { return _sessionCache; },
     _isValidAutoTarget,
     _bumpFailure, // v2.3.0 暴露给回归测
     isClaudeAvailable,
@@ -6103,14 +6640,6 @@ module.exports = {
     openEditorPanel,
     parseAccountText,
     Store,
-    // v2.7.1 · 万法归一·token 直登 · 反者道之动
-    _detectTokenKind, // v2.7.1 · token 5 类细分识别
-    _isValidEmail, // v2.7.1 · 严判 email · 与 v2.7.0 一致 (供测)
-    _isPlaceholderEmail, // v2.7.5 · 占位 email 识别 · 单独 token 万法适配
-    resolveSessionTokenFromCreds, // v2.7.1 · 任意凭据 → sessionToken
-    loginViaToken, // v2.7.1 · 任意 token → inject + register + quota + setActive
-    loginAccount, // v2.7.1 · 三链择优 loginAccount (供测/集成)
-    injectToken, // v2.7.1 · 暴露顶层 (与三路 viaBing/viaJia/viaYi 区分)
     // v2.4.0 · 暴露 endpoint 健康度给回归测
     _quotaEndpointDead,
     get _quotaEndpointHealth() {

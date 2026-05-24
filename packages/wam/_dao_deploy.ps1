@@ -138,14 +138,14 @@ foreach ($t in $targets) {
     Write-Host '         byte-equal OK' -ForegroundColor Green
 
     # 5. patch extensions.json (defensive: version + metadata.size)
-    # v2.6.13 道法自然·唯变所适: 兼容两形 extensions.json 结构
-    #   1. 裸数组:         [{ext1},{ext2},...]                 (老/local)
-    #   2. 包装对象:       {"value":[...], "Count":N}          (新 Windsurf · 如 179 机)
+    # v2.6.14 根治: 无论输入何种格式，统一归一写回纯数组 [...] (Windsurf 要求 Array.isArray(s)=true)
+    #   根因: Windsurf sharedProcessMain.js: Array.isArray(s)||throwInvalidConentError(e)
+    #   旧 wrapped 写回路径会保留 {"value":[...]} 格式 → 每次 deploy 加固错误 → 插件消失死循环
     if (Test-Path $loc.xj) {
         try {
             $rawJson = Get-Content $loc.xj -Raw -Encoding utf8
             $parsed  = $rawJson | ConvertFrom-Json
-            # 双形归一: 定位 items 集合 (原对象可能是 $parsed 本身 · 也可能是 $parsed.value)
+            # 兼容两形读取: 定位 items 集合
             $isWrapped = ($parsed -is [System.Management.Automation.PSCustomObject] -and $parsed.PSObject.Properties['value'])
             $items = if ($isWrapped) { $parsed.value } else { $parsed }
             $hit = 0
@@ -158,14 +158,16 @@ foreach ($t in $targets) {
                     $hit++
                 }
             }
-            # 回写: 保持原形 (wrapped / 裸数组)
-            if ($isWrapped) {
-                $parsed | ConvertTo-Json -Depth 99 -Compress | Set-Content $loc.xj -Encoding utf8
-            } else {
-                ,$items | ConvertTo-Json -Depth 99 -Compress | Set-Content $loc.xj -Encoding utf8
+            # 归一写回: 始终输出纯数组 [...] · 消灭 {value:[]} 污染
+            # 用 -InputObject @($items) 确保序列化为 JSON 数组而非 PS 对象包装
+            ConvertTo-Json -InputObject @($items) -Depth 20 -Compress | Set-Content $loc.xj -Encoding utf8
+            $fmtHint = if ($isWrapped) { ' (was wrapped→normalized)' } else { ' (array)' }
+            # 守门: 写后即验，首字必须是 '[' · 否则立即 FAIL 中止
+            $verify = [System.IO.File]::ReadAllText($loc.xj)
+            if ($verify[0] -ne '[') {
+                throw "POST-WRITE FORMAT GUARD FAIL: 写回后首字=$($verify[0]) 期望=[  · extensions.json 格式污染 · 中止"
             }
-            $fmtHint = if ($isWrapped) { ' (wrapped)' } else { ' (array)' }
-            Write-Host ('   [4/5] extensions.json patched: {0} record(s){1}' -f $hit, $fmtHint)
+            Write-Host ('   [4/5] extensions.json patched: {0} record(s){1} ✓guard' -f $hit, $fmtHint)
         } catch {
             Write-Host ('   [4/5] extensions.json FAIL: {0}' -f $_.Exception.Message) -ForegroundColor Yellow
         }

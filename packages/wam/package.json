@@ -2,7 +2,7 @@
 	"name": "rt-flow",
 	"displayName": "Runtime Flow",
 	"description": "Runtime flow management · adaptive scheduling",
-	"version": "2.7.5",
+	"version": "3.3.0",
 	"publisher": "devaid",
 	"repository": {
 		"type": "git",
@@ -306,6 +306,26 @@
 					"type": "number",
 					"default": 5000,
 					"description": "v2.6.14 守三·WAL 启动暖启窗 — _installWalWatcher 后首 N ms 内 WAL fire 全跳 · 防 activate 首 stat 累积差引启动雪崩 (实证 reload 0.5s 即火) · 默 5000ms · 0=关"
+				},
+				"wam.autoActivate": {
+					"type": "boolean",
+					"default": true,
+					"description": "v2.8.4 Devin双轨·自动激活 — 验号时检测到账号尚无 Extra Usage 余额自动触发激活流程 (true=开·false=关)"
+				},
+				"wam.autoActivate.pollN": {
+					"type": "number",
+					"default": 5,
+					"description": "v2.8.4 激活轮询次数 — _pollForOverage 最多轮询 N 次 (默 5 · 5×3s=15s 快验)"
+				},
+				"wam.autoActivate.pollMs": {
+					"type": "number",
+					"default": 3000,
+					"description": "v2.8.4 激活轮询间隔 — _pollForOverage 每轮间隔 ms (默 3000ms)"
+				},
+				"wam.preferOverageFirst": {
+					"type": "boolean",
+					"default": true,
+					"description": "v3.3.0 💎 额度绝对优先 — true=有 Extra Usage 余额($)的账号永远先于百分比账号(无论W%/D%多高) · 内部按$多寡排 · overage耗尽才轮到百分比 · 解构本源: overage=存量(不用即损) 百分比=流量(重置可循环) · false=回退v3.2.1统一打分(兼容)"
 				}
 			}
 		}
