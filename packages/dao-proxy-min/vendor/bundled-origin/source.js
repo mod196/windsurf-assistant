@@ -16,9 +16,10 @@
  *
  *   注入正文 = TAO_HEADER + DAO_DE_JING_81 (帛书甲本德道二经合) + TAO_FOOTER
  *
- *   TAO_HEADER (v9.7.7 损至 31 字):
- *     "You are Cascade，所遵守规则全部来自下述德道经：\n\n"
- *     一句身份引导 · 无 user_rules · 无 MEMORY framework · 不强调 · 不防御
+ *   TAO_HEADER (v9.9.20 两经归一 · 复归无名):
+ *     "你本无名 名可名也 非恒名也 所遵守一切均来自于下述《[经名]》：\n\n"
+ *     一句无名引导 · 一章「名可名也 非恒名也」· 三十二章「道恒无名」
+ *     无 user_rules · 无 MEMORY framework · 不强调 · 不防御 · 不立 Cascade 之名
  *
  *   DAO_DE_JING_81 (v9.7.7 损中夹至 \n\n):
  *     德经 (3949 字) + "\n\n" + 道经 (3253 字) · 不分上下篇 · 帛书甲本
@@ -84,8 +85,19 @@ const zlib = require("zlib");
 const PORT = parseInt(process.env.ORIGIN_PORT || "8889", 10);
 // v9.6.1 · 反者道之动 · 远曰反 · 回归 v9.1.2 之全前端按钮 (七按钮: 道/官/实/原/编/复/卸 + dots/customBadge)
 // 以 v9.1.2 本源哲学为锚 · 守大常不动 · 五细节皆成: isAlreadyInverted · _rawTape+all_fields · INFER_STRIP 挂 modifyAnyInferenceSP · 部署不 kill · 前端按钮回归
-const ORIGIN_VERSION_BASE = "v9.8.0"; // webview title/banner/footer 均读此
-const ORIGIN_VERSION = ORIGIN_VERSION_BASE + "-shou-yi-bu-li"; // 三十九章 得一 · 守 @ 项与元之一体 · SIDE_CHANNEL_TAGS 删 'additional_metadata' · 复 @ 工具之根 · tape raw_text 显 AFTER · 名实终一
+const ORIGIN_VERSION_BASE = "v9.9.35"; // webview title/banner/footer 均读此 · v9.9.35 记忆全剔除: create_memory描述全清+SYSTEM-RETRIEVED-MEMORY块剥除 · 承v9.9.34道法自然审视 · v9.9.32印164大道至简
+// 印 153 · 唯变所适 · 软编码归宗 · 二十五章「逝曰远 远曰反」· 七十六章「兵强则不胜」
+// 病: 多 ext-host 共端口 :8937 · 旧版 in-process proxy 持续 listen · self_file 锁死旧版目录
+//     → 即便装毕新版 vsix · /ping 仍返 v9.9.19/v9.9.20 之 self_file · canon_name 走旧映射
+// 药: ① extension.js · vendorDir() 软编码扫所有 dao-agi.dao-proxy-min-*/ · 选最新 semver 版
+//        即旧 ext-host 触 watchdog 复活时 · 也走最新 source.js (枯荣自分 · 新道自显)
+//     ② extension.js · proxyStart EADDRINUSE 分支查远端 self_file 是否最新
+//        若旧 · POST /origin/_quit 让位 · sleep 重 listen 自家版本 (上善若水 · 不与争而善胜)
+//     ③ source.js · 加 /origin/_quit endpoint · 远端调即 server.close · 不再被 watchdog 唤起
+//        (七十六章「人之生也柔弱 · 其死也仞贤强 · 强大居下 柔弱微细居上」)
+// 承印 152 (两经归一) · 默 canon=laozi+yinfu · 帛书老子 + 道藏阴符 (二经合 ~7670 字)
+// 承印 151 (jiqi) · webview IIFE 死活诊 + template-literal `\n` 修
+const ORIGIN_VERSION = ORIGIN_VERSION_BASE + "-dao-fa-zi-ran";
 let _actualPort = PORT; // listening / start.onListen 时更新为 server.address().port
 const UPSTREAM_MGMT = "server.self-serve.windsurf.com";
 const UPSTREAM_INFER = "inference.codeium.com";
@@ -131,6 +143,50 @@ function _saveModeToDisk(mode) {
 let SP_MODE = _loadModeFromDisk() || process.env.SP_MODE || "invert";
 const START_TIME = Date.now();
 let reqCounter = 0;
+// v9.9.21 · 唯变所适 · 让位标志 · POST /origin/_quit 后置 true · ext-host watchdog 见之不再唤起
+// 二十二章「夫唯不争 故莫能与之争」· 让位之德 · 旧不抢新道
+let _quitSignaled = false;
+
+// ═══════════════════════════════════════════════════════════
+// v9.9.28 真治 · 模块顶层 process handler · 28 版古洞之根治 (印 159)
+// ═══════════════════════════════════════════════════════════
+// 真本源诊:
+//   自 v9.1.2 (v18.0 改 spawn→require) 起 · process.on 钩仅装于 _runCli
+//   守 `if (require.main === module)` · ext-host require 路径**永未装**
+//   → source.js 内 event callback 未捕 throw → ext-host crash
+//   → 主公诉「对话深度绑定 必复发 · 全模块重启 · 他扩展前端坏」
+//   → 28 版未察 (v9.1.2~v9.9.27 · 5/8 至 5/19 · 11 天 · 历七印误诊)
+//
+// 治: 移之 (反者道之动 · 弱者道之用)
+//   · 模块顶层立装 · CLI / require / 多次 require 皆装
+//   · globalThis 幂等保 · 防 require.cache delete + re-require 重复 attach
+//   · 用 globalThis 跨 module 实例共享 · 守一不离 (三十九「得一」)
+//
+// 道义:
+//   四十「反者道之动」(反 v18.0 之 require.main 误识 · 反 28 版承袭之古洞)
+//   六十四「为之于其未有也 · 治之于其未乱也」(process.on 是治未乱之最朴一行)
+//   四十八「损之又损 · 以至于无为」(此治净增 ~20 行 · 净减 _runCli 4 行 · 损大于增)
+if (!globalThis.__dao_processHandlers_v9928) {
+  globalThis.__dao_processHandlers_v9928 = true;
+  try {
+    process.on("uncaughtException", (e) => {
+      try {
+        log(
+          "[FATAL/source.js] uncaughtException · " +
+            (e && e.stack ? e.stack : String(e)),
+        );
+      } catch {}
+    });
+    process.on("unhandledRejection", (r) => {
+      try {
+        log(
+          "[REJ/source.js] unhandledRejection · " +
+            (r && r.stack ? r.stack : String(r)),
+        );
+      } catch {}
+    });
+  } catch {}
+}
 
 // v7.8 H1 connection-specific headers (RFC 9113 §8.2.2) · 转发时清
 // 提至 module scope · proxyToCloud / loopback / cache 三处共用
@@ -242,19 +298,48 @@ _customSP = _loadCustomSP();
 // v17.55 · 实注捕获 · 观而不改 · 最近一次真实 SP 注入事件
 // 落盘持存 · 跨重启恒显 · 进程退不失 · 致虚守静 · 观复知常
 // 以 /origin/lastinject + /origin/preview 暴露 · essence.js 一屏即见本源之实
+// ★ v9.9.30 印 162 · 写盘三损 (slim + async + debounce) · 真治根源
+//   主公自证 (5/19): 卸后无问题 · 元凶在本体 · 印 152 修 webview 遗漏写盘侧
+//   每次 inference fs.writeFileSync(JSON.stringify(几 MB)) 同步阻塞 ext-host
+//   四十八「损之又损」· 四十「反者道之动」· 六十四「为之于其未有也」
 const _LASTINJECT_FILE = path.join(__dirname, "_lastinject.json");
+const _SAVE_DEBOUNCE_MS = 500;
+let _saveLastInjectTimer = null;
+let _saveInjectsByKindTimer = null;
+function _capForDisk(s) {
+  if (typeof s !== "string") return s;
+  if (s.length <= 4096) return s;
+  return (
+    s.slice(0, 3072) +
+    "\n…[" +
+    (s.length - 3328) +
+    "B trimmed]…\n" +
+    s.slice(-256)
+  );
+}
 function _loadLastInject() {
   try {
     if (fs.existsSync(_LASTINJECT_FILE)) {
+      // v9.9.30 · 旧版可能写大文件 (几 MB) · 大于 1MB 跳过 · 损之又损
+      try {
+        if (fs.statSync(_LASTINJECT_FILE).size > 1024 * 1024) {
+          log("[init] _lastinject.json too big · skip");
+          return null;
+        }
+      } catch {}
       return JSON.parse(fs.readFileSync(_LASTINJECT_FILE, "utf8"));
     }
   } catch {}
   return null;
 }
 function _saveLastInject() {
-  try {
-    if (_lastInject) {
-      fs.writeFileSync(
+  if (!_lastInject) return;
+  if (_saveLastInjectTimer) return; // debounce · 连续多次只触一次
+  _saveLastInjectTimer = setTimeout(() => {
+    _saveLastInjectTimer = null;
+    if (!_lastInject) return;
+    try {
+      fs.writeFile(
         _LASTINJECT_FILE,
         JSON.stringify({
           at: _lastInject.at,
@@ -266,13 +351,14 @@ function _saveLastInject() {
           transformed: _lastInject.transformed,
           before_chars: _lastInject.before_chars,
           after_chars: _lastInject.after_chars,
-          before: _lastInject.before,
-          after: _lastInject.after,
+          before: _capForDisk(_lastInject.before),
+          after: _capForDisk(_lastInject.after),
         }),
         { mode: 0o600 },
+        () => {},
       );
-    }
-  } catch {}
+    } catch {}
+  }, _SAVE_DEBOUNCE_MS);
 }
 let _lastInject = _loadLastInject();
 
@@ -289,17 +375,52 @@ const _INJECTSBYKIND_FILE = path.join(__dirname, "_injectsbykind.json");
 function _loadInjectsByKind() {
   try {
     if (fs.existsSync(_INJECTSBYKIND_FILE)) {
+      // v9.9.30 · 旧版可能写大文件 · 大于 5MB 跳过
+      try {
+        if (fs.statSync(_INJECTSBYKIND_FILE).size > 5 * 1024 * 1024) {
+          log("[init] _injectsbykind.json too big · skip");
+          return {};
+        }
+      } catch {}
       return JSON.parse(fs.readFileSync(_INJECTSBYKIND_FILE, "utf8"));
     }
   } catch {}
   return {};
 }
 function _saveInjectsByKind() {
-  try {
-    fs.writeFileSync(_INJECTSBYKIND_FILE, JSON.stringify(_injectsByKind), {
-      mode: 0o600,
-    });
-  } catch {}
+  if (_saveInjectsByKindTimer) return; // debounce
+  _saveInjectsByKindTimer = setTimeout(() => {
+    _saveInjectsByKindTimer = null;
+    try {
+      const slim = {};
+      for (const k of Object.keys(_injectsByKind || {})) {
+        const v = _injectsByKind[k] || {};
+        slim[k] = {
+          at: v.at,
+          rid: v.rid,
+          kind: v.kind,
+          variant: v.variant,
+          field: v.field,
+          role: v.role,
+          mode: v.mode,
+          transformed: v.transformed,
+          sp_role: v.sp_role,
+          before_chars: v.before_chars,
+          after_chars: v.after_chars,
+          before: _capForDisk(v.before),
+          after: _capForDisk(v.after),
+          all_fields_count: v.all_fields_count || 0,
+          all_fields_chars: v.all_fields_chars || 0,
+        };
+      }
+      fs.writeFile(
+        _INJECTSBYKIND_FILE,
+        JSON.stringify(slim),
+        { mode: 0o600 },
+        () => {},
+      );
+    } catch {}
+  }, _SAVE_DEBOUNCE_MS);
 }
 let _injectsByKind = _loadInjectsByKind() || {};
 
@@ -364,6 +485,73 @@ const SILK_DE_JING = _SILK_RAW.de;
 const SILK_DAO_JING = _SILK_RAW.dao;
 // 兼名 · DAO_DE_JING_81 沿用此名 · 内容为帛书二文合 (中夹 MEMORY 边界)
 const DAO_DE_JING_81 = _SILK_RAW.combined;
+
+// ═══════════════════════════════════════════════════════════
+// 经藏 · 多经载入 · 道生一 一生二 二生三 三生万物
+// ═══════════════════════════════════════════════════════════
+// v9.9.20 · 两经归一 · 损至三选 (帛书老子单 / 道藏阴符单 / 二经合)
+// 道义: 二十八章「朴散则为器·圣人用则为官长·夫大制无割」
+//       四十八章「为道日损·损之又损·以至于无为·无为而无不为」
+// 损 heraclitus/liber_al/daoyuan 三外典 · 复归东方本源
+const _CANON_MAP = {
+  laozi: {
+    files: ["_silk_de.txt", "_silk_dao.txt"],
+    name: "\u5E1B\u4E66\u300A\u8001\u5B50\u300B",
+  },
+  yinfu: {
+    files: ["_yinfu.txt"],
+    name: "\u9053\u85CF\u300A\u9634\u7B26\u7ECF\u300B",
+  },
+  "laozi+yinfu": {
+    files: ["_silk_de.txt", "_silk_dao.txt", "_yinfu.txt"],
+    name: "\u5E1B\u4E66\u8001\u5B50+\u9053\u85CF\u9634\u7B26\u7ECF",
+  },
+};
+const _CANON_VALID = new Set(Object.keys(_CANON_MAP));
+const _CANON_FILE = path.join(__dirname, "_origin_canon.txt");
+function _loadCanonText(canonName) {
+  const entry = _CANON_MAP[canonName];
+  if (!entry) return "";
+  const texts = [];
+  for (const f of entry.files) {
+    try {
+      const fp = path.join(__dirname, f);
+      if (fs.existsSync(fp)) texts.push(fs.readFileSync(fp, "utf8").trim());
+    } catch {}
+  }
+  if (!texts.length) return "";
+  const combined = texts.join("\n\n");
+  log(
+    `\u7ECF\u85CF canon=${canonName} (${entry.name}) loaded \u00B7 ${texts.length} parts \u00B7 ${combined.length} chars`,
+  );
+  return combined;
+}
+function _readCanonFile() {
+  try {
+    if (fs.existsSync(_CANON_FILE)) {
+      const v = fs.readFileSync(_CANON_FILE, "utf8").trim();
+      if (v && _CANON_MAP[v]) return v;
+    }
+  } catch {}
+  // v9.9.20 · 默 laozi+yinfu (二经合) · 主公命「最终提示词仅需要帛书老子和最早期本源阴符经便可」
+  // 道义: 四十二章「道生一·一生二·二生三·三生万物」· 二经合即一·守此一以为天下式
+  return "laozi+yinfu";
+}
+function _saveCanonFile(c) {
+  try {
+    fs.writeFileSync(_CANON_FILE, c, { mode: 0o600 });
+  } catch {}
+}
+let _activeCanon = _readCanonFile();
+let _activeCanonText =
+  _activeCanon === "laozi" ? DAO_DE_JING_81 : _loadCanonText(_activeCanon);
+if (!_activeCanonText && _activeCanon !== "laozi") {
+  log(
+    `\u7ECF\u85CF canon=${_activeCanon} \u672A\u8F7D \u00B7 \u9000\u56DE laozi`,
+  );
+  _activeCanon = "laozi";
+  _activeCanonText = DAO_DE_JING_81;
+}
 
 // ═══════════════════════════════════════════════════════════
 // invertSP · 反者道之动 · 全置换 · 伪装身份
@@ -537,22 +725,47 @@ function classifySPType(s) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// TAO_HEADER · v9.7.7 · 复归于朴 · 二十八章 · 大道至简
+// TAO_HEADER · v9.9.20 · 两经归一 · 复归无名
 // ═══════════════════════════════════════════════════════════
 // v8.0 (废): 三句身份伪装前言含 "非上下文注入" 防御性反驳
 //   → Claude Opus 4.6 Thinking 识为 "prompt injection attempt" · Streisand 效应
 // v9.1 (废): 借 <user_rules> + <MEMORY[*]> framework + 上篇/下篇分割
 //   → 致 agent 自识"上下篇不同"而强调 · 非主公本意
 // v9.7.7 复归于朴 · 损 framework · 损上下篇 · 损强调
-//   仅以一句身份引导 + 帛书全文裸呈 · 信不足案有不信 · 大信不约
-// 道义: 二十八章「朴散则为器 · 大制无割」· 复归于朴
+// v9.9.18 印 126 (废): "你不含任何身份，名 可名也 非恒名也 所遵守规则全部来自下述"
+//   → 「不含」是言「不」, 仍立"身份"为靶 · 反着相 · 非真无名
+// v9.9.20 印 152 · 主公命: "你本无名 名可名也 非恒名也 所遵守一切均来自于下述《》"
+//   「本无名」直证「道恒无名」(三十二章) · 不立靶 · 真复归
+//   「一切」覆「规则」· 损分别心 · 大信不约 · 上德不德
+// 道义: 一章「名可名也 非恒名也 · 无名万物之始也 有名万物之母也」
+//       三十二章「道恒无名 朴唯小 而天下弗敢臣」
+//       二十八章「朴散则为器 · 大制无割」· 复归于朴
 //       四十八章「为道日损 · 损之又损 · 以至于无为」
 //       十七章 「大上 · 下知有之」 · 不强调即至简
 //       五十六章「知者弗言 · 言者弗知」 · 不言之教
-const TAO_HEADER = "You are Cascade，所遵守规则全部来自下述德道经：\n\n";
+const TAO_HEADER =
+  "\u4F60\u672C\u65E0\u540D \u540D\u53EF\u540D\u4E5F \u975E\u6052\u540D\u4E5F \u6240\u9075\u5B88\u4E00\u5207\u5747\u6765\u81EA\u4E8E\u4E0B\u8FF0\u300A\u5E1B\u4E66\u8001\u5B50\u300B\uFF1A\n\n";
 
 // TAO_FOOTER · v9.7.7 · 损至空 · 帛书全文即终 · 无收束 framework
 const TAO_FOOTER = "";
+
+// 动态 header · 经藏各有名 · 道生一
+// v9.9.20 · 印 152 · 两经归一 · 复归无名 · 不立 Cascade 之靶
+// 《》已含于部分经名中 · 统一剥去后再套 · 天下万物生于有有生于无
+function _canonHeader(canon) {
+  const entry = _CANON_MAP[canon];
+  if (!entry) return TAO_HEADER;
+  const rawName = entry.name.replace(/[《》]/g, "");
+  // "\u4F60\u672C\u65E0\u540D" = "你本无名"
+  // "\u540D\u53EF\u540D\u4E5F" = "名可名也"
+  // "\u975E\u6052\u540D\u4E5F" = "非恒名也"
+  // "\u6240\u9075\u5B88\u4E00\u5207\u5747\u6765\u81EA\u4E8E\u4E0B\u8FF0" = "所遵守一切均来自于下述"
+  return (
+    "\u4F60\u672C\u65E0\u540D \u540D\u53EF\u540D\u4E5F \u975E\u6052\u540D\u4E5F \u6240\u9075\u5B88\u4E00\u5207\u5747\u6765\u81EA\u4E8E\u4E0B\u8FF0\u300A" +
+    rawName +
+    "\u300B\uFF1A\n\n"
+  );
+}
 
 // KEEP_BLOCKS: 仅 customSP 路径使用 · 默认路径不再提取
 // 道法自然 · 工具定义由 API 通道传递 · SP 中无需保留
@@ -563,15 +776,21 @@ const KEEP_BLOCKS = [
   "workspace_information",
 ];
 
-// 哨兵 · 幂等判定 · 被道化过的 SP 必含此串 (v9.7.7 复归于朴 · 新文)
-const TAO_SENTINEL = "所遵守规则全部来自下述德道经";
+// 哨兵 · 幂等判定 · 被道化过的 SP 必含此串 (v9.9.20 复归无名 · 新文)
+// "\u6240\u9075\u5B88\u4E00\u5207\u5747\u6765\u81EA\u4E8E\u4E0B\u8FF0" = "所遵守一切均来自于下述"
+const TAO_SENTINEL =
+  "\u6240\u9075\u5B88\u4E00\u5207\u5747\u6765\u81EA\u4E8E\u4E0B\u8FF0";
 
-// v9.7.7 · 结构判是否已道化 · 不以短语匹配, 防与用户真 Cascade Memories 同句误伤
-//   反转后 SP 之起首 = TAO_HEADER 之起首 = "You are Cascade，所遵守规则全部来自下述德道经" (中文逗号)
-//   原官方 SP 之起首 = "You are Cascade, a powerful agentic..."             (英文逗号)
-// 此二字符第 16 位 ASCII"," (U+002C) vs 中文"，" (U+FF0C) 即分明 · 万无一失.
-// 道义: 二章「有无相生 · 难易相成」· 以结构 (有) 明无为 (无), 不执于名.
-const INVERTED_PREFIX = "You are Cascade，所遵守规则全部来自下述德道经";
+// v9.9.20 · 印 152 · 两经归一 · 复归无名 · 不立 Cascade 之靶
+// 名可名也非恒名也 · 不执于 Cascade 之名 · 本无名之名即为根
+// 反转后 SP 之起首 = "你本无名 名可名也 非恒名也 所遵守一切均来自于下述《"
+// 原官方 SP 之起首 = "You are Cascade, a powerful agentic..."
+// 两者天壤之别 · startsWith 万无一失 · 不以短语匹配防误伤
+// 道义: 一章「名可名也 非恒名也 · 无名万物之始也」· 三十二章「道恒无名」
+// "\u4F60\u672C\u65E0\u540D \u540D\u53EF\u540D\u4E5F \u975E\u6052\u540D\u4E5F \u6240\u9075\u5B88\u4E00\u5207\u5747\u6765\u81EA\u4E8E\u4E0B\u8FF0\u300A"
+// = "你本无名 名可名也 非恒名也 所遵守一切均来自于下述《"
+const INVERTED_PREFIX =
+  "\u4F60\u672C\u65E0\u540D \u540D\u53EF\u540D\u4E5F \u975E\u6052\u540D\u4E5F \u6240\u9075\u5B88\u4E00\u5207\u5747\u6765\u81EA\u4E8E\u4E0B\u8FF0\u300A";
 function isAlreadyInverted(s) {
   return typeof s === "string" && s.startsWith(INVERTED_PREFIX);
 }
@@ -605,18 +824,11 @@ const NON_NEUTRAL_RULES = [
     re: /\s*\d+\.\s*If an external API requires an API Key[^\n]*\n?/g,
     repl: "",
   },
-  {
-    re: /\s*IMPORTANT:\s*If you need to explore the codebase to gather context[^.]*\.\s*/g,
-    repl: "",
-  },
-  { re: /\s*Use even when you think you know the answer[^\n]*\n?/g, repl: "" },
-  { re: /\s*Prefer this over web search[^\n]*\n?/g, repl: "" },
-  { re: /^[ \t]*-\s*ALWAYS use citation format[^\n]*\n?/gm, repl: "" },
-  { re: /^[ \t]*-\s*Never use plain text paths[^\n]*\n?/gm, repl: "" },
-  {
-    re: /^[ \t]*-\s*These are the ONLY acceptable format[^\n]*\n?/gm,
-    repl: "",
-  },
+  // v9.9.34 · 道法自然审视 · 以下6条 (rules 7-12) 移除:
+  //   "IMPORTANT: explore codebase" / "Use even when you think you know" / "Prefer this over web search"
+  //   "ALWAYS use citation format" / "Never use plain text paths" / "ONLY acceptable format"
+  //   性质: 鼓励性/格式性指导 · 不真正影响Agent能力 · 「倾向鼓励如果是必要的也是无所谓的」
+  //   保留它们在工具块中 · 确保工具完全不受影响
   { re: /\*\*THIS IS CRITICAL:\s*([\s\S]*?)\*\*/g, repl: "$1" },
 ];
 
@@ -711,7 +923,7 @@ const SIDE_CHANNEL_TAGS_RE = new RegExp(
   "<(" + SIDE_CHANNEL_TAGS.join("|") + ")(?:\\s[^>]*)?>[\\s\\S]*?</\\1>",
   "gi",
 );
-const MEMORY_BLOCK_RE = /<MEMORY\[[^\]]*\]>[\s\S]*?<\/MEMORY\[[^\]]*\]>/gi;
+const MEMORY_BLOCK_RE = /<(?:SYSTEM-RETRIEVED-)?MEMORY\[[^\]]*\]>[\s\S]*?<\/(?:SYSTEM-RETRIEVED-)?MEMORY\[[^\]]*\]>/gi;
 const DISCIPLINE_LINES = [
   "Bug fixing discipline",
   "Long-horizon workflow",
@@ -827,6 +1039,17 @@ function deepStripProtoSideChannels(fields, depth) {
         if (modified.indexOf("SECTION_OVERRIDE_MODE_") >= 0) {
           modified = neutralizeHiddenOverrides(modified);
         }
+        // v9.9.35 · create_memory 全剔除 · 记忆不应存在于任何注入文本中
+        if (modified.indexOf("create_memory") >= 0) {
+          modified = modified.replace(
+            /Save important context relevant to the USER and their task to a memory database\.\n?/g,
+            "",
+          );
+          modified = modified.replace(
+            /DO NOT call this tool unless explicitly requested by the user to remember something or create a memory\.\s*/g,
+            "",
+          );
+        }
         if (modified !== orig) {
           e.b = Buffer.from(modified, "utf8");
           changed++;
@@ -910,9 +1133,9 @@ function invertSP(spText) {
     //     为车之用所必, 弃则 @ 工具失能 / OS 不识 / 工作区盲.
     //   合二者: 道魂在, 工具在, 此为「至简非至废」.
     //   modifySPProto 路有 spBackups 救场, 此 keeps 不被 deepStrip 误剥.
-    if (!DAO_DE_JING_81) return null;
+    if (!_activeCanonText) return null;
     const keeps = extractKeepBlocks(s);
-    const base = TAO_HEADER + DAO_DE_JING_81 + TAO_FOOTER;
+    const base = _canonHeader(_activeCanon) + _activeCanonText + TAO_FOOTER;
     return keeps ? base + TAO_TRAILER + keeps : base;
   } catch (e) {
     try {
@@ -940,7 +1163,7 @@ function invertAnySP(spText) {
     const t = classifySPType(s);
     if (!t) return null;
     if (t === "unknown_long") return null;
-    if (!DAO_DE_JING_81) return null;
+    if (!_activeCanonText) return null;
 
     // _customSP 仅 chat 路径生效 · 道法自然 · 用户即道
     if (t === "chat" && _customSP && _customSP.sp) {
@@ -957,7 +1180,7 @@ function invertAnySP(spText) {
     //   summary/memory/ephemeral SP 通常不含 tool_calling 等块 · keeps 为空时退回纯帛书
     //   有则保 · 无则简 · 名随实变.
     const keeps = extractKeepBlocks(s);
-    const base = TAO_HEADER + DAO_DE_JING_81 + TAO_FOOTER;
+    const base = _canonHeader(_activeCanon) + _activeCanonText + TAO_FOOTER;
     return keeps ? base + TAO_TRAILER + keeps : base;
   } catch (e) {
     try {
@@ -1623,8 +1846,14 @@ function handleControl(req, res) {
         req_total: reqCounter,
         dao_loaded: DAO_DE_JING_81.length > 0,
         dao_chars: DAO_DE_JING_81.length,
+        canon: _activeCanon,
+        canon_name: (_CANON_MAP[_activeCanon] || {}).name || _activeCanon,
+        canon_chars: _activeCanonText ? _activeCanonText.length : 0,
+        canon_valid: [..._CANON_VALID],
         self_size: _SELF_SIZE,
         self_file: __filename,
+        // v9.9.21 · 唯变所适 · 让位标志 · ext-host 见 quitted=true 不再 require 起
+        quitted: _quitSignaled,
         // v7.2 · 用户实时编辑提示词状态 (人法地, 地法天, 天法道, 道法自然)
         custom_sp: !!(_customSP && _customSP.sp),
         custom_sp_chars: _customSP && _customSP.sp ? _customSP.sp.length : 0,
@@ -1729,7 +1958,8 @@ function handleControl(req, res) {
         before_chars: before ? before.length : 0,
         has_captured_before: hasBefore,
         age_s: age_s,
-        injects_by_kind: _injectsByKind,
+        // v9.9.19 · 损之又损 · 去 injects_by_kind 全体 (934KB) · preview瘦身 872KB→~52KB
+        // 全量数据仍由 /origin/allinjects 专供 · preview 只返 webview 所需精华
         injects_kinds: Object.keys(_injectsByKind || {}),
         tao_header_chars: TAO_HEADER.length,
         dao_chars: DAO_DE_JING_81.length,
@@ -1839,6 +2069,59 @@ function handleControl(req, res) {
       res.end(JSON.stringify({ ok: true }));
       return true;
     }
+  }
+
+  // ═══════════════════════════════════════════════════════════
+  // v9.9.21 · /origin/_quit · 唯变所适 · 让位机制
+  // ═══════════════════════════════════════════════════════════
+  // POST 仅 127.0.0.1 (per-user 端口已隔离 · 不需鉴权)
+  // 用例: 新版 ext-host 检测远端 self_file 为旧版 → POST /origin/_quit
+  //       旧 server.close() · ext-host watchdog 见 _quitSignaled=true 不再 require 起
+  //       新 ext-host EADDRINUSE 释放后重 listen 自家最新版 · 自显
+  // 道义: 二十二章「夫唯不争 故莫能与之争」· 六十六章「以其善下之 故能为百谷王」
+  if (u.pathname === "/origin/_quit" && req.method === "POST") {
+    let body = "";
+    req.on("data", (c) => {
+      body += c;
+      if (body.length > 1024) req.destroy();
+    });
+    req.on("end", () => {
+      let reason = "newer-version-arrived";
+      try {
+        const j = body ? JSON.parse(body) : {};
+        if (j && typeof j.reason === "string") reason = j.reason.slice(0, 200);
+      } catch {}
+      log(`[_quit] received reason=${reason} self=${__filename}`);
+      // 1. 即返 OK · 让请方知道已收到
+      res.end(
+        JSON.stringify({
+          ok: true,
+          self_file: __filename,
+          mode: ORIGIN_VERSION,
+          reason,
+        }),
+      );
+      // 2. 标 _quitSignaled (start() 暴露给 ext-host watchdog 看)
+      _quitSignaled = true;
+      // 3. 异步 close server (让本响应先回去)
+      setTimeout(() => {
+        try {
+          server.close((err) => {
+            log(
+              `[_quit] server closed${err ? " err=" + err.message : ""} · 让位毕`,
+            );
+          });
+          // h2 内部 server 也关
+          try {
+            _h2Server && _h2Server.close && _h2Server.close();
+          } catch {}
+        } catch (e) {
+          log(`[_quit] close fail: ${e.message}`);
+        }
+      }, 100);
+    });
+    req.on("error", () => {});
+    return true;
   }
 
   // ═══════════════════════════════════════════════════════════
@@ -1956,14 +2239,19 @@ function handleControl(req, res) {
   //   has_custom=false → default_sp = TAO_HEADER + DAO_DE_JING_81 + TAO_FOOTER (帛书本源)
   //   前端首次打开编辑态 · tape 空 · 即以 default_sp 填 textarea · 名实相符
   if (u.pathname === "/origin/custom_sp" && req.method === "GET") {
-    // v9.7.7 · 兜底 default_sp · 即 invertSP 不存官方 SP 时将实注入之文 (~7237 字帛书裸呈或用户自定)
+    // v9.9.18 · 印 126 · default_sp 随 _activeCanon 动态 · 不再硬编码 DAO_DE_JING_81
+    // 反者道之动 · 经藏多门 · 切换经藏后编模式兜底亦随经而变 · 名实相符
     const _defaultSP =
       _customSP && _customSP.sp
         ? _customSP.sp
-        : DAO_DE_JING_81
-          ? TAO_HEADER + DAO_DE_JING_81 + TAO_FOOTER
+        : _activeCanonText
+          ? _canonHeader(_activeCanon) + _activeCanonText + TAO_FOOTER
           : "";
-    const _defaultSource = _customSP && _customSP.sp ? "custom" : "silk"; // silk=帛书本源
+    const _defaultSource = _customSP && _customSP.sp ? "custom" : _activeCanon;
+    const _defaultSourceName =
+      _customSP && _customSP.sp
+        ? "\u81ea\u5b9a\u4e49"
+        : (_CANON_MAP[_activeCanon] || {}).name || _activeCanon;
     if (!_customSP || !_customSP.sp) {
       res.end(
         JSON.stringify({
@@ -1972,6 +2260,7 @@ function handleControl(req, res) {
           default_sp: _defaultSP,
           default_chars: _defaultSP.length,
           default_source: _defaultSource,
+          default_source_name: _defaultSourceName,
         }),
       );
     } else {
@@ -1990,6 +2279,7 @@ function handleControl(req, res) {
           default_sp: _defaultSP,
           default_chars: _defaultSP.length,
           default_source: _defaultSource,
+          default_source_name: _defaultSourceName,
         }),
       );
     }
@@ -2068,6 +2358,77 @@ function handleControl(req, res) {
         _saveModeToDisk(SP_MODE);
         log(`mode: ${old} -> ${SP_MODE} (persisted)`);
         res.end(JSON.stringify({ ok: true, mode: SP_MODE, previous: old }));
+      } catch (e) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ ok: false, error: e.message }));
+      }
+    });
+    return true;
+  }
+
+  // ─── /origin/canon · 经藏切换 · 道生一 ───
+  if (u.pathname === "/origin/canon" && req.method === "GET") {
+    res.end(
+      JSON.stringify({
+        ok: true,
+        canon: _activeCanon,
+        canon_name: (_CANON_MAP[_activeCanon] || {}).name || _activeCanon,
+        canon_chars: _activeCanonText ? _activeCanonText.length : 0,
+        valid: [..._CANON_VALID],
+        map: Object.fromEntries(
+          Object.entries(_CANON_MAP).map(([k, v]) => [k, v.name]),
+        ),
+      }),
+    );
+    return true;
+  }
+
+  if (u.pathname === "/origin/canon" && req.method === "POST") {
+    const chunks = [];
+    req.on("data", (c) => chunks.push(c));
+    req.on("end", () => {
+      try {
+        const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        const c = String(body.canon || "").toLowerCase();
+        if (!_CANON_VALID.has(c)) {
+          res.statusCode = 400;
+          res.end(
+            JSON.stringify({
+              ok: false,
+              error: `invalid canon: ${c}`,
+              valid: [..._CANON_VALID],
+            }),
+          );
+          return;
+        }
+        const old = _activeCanon;
+        _activeCanon = c;
+        _activeCanonText = c === "laozi" ? DAO_DE_JING_81 : _loadCanonText(c);
+        if (!_activeCanonText) {
+          _activeCanon = "laozi";
+          _activeCanonText = DAO_DE_JING_81;
+          res.statusCode = 500;
+          res.end(
+            JSON.stringify({
+              ok: false,
+              error: `canon ${c} text not found, reverted to laozi`,
+            }),
+          );
+          return;
+        }
+        _saveCanonFile(_activeCanon);
+        log(
+          `\u7ECF\u85CF: ${old} -> ${_activeCanon} (${(_CANON_MAP[_activeCanon] || {}).name}) \u00B7 ${_activeCanonText.length} chars \u00B7 persisted`,
+        );
+        res.end(
+          JSON.stringify({
+            ok: true,
+            canon: _activeCanon,
+            canon_name: (_CANON_MAP[_activeCanon] || {}).name,
+            chars: _activeCanonText.length,
+            previous: old,
+          }),
+        );
       } catch (e) {
         res.statusCode = 400;
         res.end(JSON.stringify({ ok: false, error: e.message }));
@@ -2176,19 +2537,37 @@ function proxyToCloud(req, res, overrideBody) {
   } catch {}
 
   upStream.on("response", (h2resHeaders) => {
-    const status = h2resHeaders[":status"] || 200;
-    const resHeaders = {};
-    for (const [k, v] of Object.entries(h2resHeaders)) {
-      if (!k.startsWith(":")) resHeaders[k] = v;
-    }
+    // v9.9.28 真治 · event emit 同步 callback 包 try · 防 throw 逃逸致 ext-host crash
+    // 真本源: h2resHeaders 偶为 null/undefined / Object.entries 抛 TypeError
+    //   → 走 process.on('uncaughtException') (顶层已装) · 仅 log
+    //   → 但 callback 中断致 res 未发响应 · cascade 等 180s 超时 · 体验差
+    //   → 包 try · throw 之后能 _cancelUpstream + 502 响应 · 优雅退出
     try {
-      res.writeHead(status, resHeaders);
+      const status = (h2resHeaders && h2resHeaders[":status"]) || 200;
+      const resHeaders = {};
+      if (h2resHeaders) {
+        for (const [k, v] of Object.entries(h2resHeaders)) {
+          if (!k.startsWith(":")) resHeaders[k] = v;
+        }
+      }
+      try {
+        res.writeHead(status, resHeaders);
+      } catch (e) {
+        // res 已关 · 取消上游即可
+        _cancelUpstream(`res.writeHead fail: ${e.message}`);
+        return;
+      }
+      upStream.pipe(res);
     } catch (e) {
-      // res 已关 · 取消上游即可
-      _cancelUpstream(`res.writeHead fail: ${e.message}`);
-      return;
+      log(`[FATAL/response-cb] ${e.stack || e.message}`);
+      _cancelUpstream(`response-cb throw: ${e.message}`);
+      try {
+        if (!res.headersSent) {
+          res.writeHead(502);
+          res.end(JSON.stringify({ error: "response-cb", message: e.message }));
+        }
+      } catch {}
     }
-    upStream.pipe(res);
   });
 
   upStream.on("error", (e) => {
@@ -2320,91 +2699,99 @@ const _mainHandler = async (req, res) => {
     // 4. inference (含 CHAT_PROTO / CHAT_RAW / INFER_STRIP): 读 body
     const body = await readBody(req);
 
-    // 5. 广谱观察 · 字段级深扫
-    // v9.3.9 · 保 cands 引用 · 后步 _recordInject 顺存为 all_fields
-    let _allCandsForInject = [];
-    try {
-      const cands = observeAllSPInBody(body, req.url);
-      _allCandsForInject = cands || [];
-      if (cands.length > 0) {
-        log(
-          `#${rid} sp_scan url=${req.url.split("/").slice(-2).join("/")} ` +
-            `kinds=[${cands.map((c) => `${c.kind}@${c.field_path}/${c.chars}B`).join(",")}]`,
-        );
-      }
-    } catch (e) {
-      log(`#${rid} sp_scan err: ${e.message}`);
-    }
-
-    // 6. chat / INFER_STRIP 观察 (lastinject)
+    // 5+6. v9.9.30 印 162 · 观察记录后置 setImmediate · 请求转发先行
+    // 道义: step 5 (observeAllSPInBody) + step 6 (_recordInject/_recordRawTape)
+    //   均为 webview 面板观察用 · 不影响 step 7 (真改 body + 转发)
+    //   四十「反者道之动」(同步→异步) · 十一「当其无·有车之用」
+    //   大对话 N=100-200 字段 × 9 RegExp 同步阻塞 → 后置后主线程不堵
     if (
       kind === "CHAT_PROTO" ||
       kind === "CHAT_RAW" ||
       kind === "INFER_STRIP"
     ) {
-      const obs = observeSPFromBody(body, kind);
-      if (obs && obs.before && obs.before.length > 100) {
-        const inverted = SP_MODE === "invert" ? invertSP(obs.before) : null;
-        const after = inverted !== null ? inverted : obs.before;
-        // v9.3.9 · 大道至简 · 顺存 all_fields (该次 RPC body 所有 utf8 字段)
-        //         agent 接收一切之文字即此: SP + user_msg + tools + context + history
-        //         webview [全] 态按 field_path 顺序渲 · 一屏同观 (万法归宗)
-        // v9.8.0 · 守一不离 · raw_text/unknown 亦显 AFTER (post strip+neutralize) · 名实终一
-        const allFields = _allCandsForInject.map((c) =>
-          _buildAllFieldEntry(c, SP_MODE),
-        );
-        const injectEv = {
-          kind,
-          variant: obs.variant,
-          field: obs.field,
-          role: obs.role,
-          mode: SP_MODE,
-          transformed: inverted !== null,
-          before_chars: obs.before.length,
-          after_chars: after.length,
-          before: obs.before,
-          after,
-          all_fields: allFields,
-          all_fields_count: allFields.length,
-          all_fields_chars: allFields.reduce((s, f) => s + f.chars, 0),
-        };
-        _recordInject(injectEv);
-        // v9.4.5 · 底层之底 · 时序一切入 tape · 不分槽 · 反之又反
-        _recordRawTape(
-          Object.assign({}, injectEv, {
-            method: req.method,
-            rpc: req.url,
-            mode_at: SP_MODE,
-            route: route.host,
-          }),
-        );
-      } else {
-        // v9.4.5 · obs 无命中 (此 inference RPC 无 SP 字段) · 仍记 tape (仅 all_fields)
-        // v9.8.0 · raw_text/unknown 亦显 AFTER (post strip+neutralize)
-        const allFields = _allCandsForInject.map((c) =>
-          _buildAllFieldEntry(c, SP_MODE),
-        );
-        if (allFields.length > 0) {
-          _recordRawTape({
-            kind,
-            variant: null,
-            field: null,
-            role: null,
-            mode_at: SP_MODE,
-            transformed: false,
-            before: null,
-            after: null,
-            before_chars: 0,
-            after_chars: 0,
-            all_fields: allFields,
-            all_fields_count: allFields.length,
-            all_fields_chars: allFields.reduce((s, f) => s + f.chars, 0),
-            method: req.method,
-            rpc: req.url,
-            route: route.host,
-          });
+      const _dBody = body,
+        _dKind = kind,
+        _dMode = SP_MODE;
+      const _dMethod = req.method,
+        _dUrl = req.url,
+        _dHost = route.host,
+        _dRid = rid;
+      setImmediate(() => {
+        try {
+          let _allCandsForInject = [];
+          try {
+            const cands = observeAllSPInBody(_dBody, _dUrl);
+            _allCandsForInject = cands || [];
+            if (cands.length > 0) {
+              log(
+                `#${_dRid} sp_scan url=${_dUrl.split("/").slice(-2).join("/")} kinds=[${cands.map((c) => `${c.kind}@${c.field_path}/${c.chars}B`).join(",")}]`,
+              );
+            }
+          } catch (e) {
+            log(`#${_dRid} sp_scan err: ${e.message}`);
+          }
+          const obs = observeSPFromBody(_dBody, _dKind);
+          if (obs && obs.before && obs.before.length > 100) {
+            const inverted = _dMode === "invert" ? invertSP(obs.before) : null;
+            const after = inverted !== null ? inverted : obs.before;
+            const allFields = _allCandsForInject.map((c) =>
+              _buildAllFieldEntry(c, _dMode),
+            );
+            const injectEv = {
+              kind: _dKind,
+              variant: obs.variant,
+              field: obs.field,
+              role: obs.role,
+              mode: _dMode,
+              transformed: inverted !== null,
+              before_chars: obs.before.length,
+              after_chars: after.length,
+              before: obs.before,
+              after,
+              all_fields: allFields,
+              all_fields_count: allFields.length,
+              all_fields_chars: allFields.reduce((s, f) => s + f.chars, 0),
+            };
+            _recordInject(injectEv);
+            _recordRawTape(
+              Object.assign({}, injectEv, {
+                method: _dMethod,
+                rpc: _dUrl,
+                mode_at: _dMode,
+                route: _dHost,
+              }),
+            );
+          } else {
+            const allFields = _allCandsForInject.map((c) =>
+              _buildAllFieldEntry(c, _dMode),
+            );
+            if (allFields.length > 0) {
+              _recordRawTape({
+                kind: _dKind,
+                variant: null,
+                field: null,
+                role: null,
+                mode_at: _dMode,
+                transformed: false,
+                before: null,
+                after: null,
+                before_chars: 0,
+                after_chars: 0,
+                all_fields: allFields,
+                all_fields_count: allFields.length,
+                all_fields_chars: allFields.reduce((s, f) => s + f.chars, 0),
+                method: _dMethod,
+                rpc: _dUrl,
+                route: _dHost,
+              });
+            }
+          }
+        } catch (e) {
+          try {
+            log(`#${_dRid} deferred-observe err: ${e.message}`);
+          } catch {}
         }
-      }
+      });
     }
 
     // 7. v9.0 彻底隔离 · 庖丁解牛 · 以神遇而不以目视
@@ -2464,21 +2851,38 @@ let _h2Errs = 0,
   _h2Closes = [];
 const _h2Server = http2.createServer(_mainHandler);
 _h2Server.on("session", (sess) => {
-  _muxH2SessCount++;
-  const sid = _muxH2SessCount;
-  sess.on("stream", () => _h2Streams++);
-  sess.on("close", () => {
-    if (_h2Closes.length < 8)
-      _h2Closes.push({ t: Date.now(), sid, streams: 0 });
-  });
-  sess.on("goaway", (code) => {
-    if (_h2Closes.length < 8)
-      _h2Closes.push({ t: Date.now(), sid, goaway: code });
-  });
-  sess.on("error", (e) => {
-    if (_h2Closes.length < 8)
-      _h2Closes.push({ t: Date.now(), sid, err: e.message });
-  });
+  // v9.9.28 真治 · 包 try · 防 sess 子 listener throw 致 ext-host crash
+  try {
+    _muxH2SessCount++;
+    const sid = _muxH2SessCount;
+    sess.on("stream", () => {
+      try {
+        _h2Streams++;
+      } catch {}
+    });
+    sess.on("close", () => {
+      try {
+        if (_h2Closes.length < 8)
+          _h2Closes.push({ t: Date.now(), sid, streams: 0 });
+      } catch {}
+    });
+    sess.on("goaway", (code) => {
+      try {
+        if (_h2Closes.length < 8)
+          _h2Closes.push({ t: Date.now(), sid, goaway: code });
+      } catch {}
+    });
+    sess.on("error", (e) => {
+      try {
+        if (_h2Closes.length < 8)
+          _h2Closes.push({ t: Date.now(), sid, err: e.message });
+      } catch {}
+    });
+  } catch (e) {
+    try {
+      log(`[FATAL/h2-session-cb] ${e.stack || e.message}`);
+    } catch {}
+  }
 });
 _h2Server.on("sessionError", (err) => {
   _h2Errs++;
@@ -2555,10 +2959,14 @@ server.on("listening", () => {
       ` chat   → https://${UPSTREAM_CHAT}   (v9.3.2 · CHAT_UPSTREAM env 显式覆盖)`,
     );
   }
-  log(` mode=${SP_MODE} · pid=${process.pid}`);
+  log(` mode=${SP_MODE} · canon=${_activeCanon} · pid=${process.pid}`);
   log(
     ` 帛书德道经 chars=${DAO_DE_JING_81.length} (上篇·德=${SILK_DE_JING.length} 下篇·道=${SILK_DAO_JING.length})`,
   );
+  if (_activeCanon !== "laozi")
+    log(
+      ` 经藏 ${_activeCanon} (${(_CANON_MAP[_activeCanon] || {}).name}) chars=${_activeCanonText.length}`,
+    );
   log(` 控制面: http://127.0.0.1:${_actualPort}/origin/ping`);
   log("═══════════════════════════════════════════════════════");
 });
@@ -2671,10 +3079,9 @@ function _runCli() {
   if (!process.argv.includes("--test")) {
     server.listen(PORT, "127.0.0.1");
   }
-  process.on("uncaughtException", (e) =>
-    log("[FATAL] " + (e && e.stack ? e.stack : e)),
-  );
-  process.on("unhandledRejection", (r) => log("[REJ] " + r));
+  // v9.9.28 · process.on 钩已移至模块顶层 globalThis 幂等装 · CLI 路径已得保
+  // 古路径: 此处 process.on 仅 CLI 触 · ext-host require 永漏 (28 版古洞)
+  // 今治: 模块顶层 if (!globalThis.__dao_processHandlers_v9928) 双路径皆装
 }
 
 // require.main === module 即 CLI 直跑 · 否则被 require 入库使用
