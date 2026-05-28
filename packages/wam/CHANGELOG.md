@@ -2,7 +2,627 @@
 
 > 反者道之动 · 弱者道之用 · 天下之物生于有 · 有生于无. —— 帛书《老子》德经
 
-## v3.11.3 (2026-05-27) · 根治UI抖动 · 软编码归一 · 道法自然 · 当前
+## v3.12.2 (2026-05-29) · 引擎 v16.0 · 卡死/中断识别四治 · 当前
+
+> *知不知尚矣 · 不知不知病矣 —— 读到可疑数据宁可不更新，不假装知道*
+
+### 实测病灶
+
+实测 dao_stuck.js v9 引擎日志暴露四处根因，导致用户感知:
+1. **对话数量不准确** — 显示 active 计数在 `0↔7` 间剧烈振荡 (每30s)
+2. **中断对话识别缓慢** — 已 end_turn 的对话被误判为 active 继续追踪 200+ 秒
+3. **卡死对话识别缓慢** — 死循环 `DEAD→RECOVER→DEAD→RECOVER` 反复发通知
+
+### 根因 → 治法 (四处一体)
+
+#### Fix 1 · Python 读取器 WAL 双保护 (核心)
+
+```
+旧: VSCDB_PY active=0 → active=7 → active=0 → active=6 → active=0 (周期 30s)
+新: VSCDB_PY_WAL_STATUS_SKIP active=0(peak=3) sessions=163 → status stale, keeping old cache
+```
+
+**根因**: `_refreshVscdbRaw` (Python sqlite3 路径，无 better-sqlite3 时使用) 完全没有 WAL 保护。Python 交替读到 WAL 主文件 (active=0) 和 WAL 段 (active=7)，每30s覆盖 sessionCache。连锁: stuckTicks 反复归零 → 卡住检测永远无法积累 → 完全失效。
+
+**治法**: 镜像 `refreshVscdb` 的双重高水位保护:
+- `_pyWalHigh` — count 坏读保护 (新读 < 60% 峰值 → 保留旧 cache)
+- `_pyWalActiveHigh` — active 骤降保护 (新 active < 50% 峰值 → 保留旧 cache)
+
+#### Fix 2 · WAL fallback 尊重 prevVscdbStatus=end_turn
+
+**根因**: 对话从 sessionCache 消失时，若 `lastVscdbActiveTs` 在 3min 内，无条件走 WAL active fallback。即使 `prevVscdbStatus = "end_turn"` (对话已正常完成) 也被误归为 active 继续追踪 → `WARN_STUCK vscdb=n/a` / `CRITICAL_STUCK vscdb=n/a` 误报。
+
+**实测**: `fc4d79bd "Deep Proxy Verification"` `prevVscdbStatus=end_turn` 但触发 CRITICAL_STUCK 200s。
+
+**治法**: WAL fallback 入口先判 `prevVscdbStatus === "end_turn"` → 直接归 completed，不进入 active 追踪。
+
+#### Fix 3 · RECOVER 后 recentlyKilled 静默期
+
+**根因**: `RECOVER` 清零 `deadSince` 但 `meta.updatedAt` 仍新鲜，下次 `unknown_error` 时 `recentlyKilled` 路径立即重触 → DEAD 通知 → RECOVER → DEAD → 循环 (实测 `3955435a "Analyze Figures and Outputs"` 5min内3次 DEAD)。
+
+**治法**:
+- RECOVER 时记录 `_lastRecoverTs = t` + 清零 `errorTicks`
+- `recentlyKilled` 检查时若 `t - _lastRecoverTs < 180000` (3min) → 豁免 B-recent 路径
+
+#### Fix 4 · state="old" 可逆 (OLD_ESCAPE)
+
+**根因**: 对话超过 `ignoreAge` (1小时) 后 `entry.state = "old"` + `continue` 无条件跳过。若对话重新活跃 (size 增长)，永远无法逃出 old 状态。
+
+**治法**: ignoreAge 块内检查 `_grewWhileOld = st.size > _oldSize`:
+- 增长 → 重置到 `init` 状态 + 落入正常处理 + 记 `OLD_ESCAPE` 日志
+- 未增长 → 维持 `continue` (静默放行)
+
+### 验证结果
+
+| 指标 | 修复前 | 修复后 |
+|---|---|---|
+| VSCDB active 计数稳定性 | 0↔7 振荡 | 平滑 0→3→5→6→8 |
+| sessionCache 一致性 | 30s 翻转一次 | WAL_STATUS_SKIP 拦截全部坏读 |
+| 误 DEAD 循环 (3955435a类型) | 5min 3次 | 完全消失 |
+| 误 CRITICAL_STUCK (fc4d79bd类型) | end_turn 后 200s 误报 | end_turn 立即归 completed |
+| state="old" 复活 | 永久卡死 | OLD_ESCAPE 自动恢复 |
+
+### 启动日志
+
+```
+START v16.0 ... [WAL双保护+end_turn修复+RECOVER防循环+old可逆]
+```
+
+---
+
+## v3.12.1 (2026-05-28) · 通知三路消除 · 对话恢复即撤
+
+> *反也者道之动也 · 对话恢复·通知即止·无需等 10min —— 道法自然*
+
+### 根因
+
+对话卡住后弹出的 toast 通知，即使对话恢复正常，仍会持续显示直到 10min 超时或用户手动取消，造成**误导感知**：用户已自行修复，但通知栏还在红色报警。
+
+### 三路消除完善
+
+| 触发路径 | 实现 | 版本 |
+|---|---|---|
+| **① 用户手动关闭** | 面板 × 按钮 → `dismissConv()` → `_dismissedConvUuids` 10min 静默 | v3.7.5 |
+| **② 10min 无操作自动消退** | `_stuckFirstNotifyTs` + `STUCK_NOTIFY_AUTO_DISMISS_MS` | v13.0 |
+| **③ 对话恢复后自动消退** | `_resolveConvNotify(uuid)` 主动 resolve withProgress → toast 即刻消失 | **v3.12.1 新增** |
+
+### 技术改动
+
+- **`_activeNotifyResolvers: Map<uuid, fn>`** — 全局存储每条 toast 的 resolve 句柄
+- **`_notifyTimed(level, msg, ttlMs, _convUuid)`** — 新增第4参数，注册外部取消句柄，支持三路退出（超时 / 用户取消 / 对话恢复）
+- **`_resolveConvNotify(uuid)`** — 新增函数，对话恢复路径调用，立即关闭对应 toast
+- **恢复检测循环** — 移除已无意义的 `_hubLastRecoverNotify` 冷却约束（v11.3 移除恢复通知后冷却仅阻碍清理）；新增：①消除 toast ②清除 dismiss 状态（恢复=新生命周期，下次卡住可重新提醒）③批量落盘
+
+### 通知一次性闸门保障
+
+同一对话同一异常生命周期仍只提示一次（`_claimConvNotify` + `_hubLastStuckUuids`），恢复后自动释放闸门，下一轮新异常才可再提示。
+
+---
+
+## v3.12.0 (2026-05-28) · 编码三重保险 · 跨平台根治
+
+> *反者道之动也 · 弱者道之用也 · 天下之物生于有 · 有生于无 —— 帛书《老子》*
+
+### 用户实地反馈根因
+
+其他电脑部署后，**对话标题全是菱形乱码** `◆◆◆◆X◆bÌ◆◆◆735`:
+
+```
+根因链:
+  _vscdb_helper.py 用 ensure_ascii=False → 中文原文输出
+  → Windows 中文系统 Python stdout 默认 CP936 编码
+  → Node.js spawnSync encoding:'utf8' 以 UTF-8 解读 CP936 字节
+  → 编码错位 → 菱形替代字符 (U+FFFD/U+25C6)
+
+同时 extension.js 的 _findPythonExt() 仅检查 python/python3
+→ 装 py.exe/Anaconda/pyenv 的系统找不到 Python → 标题全显 UUID
+```
+
+### 三重保险修复
+
+| 层 | 位置 | 修复 |
+|---|---|---|
+| **层1** | `_vscdb_helper.py` | `sys.stdout.reconfigure(encoding='utf-8')` (Python 3.7+) + fallback `io.TextIOWrapper` |
+| **层2** | `_vscdb_helper.py` | `ensure_ascii=True` → 所有非ASCII输出 `\uXXXX` 转义 (纯ASCII · 编码无关) |
+| **层3** | `extension.js` + `dao_stuck.js` | `env: { PYTHONIOENCODING: 'utf-8' }` 注入子进程环境 |
+
+### 乱码标题自动清洗
+
+- 新增 `_isGarbledTitle()` / `_isGarbledStr()` · 检测 U+FFFD/U+25C6 连续菱形 + 不可打印字符占比
+- `extension.js`: 加载 `_conv_titles.json` 时自动跳过乱码条目 + 日志报告
+- `dao_stuck.js`: 加载备份标题时同步清洗
+- Python 读 vscdb 返回的新标题也过乱码检测
+
+### extension.js _findPythonExt() 升级到七层兜底
+
+旧版仅 `["python", "python3"]` 两层 → 与 `dao_stuck.js` 同步七层:
+1. `wam.pythonPath` 软编码配置
+2. `WAM_PYTHON_PATH` 环境变量
+3. PATH `python3` / `python`
+4. PATH `py` (Windows Python Launcher)
+5. 用户级/全机级 Python.org 安装路径 (3.7~3.15)
+6. Microsoft Store Python
+7. Anaconda3 / Miniconda3 / pyenv / Homebrew / MacPorts
+
+### 文件变更
+
+| 文件 | 变化 |
+|---|---|
+| `_vscdb_helper.py` | +12行 · 编码三重保险 + `ensure_ascii=True` |
+| `extension.js` | `_findPythonExt()` 2层→7层 · `_isGarbledTitle()` 新增 · PYTHONIOENCODING 注入 |
+| `dao_stuck.js` | `_isGarbledStr()` 新增 · `_loadBackupTitles` 乱码清洗 · PYTHONIOENCODING 注入 |
+| `package.json` | 版本 3.12.0 |
+
+---
+
+## v3.11.9 (2026-05-28) · 软编码万家适配 · v15.2 · Python 七层兜底
+
+> *上善若水 · 水善利万物而有静 · 居众之所恶 · 故几于道矣 —— 帛书《老子》八章*
+
+### 用户实地反馈根因
+
+新用户 / 不同环境用户安装后，**对话面板全是 `#UUID` 编号**：
+
+```text
+症状: 用户截图中 streamingList 显示的全是 "对话 #c65b3411" 风格
+根因链:
+  ① _vscdb_helper.py 部署完整 (v3.11.8 已修)
+  ② 但 _findPython() 仅查 PATH 中 'python' / 'python3'
+  ③ 用户机器装的是 Python.org launcher (py.exe) → 探测失败
+  ④ 没探测 %LOCALAPPDATA%\Programs\Python\Python3X\python.exe (用户级安装)
+  ⑤ 没探测 Anaconda / Microsoft Store / pyenv / Homebrew
+  ⑥ → sessionCache 永空 → entry.title 全 null → UUID 兜底
+```
+
+实证: 不同用户机器上 Python 可能在以下任一位置（旧 v3.11.8 全失败）:
+
+- `py` (Windows Python Launcher · python.org 默认勾选项)
+- `%LOCALAPPDATA%\Programs\Python\Python311\python.exe` (用户级安装最常见)
+- `%USERPROFILE%\anaconda3\python.exe`
+- `/opt/homebrew/bin/python3` (macOS Apple Silicon)
+- `~/.pyenv/shims/python3` (pyenv)
+
+### 七层兜底治法 (`dao_stuck.js::_findPython`)
+
+```text
+1. CFG.pythonPath          (--python-path · 来自 wam.pythonPath 软编码)
+2. process.env.WAM_PYTHON_PATH (环境变量 · 即时 override)
+3. PATH: python / python3  (跨平台标准)
+4. PATH: py                (Windows Python Launcher · python.org 装的桥)
+5. %LOCALAPPDATA%\Programs\Python\Python3X\python.exe   (用户级 · 3.7~3.15)
+6. %ProgramFiles%\Python3X\python.exe + %ProgramFiles(x86)% + Microsoft Store
+7. Anaconda3 / Miniconda3 / pyenv / Homebrew / MacPorts
+```
+
+每一层独立探测 + 缓存结果 · 找到即用 · 探测失败仅静默退化 (UUID 兜底)。
+
+### 新增软编码
+
+```jsonc
+{
+  "wam.pythonPath": ""    // ★ v15.2 显式 Python 路径 · 空=自动探测七层兜底
+}
+```
+
+### 新增工具: `_dao_doctor.ps1` · 环境兼容性诊断
+
+帮新用户/异常环境用户排查 9 大检查项：
+
+```powershell
+.\_dao_doctor.ps1                  # 完整诊断 · 21 个 pass 项 + 警告/失败
+.\_dao_doctor.ps1 -Quiet           # 仅显示问题项
+.\_dao_doctor.ps1 -ExportReport    # 导出 JSON 到 ~/.wam/_doctor_report.json
+```
+
+诊断项：
+
+1. Windsurf 安装 + WAM 部署（含 `_vscdb_helper.py` 检查）
+2. `~/.wam/` 数据目录关键文件
+3. Node.js 可用性
+4. Python 七层探测验证
+5. `state.vscdb` 可读性 + Python 直读测试
+6. PowerShell 版本（通知能力）
+7. `dao_stuck` 引擎心跳
+8. 当前活跃账号健康
+9. Hub 数据流（streamingList 真名比例）
+
+### 改动文件 (v3.11.8 → v3.11.9)
+
+| 文件 | 变化 |
+|---|---|
+| `dao_stuck.js` | `_findPython()` 七层兜底 + `--python-path` arg |
+| `extension.js` | VERSION 升 · 透传 `wam.pythonPath` 到子进程 |
+| `package.json` | +1 软编码 `wam.pythonPath` (45 配置项总计) |
+| `_dao_doctor.ps1` | **新增** · 9 检查项 · UTF-8 BOM 安全 |
+| `README.md` | 重写 · 加 Python 依赖章节 + 故障诊断章节 |
+
+### 道义解读
+
+> **上善若水** — 七层兜底如水之善 · 利万物而有静 · 居众之所恶 (各种奇怪安装位置)
+>
+> **唯之与阿，相去几何** — 自动探测 vs 显式配置 · 都是道 · 用户两可
+>
+> **大成若缺，其用不弊** — 没装 Python 也不卡死 · 仅退化为 UUID 兜底 · 大用不弊
+
+---
+
+## v3.11.8 (2026-05-28) · 用户主权强化 · v15.1 · 真名+X+陈旧通知
+
+> *太上下知有之 · 知人者知也 · 自知者明也 · 知止不殆 · 可以长久 —— 帛书《老子》*
+
+### 三大用户主权强化 (用户截图核心痛点根治)
+
+用户在 v3.11.7 截图反馈：对话追踪面板里**所有标题全是 `#UUID` 编号**（如 `#c65b3411 #f65109e9 #dd6e5f8c`），无法识别。同时 streamingList 活跃对话**只有 stuck 卡死的能 X 关闭**，AI 中断 + 等待用户的对话**完全无通知**。
+
+#### 修复①: 真实对话标题 (vscdb 直读链路根治)
+
+**根因铁证**:
+```
+旧 (v3.11.7): _vscdb_helper.py 在源 1085B · _dao_deploy.ps1 未复制 → vscdb 直读失败
+            → sessionCache 永空 → entry.title 全 null
+            → hub.json 用 "对话 #UUID" 兜底
+            → 用户截图全是 #c65b3411 编号
+```
+
+**治法**: `_dao_deploy.ps1` v15.1 强制 `_vscdb_helper.py` 必随; `.vscodeignore` 加 `!_vscdb_helper.py`; 不再有部署遗漏可能。
+
+**实证**:
+```
+当前 hub.json streamingList:
+  ✓ 'Windsurf Plugin Max Integration' (c65b3411)
+  ✓ 'Fixing Auto-Switch System' (dd6e5f8c)
+  ✓ 'Devin VM Reverse Engineering Deep Dive' (afcc0f28)
+
+entry.title 已填充: 50/50 (100%)
+```
+
+#### 修复②: streamingList 全部对话加 X 关闭按钮 (用户主权扩展)
+
+| 项 | 旧 | 新 (v15.1) |
+|---|---|---|
+| stuckList 卡死对话 | ✓ 已有 X | ✓ 保留 |
+| **streamingList 活跃对话** | ✗ 无 X | **✓ 全部加 X** |
+| 关闭后 | 10min 静默·过期恢复 | 同左 |
+| 多窗口同步 | ✓ DISMISS_FILE | ✓ 同 |
+
+代码: `extension.js` line 3118-3121 给每个 streamingList 对话渲染
+```html
+<button class="cv-close" onclick="dismissConv('${uuid}')">×</button>
+```
+
+#### 修复③: 消息提醒强化 (1min 卡死/中断必通知)
+
+| 场景 | 旧行为 | 新行为 (v15.1) |
+|---|---|---|
+| 正常 1min 卡 (state=warning) | ✓ toast 通知 | ✓ 保留 |
+| DEAD 中断 (vscdb=unknown_error) | ✓ toast 通知 | ✓ 保留 |
+| **AI 中断 + _turnGrowth>4KB** | ✗ _awaitingUser 静默 | **✓ _isStale 触发通知** |
+| 通知类型 | 一次性·全局冷却 5s | 同左 |
+| 用户关闭 | X 按钮 → 10min 静默 | 同左 |
+| 自动消退 | 10min STUCK_NOTIFY_AUTO_DISMISS | 同左 |
+| 显示文案 | "对话停滞: xxx (停滞 Nmin)" | **"对话陈旧停滞: 真名 (停滞 Nmin)"** |
+
+### 新增 2 个软编码 (v15.1)
+
+```jsonc
+{
+  "wam.notifyOnStaleStream": true,     // ★ 主治 · 默 true · 陈旧 streaming 也通知
+  "wam.notifyOnAwaitingUser": false    // ★ 高级 · 默 false · 等待用户也通知 (极端场景)
+}
+```
+
+### 改动文件 (v3.11.7 → v3.11.8)
+
+| 文件 | 变化 | 字节 | sha 短 |
+|---|---|---|---|
+| `extension.js` | 修复 ②③ + 版本号 | 449063 | 0cc2c62a |
+| `package.json` | +2 软编码 + 版本号 | 16849 | - |
+| `dao_stuck.js` | 无变化 (sha 相同) | 122293 | e7b2c5a9 |
+| `_vscdb_helper.py` | **必随** (新加) | 1085 | a9eaf626 |
+| `_dao_deploy.ps1` | copy 加 _vscdb_helper.py | - | - |
+| `.vscodeignore` | 加 `!_vscdb_helper.py` | - | - |
+
+### 道义解读 (帛书《老子》)
+
+> **太上下知有之** — 用户对所有对话有主权 · 想关就关
+>
+> **知人者知也·自知者明也** — 真实标题让用户认识自己的对话 · 不再迷茫
+>
+> **知止不殆·可以长久** — 通知一次即止 · 10min 自动消退 · 不烦扰
+
+---
+
+## v3.11.7 (2026-05-28) · 对话识别根治 · v15.0 · 30min 软窗 · _isStale 标记
+
+> *知人者知也，自知者明也 · 天下莫柔弱于水，而攻坚强者莫之能胜也 —— 帛书《老子》*
+
+### 用户实地反馈根因 (2026-05-28 截图)
+
+```
+内部 stuck_state_v9.json: 7 条 state=streaming
+hub.json 暴露: 仅 4 条 → 失明 3 条
+失明对话: 32f941bf "Windsurf Rate Limit Refinement" (50min 前停滞)
+        + 类似 stale > 5min 的对话全部隐身
+症状: 用户截图卡住对话完全找不到 · 无法手动处理
+```
+
+### 五大失明根因体系性盘点 (反者道之动·彻底审视)
+
+```
+① _recentWindowMs 5min 硬过滤 → state=streaming 但 stale>5min 失明 (主因·本次治)
+② NO_PB 对话只进 stuckList · 不进 streamingList → 用户感知失明 (次因·本次治)
+③ state.conversations cleanup 过激 → .pb 临时锁/重建时被即时删除 (边角)
+④ state="old" 转换不可逆 → ignoreAge(1h) 后即使重新活跃也卡 old (边角)
+⑤ USER_PROMPT_DETECT 30s 阈值 → <30s 内连续发消息 entry 状态保留旧值 (边角)
+```
+
+### 治法三层 (修复 ①②③)
+
+#### 修复①: 5min 硬过滤 → 30min 软窗
+
+```js
+// 旧 (v14.0): 5min 硬过滤 · stale>5min 完全失明
+const _recentConvs = Object.values(state.conversations)
+  .filter((e) => e.state !== "old" && _now - e.lastGrowth < _recentWindowMs);
+
+// 新 (v15.0): 30min 软窗 · 真"死透"才剔
+const _allStreamingConvs = Object.values(state.conversations)
+  .filter((e) => {
+    if (e.state !== "streaming") return false;
+    if (_streamStaleMaxMs > 0 && _now - e.lastGrowth > _streamStaleMaxMs) return false;
+    return true;
+  });
+```
+
+#### 修复②: 加 `_isStale` 字段 (UI 区分新鲜/陈旧)
+
+```js
+// 引擎写入 streamingList 每条对话:
+{
+  uuid, title, sizeKB, staleSec,
+  _isStale: (_now - e.lastGrowth > _streamFreshMs),  // > 60s 标记陈旧
+  state: 'streaming'
+}
+```
+
+UI 渲染三态:
+- ▶ 新鲜 (绿) · lastGrowth < 60s
+- ◐ 陈旧 (黄) · 60s ~ 30min · _isStale=true
+- ❓ NO_PB (灰) · 无 .pb 文件
+
+#### 修复③: NO_PB 对话也进 streamingList
+
+```js
+// 新逻辑: stuckList 中无 .pb 的对话 → 也补一份到 streamingList (state='no_pb')
+// 用户能看到「未生成 .pb 但 vscdb=active」的对话
+```
+
+### 新增 1 个软编码
+
+```jsonc
+{
+  "wam.streamStaleMaxSec": 1800  // 30min 软窗 (旧 v14.0 硬限 5min) · 0=永不剔除
+}
+```
+
+### 实证 (用户截图原症 vs v15.0 治后)
+
+| 截图症状 | v14.0 (旧) | v15.0 (新) |
+|---|---|---|
+| 状态栏「对话 流式 3」 | 显示 3 条 | **显示 5 条** (含陈旧) |
+| "Windsurf Rate Limit Refinement" 50min 前停滞 | ✗ **完全消失** | ◐ 陈旧标记可见 (30min 内) |
+| 卡住对话需要提醒 | ✗ 无标记 | ◐ 黄色"陈旧"字样直观显示 |
+
+### 改动文件
+
+- `dao_stuck.js` (writeHeartbeat v15.0 改写 · 5min→30min 软窗 + _isStale 字段)
+- `extension.js` (VERSION → 3.11.7 · UI 三态渲染)
+- `package.json` (+ streamStaleMaxSec)
+- `CHANGELOG.md` (本条目)
+
+### 道义解读
+
+> **知人者知也，自知者明也** — v14.0 不知陈旧不是消失，是病；v15.0 知陈旧仅为提示
+>
+> **天下莫柔弱于水** — 5min 硬过滤 = 坚强 · 直接失明；30min 软窗 + _isStale = 柔弱 · 全显但分级
+
+---
+
+## v3.11.6 (2026-05-28) · 自动切号根治 · v15.0 · credits 不再代替 quota%
+
+> *知不知，尚矣；不知不知，病矣。是以圣人之不病，以其病病也，是以不病。—— 帛书《老子》七十一章*
+
+### 用户实地反馈根因 (2026-05-28 截图)
+
+```
+活跃号: julioleyfarley · D=91% W=0% · Trial · credits PC=10K + FC=20K
+状态栏: D91%-W0% 205/242号 · 🔴 Trial - Quota Exhausted
+横幅: "Your included weekly usage quota is exhausted"
+症状: 池中 205 个可用号 · WAM 不切 · 用户卡死
+```
+
+### 根因链 (v3.7.6 设计错误)
+
+```js
+_hasUsableCredits(h) = (10K + 20K ≥ 1000) = true
+  ↓
+_isValidAutoTarget: if (_hasUsableCredits(h)) return true  ← 视为可用·不切走
+  ↓
+_tick.isHardExhausted = !_hasCreditsActive && (W=0)
+                      = !true && true = false              ← 不走硬耗尽分支
+  ↓
+credits 充裕的 W=0 号 = 永久免死金牌 · 系统失明
+```
+
+### 实证
+
+Cascade premium model (Claude/GPT-4) 后端**只看 weekly%** 计费 · 与 credits 无关：
+
+- `credits` (promptCredits/flowCredits) → Devin agent 用
+- `quota%` (daily/weekly) → Cascade premium model 用
+- W=0 时 Cascade 后端 429/403 拒服 · 即使 credits 满
+
+### 七大根治 (v15.0)
+
+#### 修复①: `_isValidAutoTarget` — credits 不再单独放行
+
+```js
+// 旧 (v3.7.6)
+if (_hasUsableCredits(h)) return true;  // ← bug: credits 充裕直接放行
+if (h.daily < dailyMin) return false;
+
+// 新 (v15.0)
+if (h.daily < dailyMin) return false;   // ← 主门槛 quota% 在前
+if (!drought && h.weekly <= weeklyMin) return false;
+if (_hasUsableCredits(h)) return true;  // ← credits 仅作"次级放行"
+```
+
+#### 修复②: `_scoreOf` — credits 不再豁免双零守门
+
+```js
+// 旧: if (effQ === 0 && !_creditsOk && !overage) return -Infinity
+// 新: if (effQ === 0 && !overage && !(bypass && _creditsOk)) return -Infinity
+```
+
+#### 修复③: `_tick.isHardExhausted` — credits 不再豁免硬耗尽
+
+```js
+// 旧: !_hasCreditsActive && (W=0 || D=0)
+// 新: !overage && !(bypass && _hasCreditsActive) && (W=0 || D=0)
+```
+
+#### 修复④: 新增配置 `wam.creditsBypassQuotaGate`
+
+```jsonc
+{
+  "type": "boolean",
+  "default": false,
+  // false = Cascade 模式 · W=0 必切 (默认安全)
+  // true  = Devin agent 兼容老逻辑 · credits 充裕不切
+}
+```
+
+#### 修复⑤: `zeroQuotaRetickMs` 默 2000 → 300ms (近零延迟)
+
+切号成功后立刻验证额度，发现新号 W=0 → 300ms 后立刻再切 (旧值 2s 太慢)。
+
+#### 修复⑥: 新增「硬耗尽看门狗」 — 独立 2s 周期
+
+独立于 `_tick` 10s 周期 · 只读 health 内存数据 (无 API 调用):
+- 每 2s 检查活跃号是否硬耗尽 (W=0/D=0)
+- 触发即调 `_engine._tick()` 让其处理
+- 用户感觉切到 W=0 号 1-2s 内自愈 (而非等 10s)
+- 配置: `wam.hardExhaustWatchdogMs` (默 2000 · 0=禁用)
+
+#### 修复⑦: 部署 + 后端验证
+
+```text
+_test_v3116_auto_switch.cjs · 14/14 测试全部通过
+默认 (Cascade 严守): 7/7 通过
+兼容 (Devin bypass): 7/7 通过
+
+关键用例: julioleyfarley · D91% W0% credits=30K
+  default: valid=false · score=-∞ · hardExh=true   ← 修复成功
+  bypass:  valid=true  · score=OK · hardExh=false   ← 兼容老行为
+```
+
+### 改动文件
+
+- `packages/wam/extension.js` (VERSION → 3.11.6 · 修复 ①②③⑤⑥)
+- `packages/wam/package.json` (3.11.5 → 3.11.6 · 新配置 ④⑤⑥)
+- `packages/wam/CHANGELOG.md` (本条目)
+- `packages/wam/_test_v3116_auto_switch.cjs` (新增·后端验证)
+
+### 道义解读
+
+> *知不知，尚矣* — credits 不是 quota 的替代品 · 仅为辅助资源池
+>
+> *不知不知，病矣* — v3.7.6 把 credits 当作 quota 的免死金牌 · 让 W=0 号永生 · 这是病
+>
+> v15.0: 主门槛 (quota%) 严守 · credits 仅作次级·overage 真金救场 · creditsBypass 兼容回退
+
+---
+
+## v3.11.5 (2026-05-27) · 对话追踪全量根治 · 知人者知也 自知者明也
+
+> *知不知，尚矣；不知不知，病矣。是以圣人之不病，以其病病也，是以不病。—— 帛书《老子》七十一章*
+
+### 三大根因 (用户实地反馈 · 反向审视 v13.0 设计)
+
+用户截图直证 v13.0「单对话止跳」副作用太大：
+- 多对话场景只显 1 条 (失明)
+- 标题永远 `对话 #UUID` (无名)
+- 卡死/停滞零提示 (失声)
+
+#### 根因①: streamingList 限 1 条 → 多对话失明
+
+**位置**: `dao_stuck.js::writeHeartbeat()` v13.0 写入 hub
+
+```js
+// 旧 (v13.0)
+const _curConv = _recentConvs[0] || null;  // 只取第一个
+active: _curConv ? 1 : 0,                  // 0 或 1
+streaming: _isCurStreaming ? 1 : 0,        // 0 或 1
+streamingList: _curConv ? [...] : [],      // 最多 1 条
+```
+
+**症状**: 用户开 3 个并行对话 → 面板永远只显示 1 个
+
+**v14.0 治法**: streamingList = 全量 `state==="streaming"` 对话 · 不再限 1 条
+
+#### 根因②: stuckList 无标题 → 静默丢弃 → 卡死隐身
+
+**位置**: 三处共谋的隐身机制
+
+1. `dao_stuck.js::_visibleStuckList`: `if (!t) return null` → 丢弃
+2. `extension.js::_processHubStuck`: `if (!displayName) continue` → 不通知
+3. `extension.js::_getConvTrackingHtml::visibleStuck`: `if (!_titleOk) return false` → 不显示
+
+**症状**: 对话卡死后，由于 vscdb title 未生成 → 三处都过滤 → 用户**完全失明 + 失声**
+
+**v14.0 治法**: 三处统一改用 UUID 兜底
+```js
+// 新 (v14.0)
+const t = _displayTitleFor(uuid, title, cache)
+       || "对话 #" + uuid.replace(/-/g, "").slice(0, 8);
+```
+
+道: *知不知尚矣 · 不知不知病矣* — 即使不知道名字也要通知，不能让用户失明
+
+#### 根因③: active/streaming 计数永远 0/1 → 看板虚假
+
+**症状**: 头部摘要 `对话 1 流式 1` 与现实严重脱节
+
+**v14.0 治法**: 计数反映真实
+```js
+active: _activeStreamingConvs.length + _visibleStuckList(non-DEAD).length,
+streaming: _trueStreamingCount,  // 真正流式 (不含等待用户)
+```
+
+### 设计哲学纠偏
+
+v13.0 的「单对话止跳」错把症状当病因——抖动的根因是 **title 时序竞跑**（vscdb BUSY → title=null → 过滤 → 0 → 下一 tick title=ok → 1）。v3.11.3 已用 UUID 兜底治此根因，但 hub 数据生成仍残留 v13.0 的「只取第一条」副作用。
+
+v14.0 彻底贯彻：**UUID 兜底本身即止跳契约 · 无需人为截断 · 让真相全显**。
+
+### 改动文件
+
+- `packages/wam/extension.js` (VERSION → 3.11.5, 通知 + visibleStuck 双重 UUID 兜底)
+- `packages/wam/dao_stuck.js` (writeHeartbeat 全量化 · UUID 兜底统一)
+- `packages/wam/package.json` (3.11.4 → 3.11.5)
+- `packages/wam/CHANGELOG.md` (本条目)
+
+### 验证清单
+
+- [ ] 多开 3 个对话 → 面板显示 3 行
+- [ ] 新对话刚启动 (title 未生成) → 显示「对话 #短UUID」
+- [ ] 对话卡死 (无 title) → stuckList 显示 + 通知弹出
+- [ ] 摘要计数反映真实数 (非 0/1)
+- [ ] UI 计数不抖动 (UUID 兜底保证)
+
+---
+
+## v3.11.3 (2026-05-27) · 根治UI抖动 · 软编码归一 · 道法自然
 
 > *上德不德，是以有德；下德不失德，是以无德。—— 帛书《老子》德经第一章*
 

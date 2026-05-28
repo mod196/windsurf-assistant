@@ -304,6 +304,10 @@ function parseArgs() {
       c.recentWindowMs = +a[++i] || 300000; // _curConv 最近活动窗口 (默 5min)
     else if (a[i] === "--stream-fresh-ms")
       c.streamFreshMs = +a[++i] || 60000; // 真正流式判定阈值 (默 60s)
+    else if (a[i] === "--stream-stale-max-sec")
+      c.streamStaleMaxSec = +a[++i] || 1800; // v15.0 streaming 真死透剔除阈值 (默 30min · 0=永不剔除)
+    else if (a[i] === "--python-path")
+      c.pythonPath = a[++i] || ""; // v15.2 软编码 Python 路径 (默空·自动探测)
     else if (a[i] === "-h" || a[i] === "--help") {
       console.log(`dao_stuck_v9.2 — Cascade 卡住检测 (双源真本源: .pb + vscdb)
   --threshold N         CRITICAL阈值秒 (默认 120 = 2分钟)
@@ -320,6 +324,8 @@ function parseArgs() {
   --heartbeat-ms N      PID 心跳间隔毫秒 (默 30000)
   --recent-window-ms N  当前对话最近活动窗口毫秒 (默 300000)
   --stream-fresh-ms N   流式判定新鲜阈值毫秒 (默 60000)
+  --stream-stale-max-sec N v15.0 streaming 真死透剔除阈值秒 (默 1800=30min · 0=永不剔除)
+  --python-path PATH    v15.2 显式 Python 路径 (默空·自动从 PATH/py launcher/常见安装路径探测)
 看板: http://127.0.0.1:<port>`);
       process.exit(0);
     }
@@ -496,6 +502,12 @@ const WAL_PARTIAL_RATIO = 0.6; // < 60% 视为坏读
 //   治法: active 计数滚动高水位 · < 50% 峰值 → WAL 状态陈旧 · 保留旧 cache
 let _walActiveHigh = { count: 0, ts: 0 };
 const WAL_ACTIVE_RATIO = 0.5; // < 50% active 骤降 = WAL 状态陈旧
+// v16.0 · Python reader 独立 WAL 高水位 (与 better-sqlite3 路径同等保护)
+//   根因: _refreshVscdbRaw 无任何 WAL 保护 → active 在 0↔7 之间剧烈振荡
+//   实测: sessions=155 active=0 / sessions=152 active=7 → 周期性交替
+//   治法: 镜像 refreshVscdb 的双重保护 (count坏读 + active骤降)
+let _pyWalHigh = { count: 0, ts: 0 }; // Python reader WAL count 高水位
+let _pyWalActiveHigh = { count: 0, ts: 0 }; // Python reader WAL active 高水位
 // ═══ v3.11.4 · vscdb Python读取 — 无 better-sqlite3 亦可完整获取 title/status ═══
 // 根因: SQLite metadataCache JSON 跨 overflow 页 · 裸扫无法提取 → sessions=0
 // 根治: 调用 Python 内置 sqlite3 模块 · 无外部依赖 · 道法自然 · 四两拨千斤
@@ -539,11 +551,95 @@ function _tryExtractSessionsFromBuf(buf) {
 }
 
 // Python 可执行文件缓存 (避免每次都探测)
+// ═══ v15.2 (3.11.9) · 道法自然 · 适配万家系统 ═══
+//   旧 v3.11.4-v15.1: 仅探测 PATH 中的 'python'/'python3' · 装 Python launcher (py.exe) 的系统失败
+//   新 v15.2: 七层兜底 · 水之七善 · 利万物而有静
+//     1. 显式入参 (软编码 wam.pythonPath)
+//     2. PATH: python / python3 (linux/mac 主路 + win PATH 装的 Python)
+//     3. PATH: py (Windows Python Launcher · python.org 安装勾选项默认有)
+//     4. 常见 Windows 安装路径递归 (Python.org · Microsoft Store · Anaconda)
+//     5. 常见 *nix 安装路径 (/usr/bin/python3 · /usr/local/bin/python3 · Homebrew)
+//   设计原则: 探测一次缓存结果 · 不阻塞主流程 · 失败即静默 (title 退回 UUID 兜底)
+//
+// 道义: 上善若水 · 水善利万物而有静 · 居众之所恶 · 故几于道矣
+//   Python 探测亦如此 — 哪里能找到就用哪里 · 不强求用户配置 · 默静自适
 let _pyExe = null;
 function _findPython() {
-  if (_pyExe !== undefined && _pyExe !== null) return _pyExe;
-  for (const cmd of ["python", "python3"]) {
+  if (_pyExe !== undefined && _pyExe !== null)
+    return _pyExe === false ? null : _pyExe;
+  // ─── 候选清单 (从最快到最慢) ───
+  const candidates = [];
+  // 0. 显式指定 (优先级最高 · 软编码兜底)
+  //    支持: dao_stuck.js --python-path /abs/path/to/python.exe
+  //    或: process.env.WAM_PYTHON_PATH
+  if (CFG && CFG.pythonPath) candidates.push(CFG.pythonPath);
+  if (process.env.WAM_PYTHON_PATH) candidates.push(process.env.WAM_PYTHON_PATH);
+  // 1. PATH 中 (跨平台标准)
+  candidates.push("python3", "python");
+  // 2. Windows Python Launcher (python.org 安装默认装的桥)
+  if (process.platform === "win32") {
+    candidates.push("py");
+  }
+  // 3. 常见绝对路径
+  if (process.platform === "win32") {
+    const localApp = process.env.LOCALAPPDATA || "";
+    const programFiles = process.env["ProgramFiles"] || "C:\\Program Files";
+    const programFilesX86 =
+      process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)";
+    // Python.org · 用户级 + 全机级 (3.7~3.15 · 覆盖未来)
+    for (let v = 7; v <= 15; v++) {
+      const versionFolder = "Python3" + v; // Python37 / Python38 / ... / Python315
+      if (localApp) {
+        candidates.push(
+          path.join(
+            localApp,
+            "Programs",
+            "Python",
+            versionFolder,
+            "python.exe",
+          ),
+        );
+      }
+      // Python.org · 全机级
+      candidates.push(path.join(programFiles, versionFolder, "python.exe"));
+      candidates.push(path.join(programFilesX86, versionFolder, "python.exe"));
+      candidates.push("C:\\" + versionFolder + "\\python.exe");
+    }
+    // Microsoft Store Python (常见路径 · 但有时含 stub)
+    if (localApp) {
+      candidates.push(
+        path.join(localApp, "Microsoft", "WindowsApps", "python3.exe"),
+        path.join(localApp, "Microsoft", "WindowsApps", "python.exe"),
+      );
+    }
+    // Anaconda/Miniconda 全机级 + 用户级
+    const userProfile = process.env.USERPROFILE || os.homedir();
+    candidates.push(
+      path.join(userProfile, "anaconda3", "python.exe"),
+      path.join(userProfile, "miniconda3", "python.exe"),
+      "C:\\anaconda3\\python.exe",
+      "C:\\miniconda3\\python.exe",
+      "C:\\ProgramData\\anaconda3\\python.exe",
+      "C:\\ProgramData\\miniconda3\\python.exe",
+    );
+  } else {
+    // *nix · 常见绝对路径
+    candidates.push(
+      "/usr/bin/python3",
+      "/usr/local/bin/python3",
+      "/usr/bin/python",
+      "/usr/local/bin/python",
+      "/opt/homebrew/bin/python3", // macOS Apple Silicon Homebrew
+      "/opt/local/bin/python3", // MacPorts
+      path.join(os.homedir(), ".pyenv", "shims", "python3"),
+    );
+  }
+  // ─── 探测 ───
+  for (const cmd of candidates) {
+    if (!cmd) continue;
     try {
+      // 显式路径需 fs.existsSync 防 ENOENT spawn 异常
+      if (path.isAbsolute(cmd) && !fs.existsSync(cmd)) continue;
       const r = spawnSync(cmd, ["--version"], {
         timeout: 2000,
         windowsHide: true,
@@ -551,11 +647,18 @@ function _findPython() {
       });
       if (r.status === 0) {
         _pyExe = cmd;
+        log(
+          "python_found: " + cmd + " · " + (r.stdout || r.stderr || "").trim(),
+        );
         return cmd;
       }
     } catch {}
   }
   _pyExe = false; // 明确标记不可用
+  log(
+    "python_not_found · title 直读功能将用 UUID 兜底 · " +
+      "可通过设置 WAM_PYTHON_PATH 环境变量或 wam.pythonPath 配置指定 Python 路径",
+  );
   return null;
 }
 
@@ -566,10 +669,12 @@ function _tryReadVscdbViaPython() {
   const pyExe = _findPython();
   if (!pyExe) return null;
   try {
+    // v3.12.0: 设 PYTHONIOENCODING=utf-8 · 三重保险第三层 (配合 _vscdb_helper.py 内 reconfigure + ensure_ascii=True)
     const r = spawnSync(pyExe, [_VSCDB_HELPER_PY], {
       timeout: 10000,
       windowsHide: true,
       encoding: "utf8",
+      env: { ...process.env, PYTHONIOENCODING: "utf-8" },
     });
     if (r.status !== 0 || !r.stdout) {
       if (r.stderr) log("VSCDB_PY err: " + r.stderr.slice(0, 200));
@@ -584,6 +689,14 @@ function _tryReadVscdbViaPython() {
 }
 
 let _lastRawVscdbRefresh = 0;
+// ═══ v16.0 · _refreshVscdbRaw WAL 双重保护 — 根治 active 0↔7 振荡 ═══
+// 根因: 旧版无任何 WAL 保护 → Python 交替读到 WAL 主文件(active=0) 和 WAL 段(active=7)
+//   sessions=155 active=0 → sessions=152 active=7 → sessions=155 active=0 (每30s)
+//   连锁: sessionCache 被反复清空 → 卡住检测 stuckTicks 归零 → 永远无法积累 → 完全失效
+// 治法: 镜像 refreshVscdb 的双重高水位保护:
+//   1. count 坏读: 新读 < 60% 峰值 → WAL 主文件不完整 → 保留旧 cache
+//   2. active 骤降: 新 active < 50% 峰值 → WAL status 陈旧 → 保留旧 cache
+// 道: 知不知尚矣 — 读到可疑数据宁可不更新，不假装知道
 function _refreshVscdbRaw() {
   const t = nowMs();
   if (t - _lastRawVscdbRefresh < 30000) return; // 30s 节流 (Python 启动开销)
@@ -603,6 +716,44 @@ function _refreshVscdbRaw() {
   }
   const newCount = newCache.size;
   if (newCount === 0) return;
+
+  // ★ Fix 1a: count 高水位保护 (镜像 refreshVscdb WAL_PARTIAL_RATIO)
+  const nowT = nowMs();
+  const _pyHV = nowT - _pyWalHigh.ts < WAL_ROLLING_MS;
+  if (newCount >= _pyWalHigh.count || !_pyHV) {
+    _pyWalHigh = { count: newCount, ts: nowT };
+  }
+  if (
+    _pyHV &&
+    _pyWalHigh.count > 20 &&
+    newCount < _pyWalHigh.count * WAL_PARTIAL_RATIO &&
+    sessionCache.size > 0
+  ) {
+    log(
+      `VSCDB_PY_WAL_SKIP sessions=${newCount} (peak=${_pyWalHigh.count} ${Math.round((newCount / _pyWalHigh.count) * 100)}%) → WAL坏读,保留旧cache`,
+    );
+    return; // 保留旧 sessionCache
+  }
+
+  // ★ Fix 1b: active 骤降保护 (镜像 refreshVscdb WAL_ACTIVE_RATIO)
+  const _pyNewActive = [...newCache.values()].filter(
+    (v) => v.status === "active",
+  ).length;
+  const _pyAHV = nowT - _pyWalActiveHigh.ts < WAL_ROLLING_MS;
+  if (_pyNewActive >= _pyWalActiveHigh.count || !_pyAHV) {
+    _pyWalActiveHigh = { count: _pyNewActive, ts: nowT };
+  }
+  if (
+    _pyAHV &&
+    _pyWalActiveHigh.count >= 3 &&
+    _pyNewActive < _pyWalActiveHigh.count * WAL_ACTIVE_RATIO
+  ) {
+    log(
+      `VSCDB_PY_WAL_STATUS_SKIP active=${_pyNewActive}(peak=${_pyWalActiveHigh.count}) sessions=${newCount} → status stale, keeping old cache`,
+    );
+    return; // 保留旧 sessionCache
+  }
+
   // 保留旧 cache 中已知 title
   for (const [uuid, oldEntry] of sessionCache.entries()) {
     const newEntry = newCache.get(uuid);
@@ -611,11 +762,8 @@ function _refreshVscdbRaw() {
   }
   sessionCache = newCache;
   if (newCount !== _lastSessionLogCount) {
-    const active = [...newCache.values()].filter(
-      (v) => v.status === "active",
-    ).length;
     log(
-      `VSCDB_PY sessions=${newCount} active=${active} (python·sqlite3·无better-sqlite3)`,
+      `VSCDB_PY sessions=${newCount} active=${_pyNewActive} (python·sqlite3·无better-sqlite3)`,
     );
     _lastSessionLogCount = newCount;
   }
@@ -1012,6 +1160,19 @@ const DEAD_EXPIRE_MS = 600000; // v12.2: dead 对话10分钟无恢复 → 悄悄
 //   无任何时间魔法数字 · 纯粹用户行为驱动 · 道法自然
 const AWAITING_USER_THRESHOLD = 4096; // 字节: 累计增长超过此值才确认 AI 已实际输出
 
+// ═══ v3.12.0 · 乱码标题检测 (清洗 CP936/U+FFFD 残留) ═══
+function _isGarbledStr(t) {
+  if (!t || typeof t !== "string") return false;
+  if (/[\uFFFD]{2,}/.test(t)) return true; // replacement chars
+  if (/[\u25C6]{2,}/.test(t)) return true; // black diamonds
+  const bad = t.replace(
+    /[\x20-\x7E\u4E00-\u9FFF\u3000-\u303F\uFF00-\uFFEF]/g,
+    "",
+  );
+  if (bad.length > t.length * 0.3 && t.length > 4) return true;
+  return false;
+}
+
 // ═══ v13.0 · 备份标题缓存 — 从 _index.json 补充 vscdb 缺失标题 ═══
 // 根因: vscdb SQLITE_BUSY 时 title=null → 显示 UUID → 用户迷惑
 // 修复: 启动时从最近3个备份批次预加载 uuid→title · 永久内存缓存
@@ -1025,13 +1186,20 @@ function _loadBackupTitles() {
     if (fs.existsSync(_EXT_TITLE_FILE)) {
       try {
         const ext = JSON.parse(fs.readFileSync(_EXT_TITLE_FILE, "utf8"));
-        let extLoaded = 0;
+        let extLoaded = 0,
+          garbled = 0;
         for (const [uuid, title] of Object.entries(ext)) {
+          // v3.12.0: 跳过乱码标题 (旧版 ensure_ascii=False 产生的 CP936 残留)
+          if (_isGarbledStr(title)) {
+            garbled++;
+            continue;
+          }
           if (title && !_backupTitleCache[uuid]) {
             _backupTitleCache[uuid] = title;
             extLoaded++;
           }
         }
+        if (garbled > 0) log(`TITLE_CACHE: cleaned ${garbled} garbled titles`);
         if (extLoaded > 0)
           log(`TITLE_CACHE: loaded ${extLoaded} titles from _conv_titles.json`);
       } catch {}
@@ -1113,9 +1281,14 @@ function scan() {
     // v12.8: ignoreAge 过滤 — .pb 超过 N 秒无变化的老对话不参与卡住检测
     //   根因: stale=28714s(8小时!) + vscdb=active(陈旧条目) → 误触发 CRITICAL_STUCK
     //   道: 知止不殆·可以长久 — 已过时效的对话静默放行·不妄为
+    // v16.0: state="old" 可逆 — size 重新增长时跳出 ignoreAge 重新追踪
+    //   根因: 之前 continue 无条件跳过 → 对话重新活跃也永久 old
+    //   治法: 检查 size 是否增长; 若是 → 重置到 init 状态 · 落入正常处理
     const _pbAgeSec = Math.round((t - st.mtimeMs) / 1000);
     if (_pbAgeSec > CFG.ignoreAge) {
       let entry = state.conversations[uuid];
+      const _oldSizePre = entry ? entry.size : 0;
+      const _grewWhileOld = st.size > _oldSizePre;
       if (!entry) {
         entry = {
           uuid,
@@ -1131,11 +1304,27 @@ function scan() {
         state.conversations[uuid] = entry;
       }
       if (title) entry.title = title;
-      entry.size = st.size;
+      if (!entry.title && _backupTitleCache[uuid])
+        entry.title = _backupTitleCache[uuid];
       entry.mtime = st.mtimeMs;
-      entry.state = "old";
-      entry.stuckTicks = 0;
-      continue; // 跳过卡住检测 · 此对话已过 ignoreAge
+      if (_grewWhileOld) {
+        // v16.0: 老对话重新活跃 → 重置到 init 让正常处理接管
+        entry.size = st.size;
+        entry.lastGrowth = t;
+        entry.state = "init";
+        entry.stuckTicks = 0;
+        entry._turnGrowth = 0;
+        entry._awaitingUser = false;
+        log(
+          `OLD_ESCAPE uuid=${shortId(uuid)} pbAge=${_pbAgeSec}s sizeDelta=${st.size - _oldSizePre} → resuming tracking`,
+        );
+        // fall through to normal processing (no continue)
+      } else {
+        entry.size = st.size;
+        entry.state = "old";
+        entry.stuckTicks = 0;
+        continue; // 跳过卡住检测 · 此对话已过 ignoreAge
+      }
     }
 
     // 获取或初始化跟踪状态
@@ -1304,8 +1493,15 @@ function scan() {
         const updatedMs =
           meta && meta.updatedAt ? new Date(meta.updatedAt).getTime() : 0;
         // 路径B: updatedAt检测 — 引擎重启后无历史时判断近期死亡
+        // v16.0: 增加 _justRecovered 保护 — RECOVER后3分钟内不触发 B-recent 路径
+        //   根因: RECOVER清零deadSince但updatedAt仍新鲜 → 下次unknown_error立即重触DEAD
+        //   实测: 3955435a DEAD→RECOVER→(几秒后)DEAD→RECOVER 反复循环
+        //   治法: 记录_lastRecoverTs · 3分钟内B-recent路径静默 (让对话有机会真正恢复)
+        const _justRecovered =
+          entry._lastRecoverTs && t - entry._lastRecoverTs < 180000; // 3min
         const recentlyKilled =
           !liveTransition &&
+          !_justRecovered && // v16.0: RECOVER后3min内豁免
           updatedMs > 0 &&
           t - updatedMs < 3600000 && // 1小时内更新过
           st.size > 10240; // .pb > 10KB (真实对话)
@@ -1391,45 +1587,59 @@ function scan() {
           entry.lastVscdbActiveTs &&
           t - entry.lastVscdbActiveTs < _recentWindow;
         if (_recentActive) {
-          // ★ WAL checkpoint 坏读: 90s内确认过active, UUID消失是WAL瞬时问题
-          //   继续按active处理: 不归零stuckTicks, 继续累积, 确保stuck检测不中断
-          entry.lastKnownVscdbStatus = "active"; // 保持已知状态
-          summary.active++;
-          // v12.7: WAL fallback 也需检查初始发消息保护期 (与 active 主路径保持一致)
-          //   根因: UUID消失时走此分支, 原来直接检测staleSec → 跳过 INITIAL_SEND_GRACE → 假阳性
-          const _walTimeSinceActive = t - (entry.activeSinceTs || t);
-          const _walInInitialGrace = _walTimeSinceActive < INITIAL_SEND_GRACE;
-          if (grew || staleSec < CFG.warnThreshold) {
-            newState = "streaming";
-            summary.streaming++;
+          // ★ v16.0 Fix 2: prevVscdbStatus=end_turn → 对话已正常完成
+          //   当UUID从sessionCache消失时, 若最近一次已知状态是end_turn
+          //   → 最可能是 session 滚出70-session窗口(已完成) 而非 WAL 坏读
+          //   → 不走 WAL active fallback · 直接归为 completed
+          //   根因实测: fc4d79bd prevVscdbStatus=end_turn 但走了WAL路径
+          //             → WARN_STUCK/CRITICAL_STUCK vscdb=n/a 误报
+          if (prevVscdbStatus === "end_turn") {
+            newState = "completed";
+            summary.endTurn++;
             entry.stuckTicks = 0;
-            entry._awaitingUser = false; // v12.9: WAL fallback 同规则
-          } else if (entry._awaitingUser) {
-            newState = "streaming"; // v12.9: 等待用户 · WAL fallback 同规则
-            summary.streaming++;
-            entry.stuckTicks = 0;
-          } else if (_walInInitialGrace) {
-            newState = "streaming"; // v12.7: 保护期内 · WAL fallback 与主路径同规则
-            summary.streaming++;
-          } else if ((entry._turnGrowth || 0) > AWAITING_USER_THRESHOLD) {
-            // v12.9: WAL fallback 同规则 — AI 已完成回复 → 等待用户
-            entry._awaitingUser = true;
-            entry.stuckTicks = 0;
-            newState = "streaming";
-            summary.streaming++;
-          } else if (staleSec < CFG.critThreshold) {
-            entry.stuckTicks = (entry.stuckTicks || 0) + 1;
-            const inGrace = nowMs() - _startupTs < STARTUP_GRACE;
-            newState =
-              entry.stuckTicks >= 2 && !inGrace ? "warning" : "streaming";
-            if (newState === "warning") summary.stuck++;
-            else summary.streaming++;
+            entry._awaitingUser = false;
           } else {
-            entry.stuckTicks = (entry.stuckTicks || 0) + 1;
-            const inGrace = nowMs() - _startupTs < STARTUP_GRACE;
-            newState = entry.stuckTicks >= 2 && !inGrace ? "stuck" : "warning";
-            summary.stuck++;
-          }
+            // ★ WAL checkpoint 坏读: 90s内确认过active, UUID消失是WAL瞬时问题
+            //   继续按active处理: 不归零stuckTicks, 继续累积, 确保stuck检测不中断
+            entry.lastKnownVscdbStatus = "active"; // 保持已知状态
+            summary.active++;
+            // v12.7: WAL fallback 也需检查初始发消息保护期 (与 active 主路径保持一致)
+            //   根因: UUID消失时走此分支, 原来直接检测staleSec → 跳过 INITIAL_SEND_GRACE → 假阳性
+            const _walTimeSinceActive = t - (entry.activeSinceTs || t);
+            const _walInInitialGrace = _walTimeSinceActive < INITIAL_SEND_GRACE;
+            if (grew || staleSec < CFG.warnThreshold) {
+              newState = "streaming";
+              summary.streaming++;
+              entry.stuckTicks = 0;
+              entry._awaitingUser = false; // v12.9: WAL fallback 同规则
+            } else if (entry._awaitingUser) {
+              newState = "streaming"; // v12.9: 等待用户 · WAL fallback 同规则
+              summary.streaming++;
+              entry.stuckTicks = 0;
+            } else if (_walInInitialGrace) {
+              newState = "streaming"; // v12.7: 保护期内 · WAL fallback 与主路径同规则
+              summary.streaming++;
+            } else if ((entry._turnGrowth || 0) > AWAITING_USER_THRESHOLD) {
+              // v12.9: WAL fallback 同规则 — AI 已完成回复 → 等待用户
+              entry._awaitingUser = true;
+              entry.stuckTicks = 0;
+              newState = "streaming";
+              summary.streaming++;
+            } else if (staleSec < CFG.critThreshold) {
+              entry.stuckTicks = (entry.stuckTicks || 0) + 1;
+              const inGrace = nowMs() - _startupTs < STARTUP_GRACE;
+              newState =
+                entry.stuckTicks >= 2 && !inGrace ? "warning" : "streaming";
+              if (newState === "warning") summary.stuck++;
+              else summary.streaming++;
+            } else {
+              entry.stuckTicks = (entry.stuckTicks || 0) + 1;
+              const inGrace = nowMs() - _startupTs < STARTUP_GRACE;
+              newState =
+                entry.stuckTicks >= 2 && !inGrace ? "stuck" : "warning";
+              summary.stuck++;
+            }
+          } // end else (prevVscdbStatus !== "end_turn") WAL fallback block
         } else {
           // 真孤儿对话: 从未active或已离开vscdb活跃窗口超过90s
           // v10 根治: 不计入任何统计, 不检测卡住
@@ -1539,6 +1749,8 @@ function scan() {
         entry.stuckTicks = 0;
         entry.deadSince = 0; // v11.2: 清除死亡保护期，允许未来再次死亡检测
         entry._notifyCount = 0; // v12.4: 恢复 → 重置通知计数 (允许下次卡住重新通知)
+        entry._lastRecoverTs = t; // v16.0: 记录恢复时刻 · 防 recentlyKilled 在恢复后即刻重触
+        entry.errorTicks = 0; // v16.0: 恢复后彻底清零 errorTicks (防 B-recent 路径积累)
       }
     }
 
@@ -2396,49 +2608,80 @@ function writeHeartbeat(extra) {
   } catch {}
   // 同步写 Hub 总线 (供 WAM extension 读取)
   try {
-    // ═══ v13.0 止跳法 — 单对话真相 ═══
-    // 根因①: activeTotal=vscdb全量active(含多窗口/历史session) → 4/8/N
-    // 根因②: streamingList=ALL state=streaming对话(含_awaitingUser积累) → 8条UUID
-    // 根因③: vscdb BUSY → title=null → UUID显示
-    // 修复: 只展示"当前对话"(5min内最近有活动的那一个) · active/streaming=0或1
+    // ═══ v15.0 全量对话失明根治 · 道法自然 · 知人者知也 自知者明也 ═══
     //
-    // ═══ v3.11.3 止跳法·二次根治 ═══
-    // 残余问题: 上版仍要求 _displayTitleFor 通过 → vscdb 刚 BUSY/title尚未生成时
-    //          _recentConvs=[] → _curConv=null → streamingList=[] → 计数 0
-    //          下一 tick title 写入 → 计数 1 → 0↔1 抖动
-    // 真正根治: 不被 title 过滤！按 (state, lastGrowth) 选「当前对话」
-    //          title 缺失时用「对话 #短UUID」兜底显示
-    //          → streamingList 在「确实有活对话」时永不为空 · 计数稳定
-    // 道: 不与 vscdb 时序竞跑 · 自给自足兜底 · 大制无割
+    // ★ 用户截图实证根因 (2026-05-28):
+    //   stuck_state_v9.json 中 7 条 state=streaming · 但 hub.json 仅 4 条
+    //   失明 3 条: 32f941bf "Windsurf Rate Limit Refinement" (50min前) + ...
+    //   该对话仍 vscdb=active 但 .pb 长时间无增长 → 用户感觉卡住 · 需要提醒
+    //   旧 v14.0 逻辑: `_recentWindowMs` 5min 硬过滤 → state=streaming 但 stale>5min 的全消失
+    //
+    // ★ 五大失明根因体系性盘点 (反者道之动·彻底审视):
+    //   ① _recentWindowMs 5min 硬过滤 → state=streaming 但 stale>5min 完全失明 (主因·本次治)
+    //   ② NO_PB 对话只进 stuckList · 不进 streamingList → 用户感知失明 (次因·本次治)
+    //   ③ state.conversations cleanup 过激 → .pb 临时锁/重建时被即时删除 (边角·暂不治)
+    //   ④ state="old" 转换不可逆 → ignoreAge(1h) 后即使重新活跃也卡 old (边角·暂不治)
+    //   ⑤ USER_PROMPT_DETECT 30s 阈值 → <30s 内连续发消息 entry 状态保留旧值 (边角·暂不治)
+    //
+    // ★ 治法三层 (修复 ①②③):
+    //   ① 5min 硬过滤 → 30min 软窗口 (streamStaleMaxMs)·30min 内的 streaming 都保留
+    //   ② 加 _isStale 字段 (lastGrowth > _streamFreshMs) → UI 区分新鲜/陈旧
+    //   ③ NO_PB 对话也进 streamingList (state="no_pb")·用户能看到「未生成 .pb」
+    //
+    // ★ 道义: 名可名也·非恒名也 — 5min 不是恒定真理 · 30min 软窗才合用户场景
+    //         知不知尚矣 — 引擎已知 state=streaming · 就不该再用时间窗口隐藏
     const _now13 = nowMs();
-    // 软编码窗口: --recent-window-ms (默 300000=5min) · --stream-fresh-ms (默 60000=1min)
-    const _recentWindowMs = Math.max(60000, +CFG.recentWindowMs || 300000);
+    // 软编码: --stream-fresh-ms (默 60000=1min) · 区分新鲜流式
     const _streamFreshMs = Math.max(10000, +CFG.streamFreshMs || 60000);
-    // 当前对话: 5min 内有 PB 活动、非 old 状态，按 lastGrowth 降序取第一个
-    //          ★ v3.11.3 不再被 title 过滤 (让 _curConv 在 title 抖动时仍稳定)
-    const _recentConvs = Object.values(state.conversations)
-      .filter(
-        (e) => e.state !== "old" && _now13 - e.lastGrowth < _recentWindowMs,
-      )
+    // v15.0 · streamStaleMaxMs: 真"死透"剔除阈值 · 默 30min · 0=永不剔除 (软编码 wam.streamStaleMaxSec)
+    const _streamStaleMaxMs = Math.max(
+      0,
+      (+CFG.streamStaleMaxSec || 1800) * 1000,
+    );
+    // _titleFor: 优先真实 title · 缺失时 →「对话 #短UUID」兜底 (止跳·止隐身·无为而无不为)
+    const _titleFor = (uuid, title, cache) =>
+      _displayTitleFor(uuid, title, cache) ||
+      "对话 #" + String(uuid).replace(/-/g, "").slice(0, 8);
+    // v15.0 · 全量 streaming 对话 (不再 5min 硬过滤 · 30min 软剔除)
+    const _allStreamingConvs = Object.values(state.conversations)
+      .filter((e) => {
+        if (e.state !== "streaming") return false;
+        // 软窗口: > 30min 没增长 → 视为死透剔除 (0=永不剔除)
+        if (_streamStaleMaxMs > 0 && _now13 - e.lastGrowth > _streamStaleMaxMs)
+          return false;
+        return true;
+      })
       .sort((a, b) => b.lastGrowth - a.lastGrowth);
-    const _curConv = _recentConvs[0] || null;
-    // _curTitle: 优先真实 title · 缺失时 →「对话 #短UUID」兜底 (前端再次过滤 UUID-only 格式)
-    const _curTitle = _curConv
-      ? _displayTitleFor(
-          _curConv.uuid,
-          _curConv.title,
-          _backupTitleCache[_curConv.uuid],
-        ) || "对话 #" + String(_curConv.uuid).replace(/-/g, "").slice(0, 8)
-      : "";
-    // 真正流式: PB <streamFreshMs> 内有增长 + 非「等待用户」+ 非已完成
-    const _isCurStreaming =
-      _curConv &&
-      !_curConv._awaitingUser &&
-      _curConv.state !== "completed" &&
-      _now13 - _curConv.lastGrowth < _streamFreshMs;
+    // 真正流式计数: 不含等待用户回复 + 新鲜 (< _streamFreshMs)
+    const _trueStreamingCount = _allStreamingConvs.filter(
+      (e) => !e._awaitingUser && _now13 - e.lastGrowth < _streamFreshMs,
+    ).length;
+    // v15.0 修复② · NO_PB 对话也进 streamingList (state="no_pb")
+    //   旧逻辑: NO_PB 仅入 stuckList → 状态栏「对话 流式 N」不含它 → 用户失明
+    //   新逻辑: 同时入 streamingList (state="no_pb") → UI 显示「未生成 .pb」标签
+    const _noPbList = (extra.stuckList || [])
+      .filter((s) => s.level === "NO_PB")
+      .map((s) => ({
+        uuid: s.uuid,
+        shortId: s.shortId,
+        title: _titleFor(s.uuid, s.title, _backupTitleCache[s.uuid]),
+        sizeKB: 0,
+        staleSec: s.staleSec || 0,
+        isAwaitingUser: false,
+        state: "no_pb", // 新状态: vscdb=active 但无 .pb 文件
+        _isStale: true,
+        _noPb: true,
+      }));
+    // v14.0 根治②: _visibleStuckList 用 UUID 兜底 · 杜绝因无标题而隐身
+    //   旧逻辑: _displayTitleFor 失败 → return null → 过滤 → 卡死对话完全消失
+    //   新逻辑: 无真实标题 → "对话 #短UUID" 兜底 → 始终可见 · 用户至少看到UUID
     const _visibleStuckList = (extra.stuckList || [])
       .map((s) => {
-        const t = _displayTitleFor(s.uuid, s.title, _backupTitleCache[s.uuid]);
+        const t =
+          _displayTitleFor(s.uuid, s.title, _backupTitleCache[s.uuid]) ||
+          (s.uuid
+            ? "对话 #" + String(s.uuid).replace(/-/g, "").slice(0, 8)
+            : "");
         if (!t) return null;
         return {
           uuid: s.uuid,
@@ -2452,33 +2695,38 @@ function writeHeartbeat(extra) {
       })
       .filter(Boolean)
       .slice(0, 20);
+    // v15.0 · streamingList 三源合并: 新鲜 streaming + 陈旧 streaming + NO_PB
+    //   每条均带 _isStale 字段 · UI 据此区分新鲜 (绿) / 陈旧 (黄·停滞) / NO_PB (灰·未生成)
+    const _streamingListMerged = [
+      ..._allStreamingConvs.map((e) => ({
+        uuid: e.uuid,
+        shortId: shortId(e.uuid),
+        title: _titleFor(e.uuid, e.title, _backupTitleCache[e.uuid]),
+        sizeKB: Math.round((e.size || 0) / 1024),
+        staleSec: Math.round((_now13 - e.lastGrowth) / 1000),
+        isAwaitingUser: e._awaitingUser || false,
+        state: e.state,
+        // v15.0 · 关键字段: 距上次 .pb 增长 > _streamFreshMs (默 1min) → 陈旧 → UI 黄
+        _isStale: _now13 - e.lastGrowth > _streamFreshMs,
+      })),
+      ..._noPbList,
+    ];
     const hubData = {
       ts: _now13,
       pid: process.pid,
-      // v13.0: active/streaming 仅反映"当前对话"状态 (0或1) · 彻底止跳
-      active: _curConv ? 1 : 0,
-      streaming: _isCurStreaming ? 1 : 0,
-      // v13.1: Hub 计数与可见列表同源，避免“数量有、列表无/编号项”的跳变。
+      // v15.0: 全量计数 — streaming + 陈旧 + NO_PB 全包 · stuck 不重复计数
+      active:
+        _streamingListMerged.length +
+        _visibleStuckList.filter(
+          (s) => s.level !== "DEAD" && s.level !== "NO_PB",
+        ).length,
+      streaming: _trueStreamingCount,
+      // v13.1 保留: Hub 计数与可见列表同源
       stuck: _visibleStuckList.filter((s) => s.level !== "DEAD").length,
       error: _visibleStuckList.filter((s) => s.level === "DEAD").length,
       stuckList: _visibleStuckList,
       current: _buildHubCurrent(),
-      // v13.0: streamingList最多1条(当前对话) · 含uuid供前端title fallback
-      // 不再累积所有historical streaming对话 · 止跳·止乱·止UUID
-      // v3.11.3: 解 _curTitle 必有 → 不再被 title 抖动绑架 (_curTitle 自带兜底)
-      streamingList: _curConv
-        ? [
-            {
-              uuid: _curConv.uuid, // v13.0: 加入uuid供前端title缓存查询
-              shortId: shortId(_curConv.uuid),
-              title: _curTitle, // 已过滤·或兜底「对话 #短UUID」(v3.11.3 永不空)
-              sizeKB: Math.round((_curConv.size || 0) / 1024),
-              staleSec: Math.round((_now13 - _curConv.lastGrowth) / 1000),
-              isAwaitingUser: _curConv._awaitingUser || false, // 是否等待用户下一轮
-              state: _curConv.state, // 供前端区分 streaming/warning/stuck等
-            },
-          ]
-        : [],
+      streamingList: _streamingListMerged,
     };
     _writeHub(hubData);
   } catch {}
@@ -2577,7 +2825,7 @@ function main() {
   process.on("SIGINT", _cleanupPid);
   process.on("SIGTERM", _cleanupPid);
   log(
-    `START v13.0 warn=${CFG.warnThreshold}s crit=${CFG.critThreshold}s initial_grace=${INITIAL_SEND_GRACE / 1000}s awaiting_user_threshold=${AWAITING_USER_THRESHOLD}B ignore_age=${CFG.ignoreAge}s dead_expire=${DEAD_EXPIRE_MS / 60000}min poll=${CFG.poll}s port=${CFG.port} pid=${process.pid} user_prompt_idle=30s`,
+    `START v16.0 warn=${CFG.warnThreshold}s crit=${CFG.critThreshold}s initial_grace=${INITIAL_SEND_GRACE / 1000}s awaiting_user_threshold=${AWAITING_USER_THRESHOLD}B ignore_age=${CFG.ignoreAge}s dead_expire=${DEAD_EXPIRE_MS / 60000}min poll=${CFG.poll}s port=${CFG.port} pid=${process.pid} user_prompt_idle=30s [WAL双保护+end_turn修复+RECOVER防循环+old可逆]`,
   );
   log(`SOURCE1: ${VSCDB} (${Database ? "OK" : "NO better-sqlite3"})`);
   log(`SOURCE2: ${PB_DIR}`);
