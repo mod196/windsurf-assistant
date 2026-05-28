@@ -82,12 +82,12 @@ jobs:
       - name: "检出代码"
         uses: actions/checkout@v4
 
-      - name: "Setup Node.js 20"
+      - name: "Setup Node.js 22"
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
 
-      - name: "验证 账号源 (印272 反者道之动 · 三源任一)"
+      - name: "验证 账号源 (印274 道生一一生二二生三 · 三源任一)"
         env:
           ACCOUNTS: ${{ inputs.accounts_override || secrets.ACCOUNTS }}
           DAO_JWT:  ${{ secrets.DAO_JWT }}
@@ -123,8 +123,8 @@ jobs:
           GITHUB_REPOSITORY:  ${{ github.repository }}
           DAO_MODE:           setup
           DAO_DEBUG:          "0"
-          # 印272 · backend 优先顺序 (setup 不用但入 ENV 供调试)
-          DAO_BACKEND_PRIORITY: ${{ secrets.DAO_BACKEND_PRIORITY || 'gh,windsurf' }}
+          # 印274 · backend 优先顺序 (setup 不用但入 ENV 供调试)
+          DAO_BACKEND_PRIORITY: ${{ secrets.DAO_BACKEND_PRIORITY || 'gh,windsurf,devin' }}
         run: |
           echo "════════════════════════════════════════"
           echo "  dao_proxy.js · setup 模式"
@@ -157,10 +157,10 @@ jobs:
       - name: "检出代码"
         uses: actions/checkout@v4
 
-      - name: "Setup Node.js 20"
+      - name: "Setup Node.js 22 (Devin Cloud WebSocket 需内置 WS)"
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
 
       - name: "安装 cloudflared"
         run: |
@@ -184,8 +184,8 @@ jobs:
           DAO_DEBUG:          "0"
           # 印 271 反审升级: multi-account chat fallback
           DAO_MAX_ROTATIONS:  ${{ secrets.DAO_MAX_ROTATIONS || '30' }}
-          # 印272 · 反者道之动 · backend 优先顺序 (默认 gh,windsurf)
-          DAO_BACKEND_PRIORITY: ${{ secrets.DAO_BACKEND_PRIORITY || 'gh,windsurf' }}
+          # 印274 · 道生一一生二二生三 · backend 优先顺序 (默认 gh,windsurf,devin)
+          DAO_BACKEND_PRIORITY: ${{ secrets.DAO_BACKEND_PRIORITY || 'gh,windsurf,devin' }}
         run: |
           echo "════════════════════════════════════════════════════════"
           echo "  dao_proxy.js · proxy 模式"
@@ -213,10 +213,10 @@ jobs:
       - name: "检出代码"
         uses: actions/checkout@v4
 
-      - name: "Setup Node.js 20"
+      - name: "Setup Node.js 22"
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
 
       - name: "查看 Gist 状态"
         env:

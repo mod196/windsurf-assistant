@@ -42,9 +42,9 @@ const os = require("os");
 const { URL } = require("url");
 const { execSync, spawn } = require("child_process");
 
-const VERSION = "3.0.0";
+const VERSION = "4.0.0";
 const SEAL =
-  "道 · 万法归宗 · GitHub Actions 反代 · Windsurf + GitHub Models 双背 · 永久免费";
+  "道 · 万法归宗 · 三背反代 · Windsurf + GH Models + Devin Cloud · 永久免费";
 
 // ══════════════════════════════════════════════════════════════════════
 // §0 · 终端着色工具
@@ -458,6 +458,7 @@ async function resolveAuth() {
   if (process.env.DAO_JWT?.startsWith("devin-session-token$")) {
     return {
       apiKey: process.env.DAO_JWT,
+      sessionToken: process.env.DAO_JWT,
       apiServerUrl: `https://${API_SERVER}`,
       source: "env:session",
     };
@@ -581,6 +582,7 @@ async function secretSet(repoFull, tok, name, value) {
 //
 const CRED_BOX = {
   apiKey: null,
+  sessionToken: null,
   apiServerUrl: null,
   email: null,
 };
@@ -623,6 +625,7 @@ async function rotateCred() {
       log("ROTATE", `试 ${mask(acc.email)} (idx=${idx}) ...`);
       const cred = await windsurfAuth(acc.email, acc.password);
       CRED_BOX.apiKey = cred.apiKey;
+      CRED_BOX.sessionToken = cred.sessionToken || null;
       CRED_BOX.apiServerUrl = cred.apiServerUrl;
       CRED_BOX.email = acc.email;
       CRED_IDX = idx;
@@ -747,14 +750,15 @@ function sendChunk(res, model, content, finishReason = null) {
  * (实证: 02-Proxy/core/dao_proxy.js 印105 · 2026-05-14)
  */
 // ══════════════════════════════════════════════════════════════════════
-// 印272 · 反者道之动 · dual-backend smart router
+// 印274 · 道生一一生二二生三 · triple-backend smart router
 // ══════════════════════════════════════════════════════════════════════
 //
 //   策略:
-//     - `windsurf/xxx` · `MODEL_xxx`         → windsurf only
-//     - `gh/xxx` · `<publisher>/<model>`    → gh only
-//     - 其余 (`swe-1.5` · `gpt-4o-mini` 等) → 先 gh → 失败降级 windsurf
-//   「上德不德, 是以有德」: GH Models 永久免费优先 · windsurf 仅作 fallback
+//     - `windsurf/xxx` · `MODEL_xxx`           → windsurf only
+//     - `gh/xxx` · `<publisher>/<model>`      → gh only
+//     - `devin/xxx` · `devin-cloud` · `devin` → devin only
+//     - 其余 (`swe-1.5` · `gpt-4o-mini` 等)   → gh → windsurf → devin fallback
+//   「道生一，一生二，二生三，三生万物」: 三背一源
 //
 async function proxyChat(_unusedApiKey, _unusedApiServerUrl, reqBody, res) {
   const { model: rawModel = "" } = reqBody;
@@ -763,20 +767,25 @@ async function proxyChat(_unusedApiKey, _unusedApiServerUrl, reqBody, res) {
   const explicitGH =
     /^gh\//.test(rawModel) ||
     /^(openai|deepseek|meta|mistral-ai|cohere|microsoft|xai)\//.test(rawModel);
+  const explicitDevin =
+    /^devin\//.test(rawModel) ||
+    /^devin-cloud/.test(rawModel) ||
+    rawModel === "devin";
 
   let order;
   if (explicitWindsurf) order = ["windsurf"];
-  else if (explicitGH) order = ["gh", "windsurf"];
-  else order = ["gh", "windsurf"];
+  else if (explicitGH) order = ["gh"];
+  else if (explicitDevin) order = ["devin"];
+  else order = ["gh", "windsurf", "devin"];
 
-  // 用户可用 ENV 反序: DAO_BACKEND_PRIORITY=windsurf,gh
+  // 用户可用 ENV 反序: DAO_BACKEND_PRIORITY=devin,gh,windsurf
   const envPrio = (process.env.DAO_BACKEND_PRIORITY || "")
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
-  if (envPrio.length && !explicitWindsurf && !explicitGH) {
-    order = envPrio.filter((b) => ["gh", "windsurf"].includes(b));
-    if (!order.length) order = ["gh", "windsurf"];
+  if (envPrio.length && !explicitWindsurf && !explicitGH && !explicitDevin) {
+    order = envPrio.filter((b) => ["gh", "windsurf", "devin"].includes(b));
+    if (!order.length) order = ["gh", "windsurf", "devin"];
   }
 
   log("PROXY", `→ model="${rawModel}" · backends=[${order.join(",")}]`);
@@ -800,6 +809,12 @@ async function proxyChat(_unusedApiKey, _unusedApiServerUrl, reqBody, res) {
         lastErr = new Error(`windsurf:${r.error || "unknown"}`);
         lastInfo = { backend: "windsurf", ...r };
         warn("PROXY", `windsurf fail · ${lastErr.message.slice(0, 140)}`);
+      } else if (backend === "devin") {
+        const r = await proxyChatDevin(reqBody, res);
+        if (r.ok || res.headersSent || res.writableEnded) return;
+        lastErr = new Error(`devin:${r.error || "unknown"}`);
+        lastInfo = { backend: "devin", ...r };
+        warn("PROXY", `devin fail · ${lastErr.message.slice(0, 140)}`);
       }
     } catch (e) {
       lastErr = e;
@@ -1320,6 +1335,425 @@ async function proxyChatGH(reqBody, res) {
 }
 
 // ══════════════════════════════════════════════════════════════════════
+// §5.6 · Devin Cloud backend (道生一一生二二生三 · 印274 · D100 三背全开)
+// ══════════════════════════════════════════════════════════════════════
+//
+//   「道生一，一生二，二生三，三生万物。」── 帛书四十二
+//   「万物负阴而抱阳，中气以为和。」── 帛书四十二
+//
+//   ── 底层突破 ──
+//   同一组账号 (accounts.md) 同时拥有:
+//     · Windsurf Cascade 额度 (W100) → sk-ws-* key → GetChatMessage RPC
+//     · Devin Cloud 额度 (D100) → devin-session-token$JWT → ACP WebSocket
+//     · GitHub Models → GITHUB_TOKEN → REST API
+//   三背一源 · 无为而无不为
+//
+//   ── 协议 ──
+//   端点: wss://app.devin.ai/api/acp/live?token=<JWT>
+//   协议: ACP (Agent Communication Protocol) · JSON-RPC 2.0 over WebSocket
+//   流程: initialize → session/new → session/prompt → session/update* (streaming)
+//   依赖: Node 22+ 内置 WebSocket (globalThis.WebSocket)
+//   实证: devin_cloud_engine.js 印80 · wss handshake + chat 全路贯通
+//
+
+const DEVIN_WSS_BASE = "wss://app.devin.ai/api/acp/live";
+const DEVIN_TOKEN_PREFIX = "devin-session-token$";
+const DEVIN_HAS_WS = typeof globalThis.WebSocket === "function";
+
+const DEVIN_MODELS_LIST = ["devin-cloud", "devin-cloud-claude", "devin-agent"];
+
+const DEVIN_MODEL_ALIAS = {
+  devin: "devin-cloud",
+  "devin-cloud": "devin-cloud",
+  "devin-agent": "devin-agent",
+  "devin-claude": "devin-cloud-claude",
+  "devin-cloud-claude": "devin-cloud-claude",
+};
+
+function resolveDevinModel(userModel) {
+  if (!userModel) return "devin-cloud";
+  const m = userModel.replace(/^devin\//, "");
+  return DEVIN_MODEL_ALIAS[m] || "devin-cloud";
+}
+
+function getDevinSessionToken() {
+  if (CRED_BOX.sessionToken?.startsWith(DEVIN_TOKEN_PREFIX))
+    return CRED_BOX.sessionToken;
+  if (process.env.DAO_DEVIN_TOKEN?.startsWith(DEVIN_TOKEN_PREFIX))
+    return process.env.DAO_DEVIN_TOKEN;
+  if (CRED_BOX.apiKey?.startsWith(DEVIN_TOKEN_PREFIX)) return CRED_BOX.apiKey;
+  return null;
+}
+
+// OpenAI messages → ACP prompt format
+// 「上士闻道, 堇而行之」— 让 Devin Agent 当裸 LLM 用
+function messagesToDevinPrompt(messages) {
+  if (!Array.isArray(messages) || messages.length === 0)
+    return [{ type: "text", text: "ok" }];
+  const systems = messages
+    .filter((m) => m && m.role === "system")
+    .map((m) => (typeof m.content === "string" ? m.content : ""))
+    .filter(Boolean);
+  const turns = [];
+  for (const m of messages) {
+    if (!m || m.role === "system") continue;
+    const content = typeof m.content === "string" ? m.content : "";
+    if (!content) continue;
+    if (m.role === "user") turns.push(`User: ${content}`);
+    else if (m.role === "assistant") turns.push(`Assistant: ${content}`);
+    else turns.push(content);
+  }
+  let text = "";
+  if (systems.length > 0) text += systems.join("\n\n") + "\n\n";
+  if (turns.length > 0) text += turns.join("\n\n");
+  if (!text) text = "ok";
+  return [{ type: "text", text }];
+}
+
+// session/update → text delta (agent_message_chunk only)
+function extractDevinDelta(update) {
+  if (!update || typeof update !== "object") return null;
+  const upType = update.sessionUpdate || update.type;
+  if (upType !== "agent_message_chunk") return null;
+  const content = update.content;
+  if (!content) return null;
+  if (typeof content === "string") return content;
+  if (Array.isArray(content))
+    return content
+      .filter((c) => c && c.type === "text" && typeof c.text === "string")
+      .map((c) => c.text)
+      .join("");
+  if (
+    typeof content === "object" &&
+    content.type === "text" &&
+    typeof content.text === "string"
+  )
+    return content.text;
+  return null;
+}
+
+async function proxyChatDevin(reqBody, res) {
+  if (!DEVIN_HAS_WS) {
+    return {
+      ok: false,
+      error: `devin_needs_node22_websocket (current: ${process.version})`,
+    };
+  }
+  const token = getDevinSessionToken();
+  if (!token) {
+    return { ok: false, error: "no_devin_session_token" };
+  }
+  const { model: rawModel = "", messages = [], stream = true } = reqBody;
+  const devinModel = resolveDevinModel(rawModel);
+  log(
+    "DEVIN",
+    `→ ${devinModel} (from "${rawModel}") · msgs=${messages.length} · stream=${stream}`,
+  );
+
+  const jwt = token.startsWith(DEVIN_TOKEN_PREFIX)
+    ? token.slice(DEVIN_TOKEN_PREFIX.length)
+    : token;
+  const wssUrl = `${DEVIN_WSS_BASE}?token=${encodeURIComponent(jwt)}`;
+
+  return new Promise((resolve) => {
+    let ws;
+    try {
+      ws = new WebSocket(wssUrl);
+    } catch (e) {
+      warn("DEVIN", `wss 创建失败: ${e.message}`);
+      return resolve({ ok: false, error: `wss_create: ${e.message}` });
+    }
+
+    let sessionId = null;
+    let collectedText = "";
+    let streamStarted = false;
+    let _resolved = false;
+    let _closed = false;
+
+    const done = (result) => {
+      if (_resolved) return;
+      _resolved = true;
+      clearTimeout(timer);
+      if (!_closed) {
+        try {
+          ws.close(1000, "chat done");
+        } catch {}
+      }
+      resolve(result);
+    };
+
+    const timer = setTimeout(() => {
+      warn(
+        "DEVIN",
+        `超时 120s · sid=${sessionId || "?"} · text=${collectedText.length}chars`,
+      );
+      if (collectedText && streamStarted) {
+        if (!res.writableEnded) {
+          sendChunk(res, devinModel, "", "stop");
+          res.write("data: [DONE]\n\n");
+          res.end();
+        }
+        done({ ok: true, partial: true });
+      } else {
+        done({ ok: false, error: "devin_timeout_120s" });
+      }
+    }, 120000);
+
+    ws.onopen = () => {
+      log("DEVIN", "wss connected → initialize");
+      try {
+        ws.send(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "initialize",
+            params: {
+              protocolVersion: 1,
+              clientCapabilities: {
+                fs: { readTextFile: true, writeTextFile: true },
+                elicitation: { form: {} },
+                _meta: {
+                  "cognition.ai/subagentSupport": false,
+                  "cognition.ai/multiRootWorkspace": false,
+                },
+              },
+            },
+          }),
+        );
+      } catch (e) {
+        done({ ok: false, error: `send_init: ${e.message}` });
+      }
+    };
+
+    ws.onerror = (ev) => {
+      const msg = ev?.message || ev?.error?.message || "(unknown)";
+      warn("DEVIN", `wss error: ${msg}`);
+      done({ ok: false, error: `wss_error: ${msg}` });
+    };
+
+    ws.onclose = (ev) => {
+      _closed = true;
+      if (_resolved) return;
+      if (collectedText && streamStarted && !res.writableEnded) {
+        sendChunk(res, devinModel, "", "stop");
+        res.write("data: [DONE]\n\n");
+        res.end();
+        done({ ok: true });
+      } else {
+        const reason = (ev?.reason || "").slice(0, 200);
+        done({
+          ok: false,
+          error: `wss_closed: code=${ev?.code} ${reason}`,
+        });
+      }
+    };
+
+    ws.onmessage = (ev) => {
+      let raw = ev.data;
+      if (raw instanceof ArrayBuffer) raw = Buffer.from(raw).toString("utf8");
+      if (Buffer.isBuffer(raw)) raw = raw.toString("utf8");
+      if (typeof raw !== "string") return;
+      const lines = raw.split("\n").filter((x) => x.trim());
+      for (const line of lines) {
+        let msg;
+        try {
+          msg = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        handleMsg(msg);
+      }
+    };
+
+    function handleMsg(msg) {
+      // ── session/update notifications (streaming chat content) ──
+      if (msg.method === "session/update") {
+        const update = msg.params?.update;
+        const delta = extractDevinDelta(update);
+        if (delta) {
+          collectedText += delta;
+          if (stream && !res.writableEnded) {
+            if (!streamStarted && !res.headersSent) {
+              res.writeHead(200, {
+                "Content-Type": "text/event-stream",
+                "Cache-Control": "no-cache",
+                Connection: "keep-alive",
+                "Access-Control-Allow-Origin": "*",
+              });
+              streamStarted = true;
+            }
+            sendChunk(res, devinModel, delta);
+          }
+        }
+        return;
+      }
+
+      // ── initialize response (id=1) ──
+      if (msg.id === 1) {
+        if (msg.error) {
+          warn(
+            "DEVIN",
+            `initialize fail: [${msg.error.code}] ${msg.error.message}`,
+          );
+          done({ ok: false, error: `init: ${msg.error.message}` });
+          return;
+        }
+        log("DEVIN", "initialize ok → session/new");
+        const authMethods = msg.result?.authMethods?.map((a) => a.id) || [];
+        if (authMethods.length > 0) {
+          // wss URL token 已前置 → 直 session/new (authMethods=[])
+          // 万一需要 authenticate (stdio chisel 路)
+          try {
+            ws.send(
+              JSON.stringify({
+                jsonrpc: "2.0",
+                id: 2,
+                method: "authenticate",
+                params: {
+                  methodId: "windsurf-api-key",
+                  _meta: {
+                    api_key: token,
+                    api_server_url:
+                      CRED_BOX.apiServerUrl || `https://${API_SERVER}`,
+                  },
+                },
+              }),
+            );
+          } catch (e) {
+            done({ ok: false, error: `send_auth: ${e.message}` });
+          }
+        } else {
+          sendSessionNew();
+        }
+        return;
+      }
+
+      // ── authenticate response (id=2 · 反向兼容) ──
+      if (msg.id === 2) {
+        if (msg.error) {
+          warn(
+            "DEVIN",
+            `authenticate fail: [${msg.error.code}] ${msg.error.message}`,
+          );
+          done({
+            ok: false,
+            error: `auth: ${msg.error.message}`,
+            isQuota: /quota|billing/i.test(msg.error.message || ""),
+          });
+          return;
+        }
+        sendSessionNew();
+        return;
+      }
+
+      // ── session/new response (id=3) ──
+      if (msg.id === 3) {
+        if (msg.error) {
+          const errMsg = msg.error.message || "";
+          warn("DEVIN", `session/new fail: [${msg.error.code}] ${errMsg}`);
+          done({
+            ok: false,
+            error: `session_new: ${errMsg}`,
+            isQuota: /quota|limit|billing|rate/i.test(errMsg),
+          });
+          return;
+        }
+        sessionId = msg.result?.sessionId;
+        if (!sessionId) {
+          done({ ok: false, error: "no_session_id_returned" });
+          return;
+        }
+        log("DEVIN", `session/new ok · sid=${sessionId} → prompt`);
+        const prompt = messagesToDevinPrompt(messages);
+        try {
+          ws.send(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id: 4,
+              method: "session/prompt",
+              params: { sessionId, prompt },
+            }),
+          );
+        } catch (e) {
+          done({ ok: false, error: `send_prompt: ${e.message}` });
+        }
+        return;
+      }
+
+      // ── session/prompt response (id=4 · completion) ──
+      if (msg.id === 4) {
+        if (msg.error) {
+          const errMsg = msg.error.message || "";
+          warn("DEVIN", `session/prompt fail: [${msg.error.code}] ${errMsg}`);
+          done({ ok: false, error: `prompt: ${errMsg}` });
+          return;
+        }
+        ok("DEVIN", `完成 · ${collectedText.length} chars · sid=${sessionId}`);
+        if (stream) {
+          if (!streamStarted && !res.headersSent) {
+            res.writeHead(200, {
+              "Content-Type": "text/event-stream",
+              "Access-Control-Allow-Origin": "*",
+            });
+          }
+          if (!res.writableEnded) {
+            if (collectedText) sendChunk(res, devinModel, "", "stop");
+            res.write("data: [DONE]\n\n");
+            res.end();
+          }
+        } else {
+          if (!res.headersSent) {
+            const resp = {
+              id: `chatcmpl-devin-${Date.now()}`,
+              object: "chat.completion",
+              created: Math.floor(Date.now() / 1000),
+              model: devinModel,
+              choices: [
+                {
+                  index: 0,
+                  message: {
+                    role: "assistant",
+                    content: collectedText || "(empty response)",
+                  },
+                  finish_reason: "stop",
+                },
+              ],
+              usage: {
+                prompt_tokens: 0,
+                completion_tokens: 0,
+                total_tokens: 0,
+              },
+            };
+            res.writeHead(200, {
+              "Content-Type": "application/json",
+              "Access-Control-Allow-Origin": "*",
+            });
+            res.end(JSON.stringify(resp));
+          }
+        }
+        done({ ok: true });
+        return;
+      }
+    }
+
+    function sendSessionNew() {
+      try {
+        ws.send(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: 3,
+            method: "session/new",
+            params: { cwd: process.cwd(), mcpServers: [] },
+          }),
+        );
+      } catch (e) {
+        done({ ok: false, error: `send_new: ${e.message}` });
+      }
+    }
+  });
+}
+
+// ══════════════════════════════════════════════════════════════════════
 // §6 · HTTP 服务器 (OpenAI 兼容 API)
 // ══════════════════════════════════════════════════════════════════════
 
@@ -1352,7 +1786,7 @@ function startProxyServer(apiKey, apiServerUrl, port = 7799) {
         JSON.stringify({
           ok: true,
           version: VERSION,
-          model: "dual-backend (windsurf + gh-models)",
+          model: "triple-backend (windsurf + gh-models + devin-cloud)",
           backends: {
             windsurf: {
               available: !!CRED_BOX.apiKey,
@@ -1372,8 +1806,18 @@ function startProxyServer(apiKey, apiServerUrl, port = 7799) {
                     : null,
               models: GH_MODELS_LIST.length,
             },
+            devin_cloud: {
+              available: DEVIN_HAS_WS && !!getDevinSessionToken(),
+              websocket: DEVIN_HAS_WS,
+              node_version: process.version,
+              token: getDevinSessionToken()
+                ? mask(getDevinSessionToken())
+                : null,
+              models: DEVIN_MODELS_LIST.length,
+            },
           },
-          priority: process.env.DAO_BACKEND_PRIORITY || "gh,windsurf (default)",
+          priority:
+            process.env.DAO_BACKEND_PRIORITY || "gh,windsurf,devin (default)",
         }),
       );
       return;
@@ -1393,6 +1837,12 @@ function startProxyServer(apiKey, apiServerUrl, port = 7799) {
           object: "model",
           created: 1700000000,
           owned_by: id.split("/")[0],
+        })),
+        ...DEVIN_MODELS_LIST.map((id) => ({
+          id,
+          object: "model",
+          created: 1700000000,
+          owned_by: "devin",
         })),
       ];
       res.writeHead(200, {
@@ -1701,6 +2151,7 @@ async function modeProxy() {
 
   // 印 271 反审升级: 初始化 CRED_BOX (支 multi-account fallback)
   CRED_BOX.apiKey = cred.apiKey;
+  CRED_BOX.sessionToken = cred.sessionToken || null;
   CRED_BOX.apiServerUrl = cred.apiServerUrl;
   CRED_BOX.email =
     cred.email ||
@@ -1714,7 +2165,11 @@ async function modeProxy() {
   }
   ok(
     "PROXY",
-    `CRED_BOX 初载 · email=${mask(CRED_BOX.email || "?")} · ACCOUNTS=${ACCOUNTS_LIST.length} · CRED_IDX=${CRED_IDX} · gh_token=${getGhToken() ? "✓" : "✗"}`,
+    `CRED_BOX 初载 · email=${mask(CRED_BOX.email || "?")} · ACCOUNTS=${ACCOUNTS_LIST.length} · gh=${getGhToken() ? "✓" : "✗"} · devin=${getDevinSessionToken() ? "✓" : "✗"}`,
+  );
+  ok(
+    "PROXY",
+    `三背状态 · windsurf=${CRED_BOX.apiKey ? "✓" : "✗"} · gh_models=${getGhToken() ? "✓" : "✗"} · devin_cloud=${DEVIN_HAS_WS && getDevinSessionToken() ? "✓" : "✗"} (node ${process.version})`,
   );
 
   // 启动 HTTP 服务器
@@ -1833,6 +2288,7 @@ async function modeLocal() {
   try {
     cred = await resolveAuth();
     CRED_BOX.apiKey = cred.apiKey;
+    CRED_BOX.sessionToken = cred.sessionToken || null;
     CRED_BOX.apiServerUrl = cred.apiServerUrl;
     CRED_BOX.email =
       cred.email ||
@@ -1859,7 +2315,7 @@ async function modeLocal() {
   ok("LOCAL", `模型列表 · http://localhost:${port}/v1/models`);
   ok(
     "LOCAL",
-    `backends: windsurf=${cred.apiKey ? "✓" : "✗"} · gh_models=${getGhToken() ? "✓" : "✗"}`,
+    `backends: windsurf=${cred.apiKey ? "✓" : "✗"} · gh=${getGhToken() ? "✓" : "✗"} · devin=${DEVIN_HAS_WS && getDevinSessionToken() ? "✓" : "✗"} (node ${process.version})`,
   );
   await new Promise(() => {});
 }
