@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // _sync_origin.js — 同步 vendor/bundled-origin → installed-ext + hot-dir
 //
-// v17.80 · 损之又损 · 全档归一 · 不止 源.js
+// v9.9.56 · 去芜存菁 · dao-agi归档后指向dao-proxy-min · 道法自然
 // vendor 内对偶: 源.js↔source.js, 锚.py↔anchor.py (中文名+ASCII 别名 · VSIX 编码兜底)
 // 然后 vendor → installed-ext + hot-dir (Administrator 之地; 它用户由其各自 ext 之 ensureHot 自治)
 "use strict";
@@ -10,7 +10,7 @@ const path = require("node:path");
 const os = require("node:os");
 
 const VENDOR =
-  "e:\\道\\道生一\\一生二\\Windsurf万法归宗\\070-插件_Plugins\\020-道VSIX_DaoAgi\\dao-agi\\vendor\\wam\\bundled-origin";
+  "e:\\道\\道生一\\一生二\\Windsurf万法归宗\\070-插件_Plugins\\020-道VSIX_DaoAgi\\dao-proxy-min\\vendor\\bundled-origin";
 const HOT = path.join(os.homedir(), ".wam-hot", "origin");
 
 // vendor 内对偶副本 (主名 → 别名)
@@ -21,7 +21,16 @@ const PAIRS = [
 ];
 
 // 全部需同步之档 (vendor → 各 target)
-const SYNC_FILES = ["源.js", "source.js", "锚.py", "anchor.py", "_dao_81.txt"];
+const SYNC_FILES = [
+  "源.js",
+  "source.js",
+  "锚.py",
+  "anchor.py",
+  "_dao_81.txt",
+  "_silk_dao.txt",
+  "_silk_de.txt",
+  "_yinfu.txt",
+];
 
 // 自动发现 installed-ext 路径 (版本号会自动升级 · 17.78 → 17.80 等)
 function findInstalledExt() {
@@ -29,8 +38,12 @@ function findInstalledExt() {
   if (!fs.existsSync(extRoot)) return [];
   return fs
     .readdirSync(extRoot)
-    .filter((d) => d.startsWith("dao-agi.dao-agi-"))
-    .map((d) => path.join(extRoot, d, "vendor", "wam", "bundled-origin"))
+    .filter(
+      (d) =>
+        d.startsWith("dao-agi.dao-proxy-min-") ||
+        d.startsWith("dao-agi.dao-agi-"),
+    )
+    .map((d) => path.join(extRoot, d, "vendor", "bundled-origin"))
     .filter((p) => fs.existsSync(p));
 }
 
