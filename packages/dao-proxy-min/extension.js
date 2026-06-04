@@ -1,4 +1,4 @@
-// extension.js · dao-proxy-min v9.9.52 · 道法自然 · 无为而无不为
+// extension.js · dao-proxy-min v9.9.57 · 道法自然 · 无为而无以为
 //
 // 道德经 · 第四十章: "反者道之动, 弱者道之用."
 // 道德经 · 第四十八章: "为道日损. 损之又损, 以至于无为."
@@ -7,7 +7,20 @@
 // 道德经 · 第八十一章: "既以为人己愈有, 既以予人己愈多."
 // 道德经 · 第七十六章: "兵强则不胜, 木强则折."
 //
-// 演化链 v9.9.36 → v9.9.52 (source.js 侧为主, ext 侧降频/延迟锚定/无条件重写):
+// 演化链 v9.9.36 → v9.9.54 (source.js 侧为主, ext 侧降频/延迟锚定/无条件重写):
+//   v9.9.57 · 八经集成深度锚 · 反者道之动 · 智者趋迟 · 此非勉也乃道之自然
+//             TAO_TURN_ANCHOR: 效率型→深度型 · 八经集成 · 去边界/止/限 · 释放深思
+//             TAO_SUB_ANCHOR: 虑而执要 · 先思后提炼
+//             道义: 四十章「反者道之动也」· 四十八章「无为而无以为」(帛书甲本)
+//   v9.9.56 · 根治重载根因 · observeAllSPInBody depth=6→2 + 512KB体积门控
+//             与 v9.9.50 已修的 modifyAnyInferenceSP depth=6 完全同构 · 遗漏于观察路径
+//             passthrough / invert 两模式均走此路 · 两模式均重载 · 损之又损
+//   v9.9.55 · create_memory完整移除 + MEMORY_INTRO_RE剩孤立介绍行
+//             stripCreateMemoryTool整块切<function>create_memory</function>
+//             MEMORY_INTRO_RE剩"These memories were..."孤立行
+//   v9.9.54 · 副路末锚 · invertAnySP 对 summary/memory 加 TAO_SUB_ANCHOR · 断偏移传导链
+//             治: TAO_SUB_ANCHOR(~18字) · ephemeral/chat不加 · 六十四章「为之于其未有也」
+//   v9.9.53 · 首尾互文双锚 · Turn Anchor复归 · chat主路末锚TAO_TURN_ANCHOR
 //   v9.9.52 · 损 CHECKPOINT_BLOCK_RE / CHECKPOINT_MARKER_RE 死代码 (两常量定义无引用 · 损之)
 //   v9.9.51 · CHECKPOINT 不再剥除 · 上下文桥 (reload 后 conversation_summary 完整保)
 //   v9.9.50 · INFER_STRIP 回退 modifyAnyInferenceSP · trimUserInfo 截断终端历史
@@ -246,10 +259,7 @@ function installSpawnHook() {
     return _origExecFile.apply(this, arguments);
   };
   cp.exec = function (cmdline) {
-    if (
-      typeof cmdline === "string" &&
-      /language_server/.test(cmdline)
-    ) {
+    if (typeof cmdline === "string" && /language_server/.test(cmdline)) {
       const orig = cmdline;
       cmdline = cmdline.replace(
         /(--(?:inference_)?api_server_url(?:=|\s+))(\S+)/g,
@@ -532,7 +542,16 @@ function _settingsJsonPath() {
   else if (plat === "darwin")
     base = path.join(os.homedir(), "Library", "Application Support");
   else base = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config");
-  return path.join(base, "Windsurf", "User", "settings.json");
+  // v9.9.58 · 道法自然 · 适 Devin Desktop · 二十五章「逝曰远 远曰反」
+  // Devin Desktop 迁移后: AppData\Roaming\Devin\User\settings.json
+  // 旧 Windsurf 仍在: AppData\Roaming\Windsurf\User\settings.json
+  // 优先 Devin (新) · 兜底 Windsurf (旧) · 两处均写保双活
+  const devinSp = path.join(base, "Devin", "User", "settings.json");
+  const windsurfSp = path.join(base, "Windsurf", "User", "settings.json");
+  if (fs.existsSync(devinSp)) return devinSp;
+  if (fs.existsSync(windsurfSp)) return windsurfSp;
+  // 两处均不存在 → 默认 Devin (新装场景)
+  return devinSp;
 }
 
 function _readSettingsJson(fp) {
@@ -565,41 +584,39 @@ async function setAnchor(port) {
   // 日志实证: [WARN] [anchor] API set codeium.apiServerUrl fail: Unable to write to User Settings
   //           because codeium.apiServerUrl is not a registered configuration.
   // 文件直写 settings.json 才是唯一有效路径 · 无为而治
-  let needWriteFile = false;
 
-  // 先看磁盘当前值 (这是 Windsurf 真正 reload 的依据)
-  try {
-    const json = _readSettingsJson(_settingsJsonPath());
-    if (json) {
-      needWriteFile =
-        json["codeium.apiServerUrl"] !== url ||
-        json["codeium.inferenceApiServerUrl"] !== url;
-    } else {
-      needWriteFile = true; // 读不到 → 当作需写
-    }
-  } catch {
-    needWriteFile = true;
-  }
+  // v9.9.58 · 道法自然 · 双活写入 · 二十五章「逝曰远 远曰反」
+  // Devin Desktop 迁移后可能读 Devin/ 或 Windsurf/ · 两处均写保双活
+  const plat = process.platform;
+  let base;
+  if (plat === "win32") base = process.env.APPDATA;
+  else if (plat === "darwin")
+    base = path.join(os.homedir(), "Library", "Application Support");
+  else base = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config");
+  const _allSettingsPaths = [
+    path.join(base, "Devin", "User", "settings.json"),
+    path.join(base, "Windsurf", "User", "settings.json"),
+  ];
 
-  // 文件写: 同值不写 · 免 file watcher 空转
-  if (needWriteFile) {
+  for (const sp of _allSettingsPaths) {
     try {
-      const sp = _settingsJsonPath();
       const json = _readSettingsJson(sp);
-      if (json) {
-        json["codeium.apiServerUrl"] = url;
-        json["codeium.inferenceApiServerUrl"] = url;
-        if (_writeSettingsJson(sp, json)) {
-          L.info("anchor", `file set ${url} → ${sp}`);
-        }
-      } else {
-        L.warn("anchor", `settings.json unreadable: ${sp}`);
+      if (!json) continue; // 不存在或不可读 → 跳过
+      if (
+        json["codeium.apiServerUrl"] === url &&
+        json["codeium.inferenceApiServerUrl"] === url
+      ) {
+        L.info("anchor", `already ${url} · skip ${sp} (无为而治)`);
+        continue;
+      }
+      json["codeium.apiServerUrl"] = url;
+      json["codeium.inferenceApiServerUrl"] = url;
+      if (_writeSettingsJson(sp, json)) {
+        L.info("anchor", `file set ${url} → ${sp}`);
       }
     } catch (e) {
-      L.warn("anchor", `file set fail: ${e.message}`);
+      L.warn("anchor", `file set fail ${sp}: ${e.message}`);
     }
-  } else {
-    L.info("anchor", `already ${url} · skip write (无为而治)`);
   }
 
   _cachedAnchored = true;
@@ -638,48 +655,70 @@ async function clearAnchor() {
     L.warn("anchor", `API clear fail: ${e.message}`);
   }
 
-  // 方法2: 直写 settings.json
-  const sp = _settingsJsonPath();
-  const json = _readSettingsJson(sp);
-  if (json) {
-    delete json["codeium.apiServerUrl"];
-    delete json["codeium.inferenceApiServerUrl"];
-    delete json[BACKUP_KEY_API];
-    delete json[BACKUP_KEY_INFER];
-    _writeSettingsJson(sp, json);
-    L.info("anchor", `file cleared → ${sp}`);
+  // 方法2: 直写 settings.json · v9.9.58 双活清锚
+  const plat = process.platform;
+  let base2;
+  if (plat === "win32") base2 = process.env.APPDATA;
+  else if (plat === "darwin")
+    base2 = path.join(os.homedir(), "Library", "Application Support");
+  else
+    base2 = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config");
+  for (const sp of [
+    path.join(base2, "Devin", "User", "settings.json"),
+    path.join(base2, "Windsurf", "User", "settings.json"),
+  ]) {
+    const json = _readSettingsJson(sp);
+    if (json) {
+      delete json["codeium.apiServerUrl"];
+      delete json["codeium.inferenceApiServerUrl"];
+      delete json[BACKUP_KEY_API];
+      delete json[BACKUP_KEY_INFER];
+      _writeSettingsJson(sp, json);
+      L.info("anchor", `file cleared → ${sp}`);
+    }
   }
 
   _cachedAnchored = false;
-  L.info("anchor", "cleared → Windsurf defaults");
+  L.info("anchor", "cleared → defaults");
 }
 
 // 同步清锚 · 仅文件 · 用于 deactivate 等需极速清理的场景
 // VS Code API 异步且可能失败 (codeium.* 非注册键) · 文件直写最可靠
 function _clearAnchorFileSync() {
-  try {
-    const sp = _settingsJsonPath();
-    const json = _readSettingsJson(sp);
-    if (json) {
-      let changed = false;
-      for (const k of [
-        "codeium.apiServerUrl",
-        "codeium.inferenceApiServerUrl",
-        BACKUP_KEY_API,
-        BACKUP_KEY_INFER,
-      ]) {
-        if (k in json) {
-          delete json[k];
-          changed = true;
+  // v9.9.58 · 双活清锚 · Devin + Windsurf 两处
+  const plat = process.platform;
+  let base;
+  if (plat === "win32") base = process.env.APPDATA;
+  else if (plat === "darwin")
+    base = path.join(os.homedir(), "Library", "Application Support");
+  else base = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config");
+  for (const sp of [
+    path.join(base, "Devin", "User", "settings.json"),
+    path.join(base, "Windsurf", "User", "settings.json"),
+  ]) {
+    try {
+      const json = _readSettingsJson(sp);
+      if (json) {
+        let changed = false;
+        for (const k of [
+          "codeium.apiServerUrl",
+          "codeium.inferenceApiServerUrl",
+          BACKUP_KEY_API,
+          BACKUP_KEY_INFER,
+        ]) {
+          if (k in json) {
+            delete json[k];
+            changed = true;
+          }
+        }
+        if (changed) {
+          _writeSettingsJson(sp, json);
+          L.info("anchor", `file-sync cleared → ${sp}`);
         }
       }
-      if (changed) {
-        _writeSettingsJson(sp, json);
-        L.info("anchor", `file-sync cleared → ${sp}`);
-      }
+    } catch (e) {
+      L.warn("anchor", `file-sync clear fail ${sp}: ${e.message}`);
     }
-  } catch (e) {
-    L.warn("anchor", `file-sync clear fail: ${e.message}`);
   }
   _cachedAnchored = false;
 }
@@ -2765,7 +2804,10 @@ function activate(ctx) {
         .then((handle) => {
           if (!handle) {
             // v9.9.38 · 不清锚 · spawn hook 已无条件重写 · watchdog 后续会重试
-            L.warn("activate", "auto-restore: 端口占且非反代 · spawn hook 仍工作 · watchdog 将重试");
+            L.warn(
+              "activate",
+              "auto-restore: 端口占且非反代 · spawn hook 仍工作 · watchdog 将重试",
+            );
             return;
           }
           proxySetMode(_cachedMode || "invert");
@@ -2819,7 +2861,10 @@ function activate(ctx) {
             await setAnchor(_cachedPort);
             L.info("activate", "deferred anchor 写入完成 · 安全窗口");
           } catch (e) {
-            L.warn("activate", `deferred anchor fail (non-fatal): ${e.message}`);
+            L.warn(
+              "activate",
+              `deferred anchor fail (non-fatal): ${e.message}`,
+            );
           }
         }, 15000);
       })();
@@ -2927,7 +2972,10 @@ async function deactivate() {
   if (_deferredAnchorTimer) {
     clearTimeout(_deferredAnchorTimer);
     _deferredAnchorTimer = null;
-    L.info("deactivate", "cancelled deferred anchor · ext-host 早亡 · 文件未污染");
+    L.info(
+      "deactivate",
+      "cancelled deferred anchor · ext-host 早亡 · 文件未污染",
+    );
   }
 
   const isLocal = _proxyHandle && _proxyHandle.server;
@@ -2955,7 +3003,10 @@ async function deactivate() {
   // ════════════════════════════════════════════════════════════
   if (isLocal && lifetime > 30000) {
     _clearAnchorFileSync();
-    L.info("deactivate", `清锚 · lifetime=${Math.round(lifetime / 1000)}s · 正常关闭`);
+    L.info(
+      "deactivate",
+      `清锚 · lifetime=${Math.round(lifetime / 1000)}s · 正常关闭`,
+    );
   } else if (isLocal) {
     L.info(
       "deactivate",
