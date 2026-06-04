@@ -34,6 +34,12 @@ $pkgVer  = Get-WamSourcePackageVersion
 $srcExt  = Join-Path $PSScriptRoot 'extension.js'
 $srcPkg  = Join-Path $PSScriptRoot 'package.json'
 $srcStuck = Join-Path $PSScriptRoot 'dao_stuck.js'
+# v15.1 (3.11.8) · _vscdb_helper.py 必随 (Python 直读 vscdb · 拿真实对话 title)
+#   根因: 旧部署仅复制 extension.js + dao_stuck.js · _vscdb_helper.py 部署遗漏
+#   症状: dao_stuck._tryReadVscdbViaPython() 检查文件不存在 return null
+#         → sessionCache 永远空 → entry.title 全为 null
+#         → hub.json 用 "对话 #UUID" 兜底 → 用户截图全是编号·无真实标题
+$srcVscdbPy = Join-Path $PSScriptRoot '_vscdb_helper.py'
 
 if (-not $VERSION) {
     Write-Host '[FATAL] cannot read const VERSION from extension.js' -ForegroundColor Red
@@ -46,11 +52,17 @@ if (-not (Test-Path $srcStuck)) {
     Write-Host ('[FATAL] dao_stuck.js missing: {0}' -f $srcStuck) -ForegroundColor Red
     exit 2
 }
+if (-not (Test-Path $srcVscdbPy)) {
+    Write-Host ('[FATAL] _vscdb_helper.py missing: {0} · v15.1 起 title 必依赖此文件' -f $srcVscdbPy) -ForegroundColor Red
+    exit 2
+}
 
 $srcSz  = (Get-Item $srcExt).Length
 $srcSha = Get-WamSourceShortSha
 $srcStuckSz  = (Get-Item $srcStuck).Length
 $srcStuckSha = (Get-FileHash $srcStuck -Algorithm SHA256).Hash.Substring(0, 16).ToLower()
+$srcVscdbPySz  = (Get-Item $srcVscdbPy).Length
+$srcVscdbPySha = (Get-FileHash $srcVscdbPy -Algorithm SHA256).Hash.Substring(0, 16).ToLower()
 $ts     = Get-Date -Format 'yyyyMMdd_HHmmss'
 
 Write-Host '============================================================' -ForegroundColor Cyan
@@ -60,6 +72,8 @@ Write-Host ('source: {0} bytes  sha={1}' -f $srcSz, $srcSha)
 Write-Host ('        {0}' -f $srcExt)
 Write-Host ('engine: {0} bytes  sha={1}' -f $srcStuckSz, $srcStuckSha)
 Write-Host ('        {0}' -f $srcStuck)
+Write-Host ('vscdb : {0} bytes  sha={1}' -f $srcVscdbPySz, $srcVscdbPySha)
+Write-Host ('        {0}' -f $srcVscdbPy)
 
 $daoEnv  = Get-DaoEnv
 $targets = Get-Targets -Filter $Target -LocalOnly:$LocalOnly -Env $daoEnv
@@ -123,12 +137,13 @@ foreach ($t in $targets) {
         continue
     }
 
-    # 3. copy
+    # 3. copy (v15.1: 含 _vscdb_helper.py · title 失明根治)
     try {
         Copy-Item $srcExt $oldExt -Force -ErrorAction Stop
         Copy-Item $srcPkg (Join-Path $dst 'package.json') -Force -ErrorAction Stop
         Copy-Item $srcStuck $oldStuck -Force -ErrorAction Stop
-        Write-Host '   [2/5] copy OK'
+        Copy-Item $srcVscdbPy (Join-Path $dst '_vscdb_helper.py') -Force -ErrorAction Stop
+        Write-Host '   [2/5] copy OK (含 _vscdb_helper.py)'
     } catch {
         Write-Host ('   [2/5] copy FAIL: {0}' -f $_.Exception.Message) -ForegroundColor Red
         $results += [pscustomobject]@{ target=$name; ok=$false; reason='copy_fail'; oldVer=$oldVer; sha=''; path=$dst }

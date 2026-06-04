@@ -1,4 +1,4 @@
-// WAM · 万法归宗 v3.12.1 · 通知三路消除 · 对话恢复即撤 · 道法自然
+// WAM · 万法归宗 v3.10.1 · 零额度紧急重触 · 切号防御双完善 · 道法自然
 //
 // 本源需求: 用户在 Cascade panel 发消息 → WAM 自动切健康号 (用户无为 · 插件无不为)
 //
@@ -745,7 +745,7 @@ const { URL } = require("node:url");
 //   ━━━ 道 ━━━
 //   未验号本不该留 · 只是门没开 · 门一开 · 民自化 · 无为而无不为
 //
-const VERSION = "3.12.2";
+const VERSION = "3.16.0";
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36";
 const WINDSURF = "https://windsurf.com";
@@ -768,6 +768,83 @@ const URL_GET_PLAN_STATUS_LIST = URL_GET_USER_STATUS_LIST;
 // v2.6.0 · 软编码 · 会话 token 格式单点定义 · 后端变更时仅此一处修
 const RE_SESSION_TOKEN = /^devin-session-token\$/;
 const URL_DEVIN_ORG_AUTH = "https://app.devin.ai/api/users/post-auth";
+// v3.13.0 · Devin Desktop 自适应 · 179实测修正 · 命令名已全面迁移为 devin.* 前缀
+//   旧版 Windsurf: windsurf.provideAuthTokenToAuthProvider (单一命令)
+//   新版 Devin Desktop: devin.provideWindsurfAuthTokenToAuthProvider (session token 注入)
+//                      + devin.provideDevinAuthCodeToAuthProvider (auth code 注入)
+//   自动检测: 先试 devin.* 新命令 · 未注册则试 windsurf.* 旧命令 · 零配置自适应
+//   检测结果缓存于 _detectedAuthProvider · 全生命周期一次检测 · 不重复开销
+const _AUTH_COMMANDS = {
+  PROVIDE_AUTH_TOKEN: [
+    "devin.provideWindsurfAuthTokenToAuthProvider",
+    "windsurf.provideAuthTokenToAuthProvider",
+    "devin.provideAuthTokenToAuthProvider",
+  ],
+  PROVIDE_DEVIN_AUTH_CODE: ["devin.provideDevinAuthCodeToAuthProvider"],
+  LOGIN_WITH_AUTH_TOKEN: [
+    "devin.loginWithAuthToken",
+    "windsurf.loginWithAuthToken",
+  ],
+  LOGOUT: ["devin.logout", "windsurf.logout"],
+  LOGIN: ["devin.login", "windsurf.login"],
+  CANCEL_LOGIN: ["devin.cancelLogin"],
+};
+let _detectedAuthProvider = null; // 'windsurf' | 'devin' | null (未检测)
+// v3.13.0 · 自适应命令检测 · 顺试 _AUTH_COMMANDS 内候选 · 首个可用即缓存
+//   原理: vscode.commands.getCommands() 返回所有已注册命令 · 匹配前缀即知品牌
+//   缓存: _detectedAuthProvider · 全局一次 · 零重复开销
+async function _detectAuthCommands() {
+  if (_detectedAuthProvider) return _detectedAuthProvider;
+  try {
+    const allCmds = await vscode.commands.getCommands(true);
+    // v3.13.0 · 179实测: extensionId=codeium.windsurf 但命令前缀=devin.*
+    //   因此必须基于命令名检测 · 不能依赖扩展ID
+    //   检测顺序: devin.* 新命令优先 → windsurf.* 旧命令回退
+    for (const candidate of _AUTH_COMMANDS.PROVIDE_AUTH_TOKEN) {
+      if (allCmds.includes(candidate)) {
+        _detectedAuthProvider = candidate.startsWith("devin.")
+          ? "devin"
+          : "windsurf";
+        log(
+          "自适应检测: authProvider = " +
+            _detectedAuthProvider +
+            " (命令: " +
+            candidate +
+            ")",
+        );
+        return _detectedAuthProvider;
+      }
+    }
+    // fallback: 检查 devin.* 其他命令 (login/logout)
+    const hasDevinCmd = allCmds.some(
+      (c) =>
+        (c.startsWith("devin.") && c.includes("login")) || c.includes("logout"),
+    );
+    if (hasDevinCmd) {
+      _detectedAuthProvider = "devin";
+      log("自适应检测: authProvider = devin (发现 devin.* login/logout 命令)");
+    } else {
+      _detectedAuthProvider = "windsurf"; // 默认回退
+      log(
+        "自适应检测: authProvider = windsurf (默认回退 · 未检测到 devin.* 命令)",
+      );
+    }
+  } catch (e) {
+    _detectedAuthProvider = "windsurf";
+    log("自适应检测: 回退 windsurf (" + (e.message || e) + ")");
+  }
+  return _detectedAuthProvider;
+}
+// v3.13.0 · 获取自适应命令名 · 顺试候选列表 · 首个可用即返
+async function _getAuthCommand(key) {
+  const provider = await _detectAuthCommands();
+  const candidates = _AUTH_COMMANDS[key] || [];
+  // 优先返回已检测到的 provider 对应的命令
+  for (const c of candidates) {
+    if (c.startsWith(provider + ".")) return c;
+  }
+  return candidates[0] || ""; // fallback 第一个
+}
 // v2.4.0 · 全局 endpoint 健康度追踪 · 连续 401 时跳过 verifyAll · 不浪费请求
 let _quotaEndpointHealth = {
   consecutive401: 0, // 连续 401 计数
@@ -801,7 +878,9 @@ const PENDING_TOKEN_FILE = path.join(WAM_DIR, "_pending_token.json");
 const MAX_BACKUPS = 10;
 // v3.4.0 · 三界归一 · Hub 总线 + 对话追踪 (卅辐同一毂·当其无有·车之用也)
 const HUB_FILE = path.join(WAM_DIR, "_hub.json");
-const PB_DIR = path.join(os.homedir(), ".codeium", "windsurf", "cascade"); // v4.2: os.homedir() 跨平台统一 (USERPROFILE 仅 Windows)
+const PB_DIR =
+  _resolveCascadePbDir() ||
+  path.join(os.homedir(), ".codeium", "windsurf", "cascade"); // v3.16.0: 动态解析 Devin/Windsurf
 const CONV_BACKUP_DEFAULT = path.join(WAM_DIR, "conversation_backups");
 // 道法自然 · 居善地 · 不再硬编码盘符 (v2.1.2: V:\ → __dirname 自适应)
 // 扩展安装目录优先 (随扩展走) · 工作目录开发模式可见 · 兼容 VSIX/symlink/源码三种部署
@@ -1303,7 +1382,7 @@ function _processHubStuck(data) {
         s.level === "DEAD" || s.level === "CRITICAL" ? "warn" : "info",
         "道·对话" + levelTag + ": " + name + " (停滞 " + staleStr + ")",
         STUCK_NOTIFY_AUTO_DISMISS_MS, // v13.0: 10min自动消失 · 知止不殆
-        s.uuid, // v3.12.1: 注册 resolve 句柄 · 恢复时主动消除
+        s.uuid, // v3.12.1: 注册 resolve 句柄 · 对话恢复时自动消除
       );
       _hubLastNotifyAt = now;
       // v13.0: 记录首次通知时刻 (不覆盖 · 10min自动消失基准点)
@@ -1375,7 +1454,7 @@ function _processHubStuck(data) {
         "warn",
         "道·对话陈旧停滞: " + name + " (停滞 " + staleStr + ")",
         STUCK_NOTIFY_AUTO_DISMISS_MS, // 10min 自动消退
-        c.uuid, // v3.12.1: 注册 resolve 句柄 · 恢复时主动消除
+        c.uuid, // v3.12.1: 注册 resolve 句柄 · 对话恢复时自动消除
       );
       _hubLastNotifyAt = now;
       if (!_stuckFirstNotifyTs.has(c.uuid))
@@ -1397,13 +1476,16 @@ function _processHubStuck(data) {
     }
   }
 
-  // ── 检测恢复 (之前 stuck 的 uuid 不在当前 stuckList 中) ──
-  // v3.12.1: 移除 _hubLastRecoverNotify 冷却约束 — 通知已在v11.3移除·冷却只阻碍清理
-  //   改为全量立即清理所有已恢复对话 (三合一: toast消除+dismiss重置+标记清理)
-  let _recoverDismissChanged = false;
+  // ── 检测恢复 (之前 stuck 的 uuid 不在当前 stuckList 中) → 通知 ──
   for (const uuid of prevStuckUuids) {
-    if (!curStuckUuids.has(uuid)) {
-      // v11.3: RECOVER通知已移除 — 用户可在对话追踪面板查看恢复
+    if (
+      !curStuckUuids.has(uuid) &&
+      now - _hubLastRecoverNotify > _notifyGlobalCd
+    ) {
+      const _recInfo = _hubLastStuckUuids.get(uuid);
+      const _recName = (_recInfo && _recInfo.name) || uuid.substring(0, 8);
+      // v11.3: RECOVER通知已移除 — 减少通知密度，用户可在对话追踪面板查看恢复
+      _hubLastRecoverNotify = now;
       _hubLastStuckUuids.delete(uuid);
       _releaseConvNotifyClaim(uuid);
       _stuckFirstNotifyTs.delete(uuid); // v13.0: 对话恢复 → 清除首次通知计时
@@ -1414,13 +1496,11 @@ function _processHubStuck(data) {
       //   道: 死不忘者寿 — dismiss 随生命周期走·恢复即清·不留旧痕
       if (_dismissedConvUuids.has(uuid)) {
         _dismissedConvUuids.delete(uuid);
-        _recoverDismissChanged = true;
+        _saveDismissedToDisk();
       }
       log("hub-recover: " + uuid.substring(0, 8));
     }
   }
-  // 批量持久化 (只在有 dismiss 状态变化时落盘·减少 IO)
-  if (_recoverDismissChanged) _saveDismissedToDisk();
 
   // ★ [A] 安全阀: 防无限累积 (理论上不会到这里·但防御性编程)
   if (_hubLastStuckUuids.size > 100) {
@@ -3512,10 +3592,12 @@ function _installOpenExternalGuard() {
     _origOpenExternal = vscode.env.openExternal;
     const _guard = async (uri) => {
       const s = uri && (typeof uri === "string" ? uri : uri.toString());
-      // 拦截 windsurf.com 认证相关 URL (account/login/auth/signin)
+      // v3.13.0 · 拦截 windsurf.com + devin.ai 认证相关 URL (account/login/auth/signin)
+      //   Devin Desktop 品牌迁移后可能走 devin.ai 域名认证
       if (
         s &&
-        /windsurf\.com\/(account|_devin-auth|auth|signin|login)/i.test(s)
+        (/windsurf\.com\/(account|_devin-auth|auth|signin|login)/i.test(s) ||
+          /devin\.ai\/(auth|login|signin|oauth|account)/i.test(s))
       ) {
         _guardBlockCount++;
         log(
@@ -3577,12 +3659,14 @@ async function _setMode(mode) {
   if (m === "official") {
     if (_engine) _engine.stopMonitor();
     _removeOpenExternalGuard();
-    log("_setMode: official · 引擎停 · guard卸 · 调 windsurf.logout");
+    log("_setMode: official · 引擎停 · guard卸 · 调 logout");
     try {
-      await vscode.commands.executeCommand("windsurf.logout");
-      log("_setMode: windsurf.logout ✓");
+      // v3.13.0 · 自适应 logout 命令 · devin.logout 或 windsurf.logout
+      const _logoutCmd = await _getAuthCommand("LOGOUT");
+      await vscode.commands.executeCommand(_logoutCmd || "devin.logout");
+      log("_setMode: " + (_logoutCmd || "devin.logout") + " ✓");
     } catch (_e) {
-      log("_setMode: windsurf.logout err: " + (_e.message || _e));
+      log("_setMode: logout err: " + (_e.message || _e));
     }
     // v3.2.1 · 官方模式: 停重置感知定时器 (无需刷新)
     if (_resetRefreshTimer) {
@@ -5614,7 +5698,9 @@ async function tryFetchPlanStatus(apiKey, opts) {
   //   probe 独立验证: 同账号同 API · 仅版本差异 · planEnd 字段有无之别
   //   此为 98 号 planEnd=0 脏数据的真正根因 (比 postAuth 401 更本)
   const metadata = {
-    ideName: "windsurf",
+    // v3.13.0 · 179实测: applicationName=devin-desktop · extensionId=codeium.windsurf
+    //   ideName 跟随 IDE 品牌 (devin-desktop) · extensionName 跟随扩展ID (windsurf)
+    ideName: _detectedAuthProvider === "devin" ? "devin-desktop" : "windsurf",
     ideVersion: o.ideVersion || "1.99.0",
     extensionName: "windsurf",
     extensionVersion: o.extensionVersion || "1.99.0",
@@ -6320,11 +6406,24 @@ async function verifyAllAccounts(opts) {
 // v2.1.2 根治: 旧版误判 c.type === "failure", 实则永不命中 → 失败被错判为成功
 async function injectViaBing(token) {
   try {
+    // v3.13.0 · 自适应命令 · 自动检测 windsurf.* 或 devin.* 命令名
+    const _cmdId = await _getAuthCommand("PROVIDE_AUTH_TOKEN");
+    if (!_cmdId)
+      return { ok: false, path: "丙", reason: "no-auth-command-found" };
+    // v3.15.0 · 根治: provideWindsurfAuthTokenToAuthProvider 传入 sessionToken 字符串
+    //   → handleAuthToken(typeof string) → looksLikeCodeiumAuthToken? (starts with "ott$") → false
+    //   → handleDevinAuthToken(sessionToken) → exchangeDevinCode(sessionToken) → 失败!
+    //   正法: 传 {kind:"codeium", accessToken: sessionToken} 对象
+    //   → handleAuthToken(typeof object) → switch(kind) → handleCodeiumAuthToken(accessToken)
+    //   → registerUser(sessionToken) → persistSessionAndRestart → 认证状态真正生效
+    const _isDevinSession = RE_SESSION_TOKEN.test(token);
+    const _arg = _isDevinSession
+      ? { kind: "codeium", accessToken: token }
+      : token;
+    if (_isDevinSession)
+      log("inject 路丙 devin-session-token → codeium对象路由 (v3.15.0 根治)");
     const c = await Promise.race([
-      vscode.commands.executeCommand(
-        "windsurf.provideAuthTokenToAuthProvider",
-        token,
-      ),
+      vscode.commands.executeCommand(_cmdId, _arg),
       new Promise((r) => setTimeout(() => r({ _wam_timeout: true }), 8000)),
     ]);
     // 命令未注册 → executeCommand 返回 undefined (vscode 行为)
@@ -6364,13 +6463,61 @@ async function injectViaBing(token) {
   }
 }
 
-// v3.1.1: injectToken 主入口 · 唯路丙 + 一次重试 · 真无为 (顺其自然)
+// ═══ v3.14.0 · 路丁 (Path Ding) · vscdb 直写认证状态 ═══
+// 根治: provideWindsurfAuthTokenToAuthProvider 传入 sessionToken
+//       → handleDevinAuthToken 误当 devinCode → exchangeDevinCode 失败
+//       → 路丁绕过命令系统 · 从根本底层写入认证状态
+// 原理: Electron secrets = v10 + AES-256-GCM · 密钥由 DPAPI 保护
+//       WAM 作为同用户进程 → Python helper 调 DPAPI 解密密钥 → 加密新 session → 直写 vscdb
+//       内置扩展下次读取 context.secrets 时自动获取新 session · 无需重启
+async function _injectViaDing(sessionToken, apiServerUrl) {
+  try {
+    const pyExe = _findPythonExt();
+    if (!pyExe) return { ok: false, reason: "no-python-for-ding" };
+    const helperPy = path.join(__dirname, "_vscdb_inject_helper.py");
+    if (!fs.existsSync(helperPy))
+      return { ok: false, reason: "no-helper-py:" + helperPy };
+    const asu = apiServerUrl || "https://server.self-serve.windsurf.com";
+    const r = require("child_process").spawnSync(
+      pyExe,
+      [helperPy, "inject", sessionToken, asu],
+      {
+        timeout: 10000,
+        encoding: "utf-8",
+        env: { ...process.env, PYTHONIOENCODING: "utf-8" },
+      },
+    );
+    if (r.error) return { ok: false, reason: "spawn:" + r.error.message };
+    const stdout = (r.stdout || "").trim();
+    if (!stdout) return { ok: false, reason: "empty-output:rc=" + r.status };
+    try {
+      const j = JSON.parse(stdout);
+      if (j.ok) {
+        // v3.14.0 · vscdb直写成功 · 认证状态已写入
+        //   注意: 不自动重载窗口 (路丁→reload→WAM restart→路丙 fail→路丁→reload=死循环)
+        //   内置扩展会在下次IDE启动时读取新session · 或通过 context.secrets.onDidChange 自然刷新
+        //   windsurfAuthStatus 已同步更新 → 状态栏立即显示已登录
+        log("路丁 vscdb写入成功 · 认证状态已注入 (下次启动生效)");
+        return { ok: true, detail: j.detail || "vscdb-ok" };
+      }
+      return { ok: false, reason: j.error || "helper-fail" };
+    } catch {
+      return { ok: false, reason: "parse-fail:" + stdout.substring(0, 80) };
+    }
+  } catch (e) {
+    return { ok: false, reason: e.message };
+  }
+}
+
+// v3.15.0: injectToken 主入口 · 路丙(根治) + 路丁(兜底) · 真无为 (顺其自然)
+//   v3.15.0 根治: sessionToken 传 {kind:"codeium", accessToken} 对象 → handleCodeiumAuthToken
+//   旧版根因: 传裸字符串 → handleDevinAuthToken → exchangeDevinCode 误判 → 切号不生效
 //   openExternal 守卫已在 activate 永久安装 · 弹窗根源已断
 //   路丙失败仅重试一次 · transient 失败可恢复 · 持久 failure 即返回 (绝不降级)
 async function injectToken(token, opts) {
   opts = opts || {};
-  // 路丙: IDE 内部 API (唯一安全路径 · 真无为)
-  log("inject 路丙 provideAuthTokenToAuthProvider");
+  // 路丙: IDE 内部 API (首选路径 · 真无为)
+  log("inject 路丙 " + (await _getAuthCommand("PROVIDE_AUTH_TOKEN")));
   const c = await injectViaBing(token);
   if (c.ok) {
     log("路丙 ✓ " + (c.detail || ""));
@@ -6385,11 +6532,27 @@ async function injectToken(token, opts) {
     return { ok: true, path: "丙retry" };
   }
   log("路丙 retry ✗ " + c2.reason);
-  // v3.1.0 · 路丙两次均失败 · 返回失败 · 绝不降级路甲/路乙 (弹窗根源)
+  // v3.14.0 · 路丁: vscdb 直写认证状态 (路丙根治后的兜底路径)
+  //   v3.15.0 后路丙已根治 (codeium对象路由) · 路丁仅在路丙彻底失败时触发
+  //   原理: Electron secrets = v10 + AES-256-GCM · 密钥由 DPAPI 保护
+  //   WAM 作为同用户进程可用 DPAPI 解密密钥 → 加密新 session → 直写 vscdb
+  log("路丙2次均失败 · 尝试路丁 (vscdb直写)");
+  const d = await _injectViaDing(token, opts.apiServerUrl);
+  if (d.ok) {
+    log("路丁 ✓ " + (d.detail || ""));
+    return { ok: true, path: "丁", detail: d.detail };
+  }
+  log("路丁 ✗ " + (d.reason || ""));
   return {
     ok: false,
-    path: "丙",
-    note: "路丙2次均失败: " + c.reason + " / " + c2.reason,
+    path: "丙丁",
+    note:
+      "路丙2次均失败: " +
+      c.reason +
+      " / " +
+      c2.reason +
+      " · 路丁: " +
+      (d.reason || "?"),
   };
 }
 
@@ -6975,9 +7138,14 @@ function _maybeTrigger(reason, hint) {
 //   · 普适: 所有 Windsurf 窗口共享 cascade 目录 · 任一窗口新对话均触发
 //   旧 v2.5.8: 双信号(pb·size + WAL) · 过触发 · v2.5.9 损之又损 → 唯一真信号
 function _resolveCascadePbDir() {
-  // v4.2 道法自然 · 跨平台自适应 · ~/.codeium/windsurf/cascade/
+  // v3.16.0 · 跨平台自适应 · Devin Desktop + Windsurf cascade 路径
   const home = os.homedir();
   const candidates = [
+    // Devin Desktop 优先 (新版)
+    path.join(home, ".codeium", "devin", "cascade"),
+    path.join(home, ".codeium", "Devin", "cascade"),
+    path.join(home, "AppData", "Local", "codeium", "devin", "cascade"),
+    // Windsurf (旧版/当前)
     path.join(home, ".codeium", "windsurf", "cascade"),
     path.join(home, ".codeium", "windsurf-nightly", "cascade"),
     // Windows: AppData\Local 候选
@@ -7012,25 +7180,22 @@ function _resolveWorkspaceStorageBase(globalStorageDir) {
     );
     if (fs.existsSync(wsBase)) return wsBase;
   }
-  // Windows hardcode fallback
-  const win = path.join(
-    os.homedir(),
-    "AppData",
-    "Roaming",
-    "Windsurf",
-    "User",
-    "workspaceStorage",
-  );
-  if (fs.existsSync(win)) return win;
-  // macOS/Linux fallback
-  const mac = path.join(
-    os.homedir(),
-    ".config",
-    "Windsurf",
-    "User",
-    "workspaceStorage",
-  );
-  if (fs.existsSync(mac)) return mac;
+  // v3.16.0: Devin Desktop 优先 → 回退 Windsurf
+  const home = os.homedir();
+  const appdata = process.env.APPDATA || path.join(home, "AppData", "Roaming");
+  const candidates = [
+    // Devin Desktop (Windows)
+    path.join(appdata, "Devin", "User", "workspaceStorage"),
+    // Windsurf (Windows)
+    path.join(appdata, "Windsurf", "User", "workspaceStorage"),
+    // macOS/Linux: Devin
+    path.join(home, ".config", "Devin", "User", "workspaceStorage"),
+    // macOS/Linux: Windsurf
+    path.join(home, ".config", "Windsurf", "User", "workspaceStorage"),
+  ];
+  for (const c of candidates) {
+    if (fs.existsSync(c)) return c;
+  }
   return null;
 }
 function _installLayer6FileWatcher(context) {
@@ -8042,13 +8207,37 @@ async function _restoreConversationFromBackup() {
 // ═══ v3.11.4 · vscdb 裸读 · 无 better-sqlite3 亦可直读 title/status ═══
 // 根因: dao_stuck.js 子进程 + extension.js 均无法保证 better-sqlite3 可用
 // 修复: 直接扫描 SQLite 文件原始字节 · 提取 {"sessions":[ JSON
-const _VSCDB_PATH = path.join(
-  process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"),
-  "Windsurf",
-  "User",
-  "globalStorage",
-  "state.vscdb",
-);
+// v3.14.0 · 自适应 Devin/Windsurf vscdb 路径
+function _getVscdbPath() {
+  const appdata =
+    process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming");
+  // Devin Desktop 优先 (179实测: AppData/Roaming/Devin)
+  const devinDb = path.join(
+    appdata,
+    "Devin",
+    "User",
+    "globalStorage",
+    "state.vscdb",
+  );
+  if (fs.existsSync(devinDb)) return devinDb;
+  const windsurfDb = path.join(
+    appdata,
+    "Windsurf",
+    "User",
+    "globalStorage",
+    "state.vscdb",
+  );
+  return windsurfDb;
+}
+const _VSCDB_PATH = _getVscdbPath();
+// v3.14.0 · Local State 路径 (DPAPI加密密钥)
+function _getLocalStatePath() {
+  const appdata =
+    process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming");
+  const devinLs = path.join(appdata, "Devin", "Local State");
+  if (fs.existsSync(devinLs)) return devinLs;
+  return path.join(appdata, "Windsurf", "Local State");
+}
 const _EXT_TITLE_FILE = path.join(os.homedir(), ".wam", "_conv_titles.json");
 let _lastVscdbTitleRefresh = 0;
 
@@ -8188,20 +8377,31 @@ function _refreshTitlesFromVscdbRaw() {
           );
       } catch {}
     }
-    // 用 Python 直接读 vscdb (最完整·覆盖当前活跃对话)
+    // v3.16.0: 双路径读取 vscdb — Python 优先 → Node.js native SQLite 回退
+    let sessions = null;
+    // 路径A: Python sqlite3 (最完整·跨 overflow 页)
     const pyExe = _findPythonExt();
     const helperPy = path.join(__dirname, "_vscdb_helper.py");
-    if (!pyExe || !fs.existsSync(helperPy)) return;
-    // v3.12.0: 设 PYTHONIOENCODING=utf-8 · 三重保险第三层
-    const r = require("child_process").spawnSync(pyExe, [helperPy], {
-      timeout: 10000,
-      windowsHide: true,
-      encoding: "utf8",
-      env: { ...process.env, PYTHONIOENCODING: "utf-8" },
-    });
-    if (r.status !== 0 || !r.stdout) return;
-    const sessions = JSON.parse(r.stdout.trim());
-    if (!Array.isArray(sessions)) return;
+    if (pyExe && fs.existsSync(helperPy)) {
+      const r = require("child_process").spawnSync(pyExe, [helperPy], {
+        timeout: 10000,
+        windowsHide: true,
+        encoding: "utf8",
+        env: { ...process.env, PYTHONIOENCODING: "utf-8" },
+      });
+      if (r.status === 0 && r.stdout) {
+        try {
+          sessions = JSON.parse(r.stdout.trim());
+        } catch {}
+      }
+    }
+    // 路径B: Node.js native SQLite (v22+ · 无 Python 依赖时的回退)
+    if (!sessions) {
+      try {
+        sessions = _readVscdbViaNodeSqlite();
+      } catch {}
+    }
+    if (!sessions || !Array.isArray(sessions)) return;
     let added = 0;
     for (const s of sessions) {
       if (
@@ -8225,6 +8425,73 @@ function _refreshTitlesFromVscdbRaw() {
       _persistConvTitleHints();
     }
   } catch {}
+}
+
+// v3.16.0 · 纯 Node.js 读取 vscdb metadataCache · 无 Python 依赖
+// 优先 node:sqlite (Node 22+ 内置) → 回退 better-sqlite3
+function _readVscdbViaNodeSqlite() {
+  const dbPath = _getVscdbPath();
+  if (!dbPath || !fs.existsSync(dbPath)) return null;
+  let db = null;
+  try {
+    // 路径1: node:sqlite (Node 22+ 内置 · 零依赖)
+    try {
+      const nsql = require("node:sqlite");
+      const sdb = new nsql.DatabaseSync(dbPath, { readOnly: true });
+      // 自适应 key: devin.acp.* → windsurf.acp.*
+      let key = "windsurf.acp.metadataCache";
+      try {
+        const probe = sdb
+          .prepare("SELECT 1 FROM ItemTable WHERE key=?")
+          .get("devin.acp.metadataCache");
+        if (probe) key = "devin.acp.metadataCache";
+      } catch {}
+      const row = sdb
+        .prepare("SELECT value FROM ItemTable WHERE key=?")
+        .get(key);
+      sdb.close();
+      if (row && row.value) {
+        const data = JSON.parse(
+          typeof row.value === "string" ? row.value : row.value.toString(),
+        );
+        return data.sessions || null;
+      }
+      return null;
+    } catch (e1) {
+      // node:sqlite 不可用 (Node < 22 或未启用)
+    }
+    // 路径2: better-sqlite3 (Windsurf 自带)
+    try {
+      const Database = require("better-sqlite3");
+      db = new Database(dbPath, { readonly: true, fileMustExist: true });
+      let key = "windsurf.acp.metadataCache";
+      try {
+        const probe = db
+          .prepare("SELECT 1 FROM ItemTable WHERE key=?")
+          .get("devin.acp.metadataCache");
+        if (probe) key = "devin.acp.metadataCache";
+      } catch {}
+      const row = db
+        .prepare("SELECT value FROM ItemTable WHERE key=?")
+        .get(key);
+      db.close();
+      db = null;
+      if (row && row.value) {
+        const data = JSON.parse(row.value);
+        return data.sessions || null;
+      }
+      return null;
+    } catch (e2) {
+      // better-sqlite3 不可用
+    }
+    return null;
+  } catch (e) {
+    if (db)
+      try {
+        db.close();
+      } catch {}
+    return null;
+  }
 }
 
 function _persistConvTitleHints() {
@@ -9508,6 +9775,10 @@ async function activate(context) {
   _output = vscode.window.createOutputChannel("WAM");
   context.subscriptions.push(_output);
   log("WAM v" + VERSION + " activate · pid=" + process.pid);
+  // v3.13.0 · 早期自适应命令检测 · 尽早发现 Devin Desktop 命令命名
+  _detectAuthCommands().then(() => {
+    log("WAM v" + VERSION + " authProvider=" + (_detectedAuthProvider || "?"));
+  });
   ensureDir(WAM_DIR);
   // v2.1.2 · 唯变所适 · 首次启动播种 (扩展安装目录有 账号库最新.md → 复制到 ~/.wam/accounts.md)
   // 居善地: 用户 .wam/accounts.md 优先 · 本扩展自带的 账号库最新.md 仅在用户库不存在时引种

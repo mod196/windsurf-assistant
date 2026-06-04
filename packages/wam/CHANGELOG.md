@@ -2,7 +2,82 @@
 
 > 反者道之动 · 弱者道之用 · 天下之物生于有 · 有生于无. —— 帛书《老子》德经
 
-## v3.12.2 (2026-05-29) · 引擎 v16.0 · 卡死/中断识别四治 · 当前
+## v3.13.0 (2026-06-28) · Devin Desktop 自适应 · 万法归宗 · 当前
+
+> *道常无为而无不为 · 侯王若能守之 · 万物将自化* —— 币书《老子》道经
+
+### 背景
+
+Windsurf 品牌正式迁移为 Devin Desktop (Cognition 收购 Windsurf)。IDE 内部命令已从 `windsurf.*` 变更为 `devin.*`。
+
+### 179 实测发现 (PSSession 直连)
+
+| 属性 | 旧值 (Windsurf) | 新值 (Devin Desktop) |
+|------|-----------------|---------------------|
+| `product.json.nameShort` | Windsurf | **Devin** |
+| `product.json.applicationName` | windsurf-desktop | **devin-desktop** |
+| `extensionId` | codeium.windsurf | codeium.windsurf (不变!) |
+| `authProviderId` | windsurf_auth | windsurf_auth (不变!) |
+| 扩展目录 | extensions/windsurf | extensions/windsurf (不变!) |
+| 命令前缀 | windsurf.* | **devin.*** |
+| session key | windsurf_auth.sessions | **devin_auth1_token** 等 |
+| HTTP header | X-Windsurf-* | **X-Devin-Auth1-Token** 等 |
+
+**关键**: `extensionId` 和 `authProviderId` 未变，但命令名已全面迁移为 `devin.*` 前缀。
+
+### 命令名变更详情
+
+| 旧命令 | 新命令 |
+|--------|--------|
+| `windsurf.login` | **`devin.login`** |
+| `windsurf.logout` | **`devin.logout`** |
+| `windsurf.loginWithAuthToken` | **`devin.loginWithAuthToken`** |
+| `windsurf.provideAuthTokenToAuthProvider` | **`devin.provideWindsurfAuthTokenToAuthProvider`** |
+| (新增) | **`devin.provideDevinAuthCodeToAuthProvider`** |
+| (新增) | **`devin.cancelLogin`** |
+
+**核心发现**: `provideAuthTokenToAuthProvider` 已被拆分为两个新命令:
+- `devin.provideWindsurfAuthTokenToAuthProvider` — session token 注入 (WAM 使用)
+- `devin.provideDevinAuthCodeToAuthProvider` — auth code 注入
+
+### 核心变更: 自适应命令检测
+
+**零配置自适应** — 插件启动时自动检测 IDE 注册的命令名，无需用户手动配置:
+
+1. **`_detectAuthCommands()`** — 通过 `vscode.commands.getCommands(true)` 扫描已注册命令
+   - 优先检测 `devin.provideWindsurfAuthTokenToAuthProvider` (新版)
+   - 回退检测 `windsurf.provideAuthTokenToAuthProvider` (旧版)
+   - 最终回退: 检查 `devin.*` login/logout 命令存在性
+   - 结果缓存于 `_detectedAuthProvider` · 全生命周期一次检测 · 零重复开销
+
+2. **`_getAuthCommand(key)`** — 根据检测结果返回正确的命令名
+   - `PROVIDE_AUTH_TOKEN` → `devin.provideWindsurfAuthTokenToAuthProvider` 或 `windsurf.provideAuthTokenToAuthProvider`
+   - `PROVIDE_DEVIN_AUTH_CODE` → `devin.provideDevinAuthCodeToAuthProvider`
+   - `LOGOUT` → `devin.logout` 或 `windsurf.logout`
+   - `LOGIN` → `devin.login` 或 `windsurf.login`
+   - `LOGIN_WITH_AUTH_TOKEN` → `devin.loginWithAuthToken` 或 `windsurf.loginWithAuthToken`
+
+### 受影响函数
+
+| 函数 | 变更 |
+|------|------|
+| `injectViaBing()` | 硬编码 `windsurf.provideAuthTokenToAuthProvider` → `_getAuthCommand("PROVIDE_AUTH_TOKEN")` |
+| `injectToken()` | 日志消息自适应 |
+| `_setMode()` | 硬编码 `windsurf.logout` → `_getAuthCommand("LOGOUT")` · fallback 改为 `devin.logout` |
+| `_installOpenExternalGuard()` | 正则新增 `devin.ai/(auth\|login\|signin\|oauth\|account)` 拦截 |
+| `tryFetchPlanStatus()` | metadata `ideName` 自适应 `devin-desktop`/`windsurf` · `extensionName` 固定 `windsurf` |
+| `activate()` | 早期触发 `_detectAuthCommands()` · 日志输出检测结果 |
+
+### 认证端点 (暂未变更)
+
+```
+URL_DEVIN_LOGIN    = windsurf.com/_devin-auth/password/login     (不变)
+URL_POSTAUTH       = windsurf.com/_backend/.../WindsurfPostAuth  (不变)
+URL_REGISTER_USER  = register.windsurf.com/.../RegisterUser      (不变)
+URL_DEVIN_ORG_AUTH = app.devin.ai/api/users/post-auth            (不变)
+```
+
+## v3.12.2 (2026-05-29) · 引擎 v16.0 · 卡死/中断识别四治
 
 > *知不知尚矣 · 不知不知病矣 —— 读到可疑数据宁可不更新，不假装知道*
 

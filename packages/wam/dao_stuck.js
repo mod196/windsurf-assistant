@@ -247,14 +247,36 @@ process.on("unhandledRejection", (reason) => {
 const APPDATA =
   process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming");
 const USERPROFILE = process.env.USERPROFILE || os.homedir();
-const PB_DIR = path.join(USERPROFILE, ".codeium", "windsurf", "cascade");
-const VSCDB = path.join(
-  APPDATA,
-  "Windsurf",
-  "User",
-  "globalStorage",
-  "state.vscdb",
-);
+// v3.16.0 · 自适应 Devin Desktop / Windsurf 路径
+function _findPbDir() {
+  const home = os.homedir();
+  const candidates = [
+    path.join(home, ".codeium", "devin", "cascade"),
+    path.join(home, ".codeium", "Devin", "cascade"),
+    path.join(home, ".codeium", "windsurf", "cascade"),
+    path.join(home, ".codeium", "windsurf-nightly", "cascade"),
+    path.join(home, "AppData", "Local", "codeium", "devin", "cascade"),
+    path.join(home, "AppData", "Local", "codeium", "windsurf", "cascade"),
+  ];
+  for (const p of candidates) {
+    try {
+      if (fs.statSync(p).isDirectory()) return p;
+    } catch {}
+  }
+  return path.join(home, ".codeium", "windsurf", "cascade"); // fallback
+}
+function _findVscdb() {
+  const candidates = [
+    path.join(APPDATA, "Devin", "User", "globalStorage", "state.vscdb"),
+    path.join(APPDATA, "Windsurf", "User", "globalStorage", "state.vscdb"),
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  return candidates[candidates.length - 1]; // fallback
+}
+const PB_DIR = _findPbDir();
+const VSCDB = _findVscdb();
 // v12.9-wam: 日志/状态全部写入 ~/.wam/stuck-detect/ (不再用 __dirname · 插件目录可能只读)
 const WAM_STUCK_DIR = path.join(os.homedir(), ".wam", "stuck-detect");
 const LOG_DIR = WAM_STUCK_DIR;
@@ -502,12 +524,6 @@ const WAL_PARTIAL_RATIO = 0.6; // < 60% 视为坏读
 //   治法: active 计数滚动高水位 · < 50% 峰值 → WAL 状态陈旧 · 保留旧 cache
 let _walActiveHigh = { count: 0, ts: 0 };
 const WAL_ACTIVE_RATIO = 0.5; // < 50% active 骤降 = WAL 状态陈旧
-// v16.0 · Python reader 独立 WAL 高水位 (与 better-sqlite3 路径同等保护)
-//   根因: _refreshVscdbRaw 无任何 WAL 保护 → active 在 0↔7 之间剧烈振荡
-//   实测: sessions=155 active=0 / sessions=152 active=7 → 周期性交替
-//   治法: 镜像 refreshVscdb 的双重保护 (count坏读 + active骤降)
-let _pyWalHigh = { count: 0, ts: 0 }; // Python reader WAL count 高水位
-let _pyWalActiveHigh = { count: 0, ts: 0 }; // Python reader WAL active 高水位
 // ═══ v3.11.4 · vscdb Python读取 — 无 better-sqlite3 亦可完整获取 title/status ═══
 // 根因: SQLite metadataCache JSON 跨 overflow 页 · 裸扫无法提取 → sessions=0
 // 根治: 调用 Python 内置 sqlite3 模块 · 无外部依赖 · 道法自然 · 四两拨千斤
@@ -689,14 +705,6 @@ function _tryReadVscdbViaPython() {
 }
 
 let _lastRawVscdbRefresh = 0;
-// ═══ v16.0 · _refreshVscdbRaw WAL 双重保护 — 根治 active 0↔7 振荡 ═══
-// 根因: 旧版无任何 WAL 保护 → Python 交替读到 WAL 主文件(active=0) 和 WAL 段(active=7)
-//   sessions=155 active=0 → sessions=152 active=7 → sessions=155 active=0 (每30s)
-//   连锁: sessionCache 被反复清空 → 卡住检测 stuckTicks 归零 → 永远无法积累 → 完全失效
-// 治法: 镜像 refreshVscdb 的双重高水位保护:
-//   1. count 坏读: 新读 < 60% 峰值 → WAL 主文件不完整 → 保留旧 cache
-//   2. active 骤降: 新 active < 50% 峰值 → WAL status 陈旧 → 保留旧 cache
-// 道: 知不知尚矣 — 读到可疑数据宁可不更新，不假装知道
 function _refreshVscdbRaw() {
   const t = nowMs();
   if (t - _lastRawVscdbRefresh < 30000) return; // 30s 节流 (Python 启动开销)
@@ -716,44 +724,6 @@ function _refreshVscdbRaw() {
   }
   const newCount = newCache.size;
   if (newCount === 0) return;
-
-  // ★ Fix 1a: count 高水位保护 (镜像 refreshVscdb WAL_PARTIAL_RATIO)
-  const nowT = nowMs();
-  const _pyHV = nowT - _pyWalHigh.ts < WAL_ROLLING_MS;
-  if (newCount >= _pyWalHigh.count || !_pyHV) {
-    _pyWalHigh = { count: newCount, ts: nowT };
-  }
-  if (
-    _pyHV &&
-    _pyWalHigh.count > 20 &&
-    newCount < _pyWalHigh.count * WAL_PARTIAL_RATIO &&
-    sessionCache.size > 0
-  ) {
-    log(
-      `VSCDB_PY_WAL_SKIP sessions=${newCount} (peak=${_pyWalHigh.count} ${Math.round((newCount / _pyWalHigh.count) * 100)}%) → WAL坏读,保留旧cache`,
-    );
-    return; // 保留旧 sessionCache
-  }
-
-  // ★ Fix 1b: active 骤降保护 (镜像 refreshVscdb WAL_ACTIVE_RATIO)
-  const _pyNewActive = [...newCache.values()].filter(
-    (v) => v.status === "active",
-  ).length;
-  const _pyAHV = nowT - _pyWalActiveHigh.ts < WAL_ROLLING_MS;
-  if (_pyNewActive >= _pyWalActiveHigh.count || !_pyAHV) {
-    _pyWalActiveHigh = { count: _pyNewActive, ts: nowT };
-  }
-  if (
-    _pyAHV &&
-    _pyWalActiveHigh.count >= 3 &&
-    _pyNewActive < _pyWalActiveHigh.count * WAL_ACTIVE_RATIO
-  ) {
-    log(
-      `VSCDB_PY_WAL_STATUS_SKIP active=${_pyNewActive}(peak=${_pyWalActiveHigh.count}) sessions=${newCount} → status stale, keeping old cache`,
-    );
-    return; // 保留旧 sessionCache
-  }
-
   // 保留旧 cache 中已知 title
   for (const [uuid, oldEntry] of sessionCache.entries()) {
     const newEntry = newCache.get(uuid);
@@ -762,21 +732,37 @@ function _refreshVscdbRaw() {
   }
   sessionCache = newCache;
   if (newCount !== _lastSessionLogCount) {
+    const active = [...newCache.values()].filter(
+      (v) => v.status === "active",
+    ).length;
     log(
-      `VSCDB_PY sessions=${newCount} active=${_pyNewActive} (python·sqlite3·无better-sqlite3)`,
+      `VSCDB_PY sessions=${newCount} active=${active} (python·sqlite3·无better-sqlite3)`,
     );
     _lastSessionLogCount = newCount;
   }
 }
 // ════════════════════════════════════════════════════════════════════════
 
+// v3.16.0 · 自适应 metadataCache key: Devin Desktop 用 devin.* → 回退 windsurf.*
+function _findMetadataCacheKey(db) {
+  const keys = ["devin.acp.metadataCache", "windsurf.acp.metadataCache"];
+  for (const k of keys) {
+    try {
+      const row = db.prepare("SELECT 1 FROM ItemTable WHERE key = ?").get(k);
+      if (row) return k;
+    } catch {}
+  }
+  return keys[keys.length - 1]; // fallback
+}
+
 function tryReadMetadataFromDb(dbPath) {
   let db;
   try {
     db = new Database(dbPath, { readonly: true, fileMustExist: true });
+    const key = _findMetadataCacheKey(db);
     const row = db
       .prepare("SELECT value FROM ItemTable WHERE key = ?")
-      .get("windsurf.acp.metadataCache");
+      .get(key);
     db.close();
     db = null;
     if (!row) return null;
@@ -1281,14 +1267,9 @@ function scan() {
     // v12.8: ignoreAge 过滤 — .pb 超过 N 秒无变化的老对话不参与卡住检测
     //   根因: stale=28714s(8小时!) + vscdb=active(陈旧条目) → 误触发 CRITICAL_STUCK
     //   道: 知止不殆·可以长久 — 已过时效的对话静默放行·不妄为
-    // v16.0: state="old" 可逆 — size 重新增长时跳出 ignoreAge 重新追踪
-    //   根因: 之前 continue 无条件跳过 → 对话重新活跃也永久 old
-    //   治法: 检查 size 是否增长; 若是 → 重置到 init 状态 · 落入正常处理
     const _pbAgeSec = Math.round((t - st.mtimeMs) / 1000);
     if (_pbAgeSec > CFG.ignoreAge) {
       let entry = state.conversations[uuid];
-      const _oldSizePre = entry ? entry.size : 0;
-      const _grewWhileOld = st.size > _oldSizePre;
       if (!entry) {
         entry = {
           uuid,
@@ -1304,27 +1285,11 @@ function scan() {
         state.conversations[uuid] = entry;
       }
       if (title) entry.title = title;
-      if (!entry.title && _backupTitleCache[uuid])
-        entry.title = _backupTitleCache[uuid];
+      entry.size = st.size;
       entry.mtime = st.mtimeMs;
-      if (_grewWhileOld) {
-        // v16.0: 老对话重新活跃 → 重置到 init 让正常处理接管
-        entry.size = st.size;
-        entry.lastGrowth = t;
-        entry.state = "init";
-        entry.stuckTicks = 0;
-        entry._turnGrowth = 0;
-        entry._awaitingUser = false;
-        log(
-          `OLD_ESCAPE uuid=${shortId(uuid)} pbAge=${_pbAgeSec}s sizeDelta=${st.size - _oldSizePre} → resuming tracking`,
-        );
-        // fall through to normal processing (no continue)
-      } else {
-        entry.size = st.size;
-        entry.state = "old";
-        entry.stuckTicks = 0;
-        continue; // 跳过卡住检测 · 此对话已过 ignoreAge
-      }
+      entry.state = "old";
+      entry.stuckTicks = 0;
+      continue; // 跳过卡住检测 · 此对话已过 ignoreAge
     }
 
     // 获取或初始化跟踪状态
@@ -1493,15 +1458,8 @@ function scan() {
         const updatedMs =
           meta && meta.updatedAt ? new Date(meta.updatedAt).getTime() : 0;
         // 路径B: updatedAt检测 — 引擎重启后无历史时判断近期死亡
-        // v16.0: 增加 _justRecovered 保护 — RECOVER后3分钟内不触发 B-recent 路径
-        //   根因: RECOVER清零deadSince但updatedAt仍新鲜 → 下次unknown_error立即重触DEAD
-        //   实测: 3955435a DEAD→RECOVER→(几秒后)DEAD→RECOVER 反复循环
-        //   治法: 记录_lastRecoverTs · 3分钟内B-recent路径静默 (让对话有机会真正恢复)
-        const _justRecovered =
-          entry._lastRecoverTs && t - entry._lastRecoverTs < 180000; // 3min
         const recentlyKilled =
           !liveTransition &&
-          !_justRecovered && // v16.0: RECOVER后3min内豁免
           updatedMs > 0 &&
           t - updatedMs < 3600000 && // 1小时内更新过
           st.size > 10240; // .pb > 10KB (真实对话)
@@ -1587,59 +1545,45 @@ function scan() {
           entry.lastVscdbActiveTs &&
           t - entry.lastVscdbActiveTs < _recentWindow;
         if (_recentActive) {
-          // ★ v16.0 Fix 2: prevVscdbStatus=end_turn → 对话已正常完成
-          //   当UUID从sessionCache消失时, 若最近一次已知状态是end_turn
-          //   → 最可能是 session 滚出70-session窗口(已完成) 而非 WAL 坏读
-          //   → 不走 WAL active fallback · 直接归为 completed
-          //   根因实测: fc4d79bd prevVscdbStatus=end_turn 但走了WAL路径
-          //             → WARN_STUCK/CRITICAL_STUCK vscdb=n/a 误报
-          if (prevVscdbStatus === "end_turn") {
-            newState = "completed";
-            summary.endTurn++;
+          // ★ WAL checkpoint 坏读: 90s内确认过active, UUID消失是WAL瞬时问题
+          //   继续按active处理: 不归零stuckTicks, 继续累积, 确保stuck检测不中断
+          entry.lastKnownVscdbStatus = "active"; // 保持已知状态
+          summary.active++;
+          // v12.7: WAL fallback 也需检查初始发消息保护期 (与 active 主路径保持一致)
+          //   根因: UUID消失时走此分支, 原来直接检测staleSec → 跳过 INITIAL_SEND_GRACE → 假阳性
+          const _walTimeSinceActive = t - (entry.activeSinceTs || t);
+          const _walInInitialGrace = _walTimeSinceActive < INITIAL_SEND_GRACE;
+          if (grew || staleSec < CFG.warnThreshold) {
+            newState = "streaming";
+            summary.streaming++;
             entry.stuckTicks = 0;
-            entry._awaitingUser = false;
+            entry._awaitingUser = false; // v12.9: WAL fallback 同规则
+          } else if (entry._awaitingUser) {
+            newState = "streaming"; // v12.9: 等待用户 · WAL fallback 同规则
+            summary.streaming++;
+            entry.stuckTicks = 0;
+          } else if (_walInInitialGrace) {
+            newState = "streaming"; // v12.7: 保护期内 · WAL fallback 与主路径同规则
+            summary.streaming++;
+          } else if ((entry._turnGrowth || 0) > AWAITING_USER_THRESHOLD) {
+            // v12.9: WAL fallback 同规则 — AI 已完成回复 → 等待用户
+            entry._awaitingUser = true;
+            entry.stuckTicks = 0;
+            newState = "streaming";
+            summary.streaming++;
+          } else if (staleSec < CFG.critThreshold) {
+            entry.stuckTicks = (entry.stuckTicks || 0) + 1;
+            const inGrace = nowMs() - _startupTs < STARTUP_GRACE;
+            newState =
+              entry.stuckTicks >= 2 && !inGrace ? "warning" : "streaming";
+            if (newState === "warning") summary.stuck++;
+            else summary.streaming++;
           } else {
-            // ★ WAL checkpoint 坏读: 90s内确认过active, UUID消失是WAL瞬时问题
-            //   继续按active处理: 不归零stuckTicks, 继续累积, 确保stuck检测不中断
-            entry.lastKnownVscdbStatus = "active"; // 保持已知状态
-            summary.active++;
-            // v12.7: WAL fallback 也需检查初始发消息保护期 (与 active 主路径保持一致)
-            //   根因: UUID消失时走此分支, 原来直接检测staleSec → 跳过 INITIAL_SEND_GRACE → 假阳性
-            const _walTimeSinceActive = t - (entry.activeSinceTs || t);
-            const _walInInitialGrace = _walTimeSinceActive < INITIAL_SEND_GRACE;
-            if (grew || staleSec < CFG.warnThreshold) {
-              newState = "streaming";
-              summary.streaming++;
-              entry.stuckTicks = 0;
-              entry._awaitingUser = false; // v12.9: WAL fallback 同规则
-            } else if (entry._awaitingUser) {
-              newState = "streaming"; // v12.9: 等待用户 · WAL fallback 同规则
-              summary.streaming++;
-              entry.stuckTicks = 0;
-            } else if (_walInInitialGrace) {
-              newState = "streaming"; // v12.7: 保护期内 · WAL fallback 与主路径同规则
-              summary.streaming++;
-            } else if ((entry._turnGrowth || 0) > AWAITING_USER_THRESHOLD) {
-              // v12.9: WAL fallback 同规则 — AI 已完成回复 → 等待用户
-              entry._awaitingUser = true;
-              entry.stuckTicks = 0;
-              newState = "streaming";
-              summary.streaming++;
-            } else if (staleSec < CFG.critThreshold) {
-              entry.stuckTicks = (entry.stuckTicks || 0) + 1;
-              const inGrace = nowMs() - _startupTs < STARTUP_GRACE;
-              newState =
-                entry.stuckTicks >= 2 && !inGrace ? "warning" : "streaming";
-              if (newState === "warning") summary.stuck++;
-              else summary.streaming++;
-            } else {
-              entry.stuckTicks = (entry.stuckTicks || 0) + 1;
-              const inGrace = nowMs() - _startupTs < STARTUP_GRACE;
-              newState =
-                entry.stuckTicks >= 2 && !inGrace ? "stuck" : "warning";
-              summary.stuck++;
-            }
-          } // end else (prevVscdbStatus !== "end_turn") WAL fallback block
+            entry.stuckTicks = (entry.stuckTicks || 0) + 1;
+            const inGrace = nowMs() - _startupTs < STARTUP_GRACE;
+            newState = entry.stuckTicks >= 2 && !inGrace ? "stuck" : "warning";
+            summary.stuck++;
+          }
         } else {
           // 真孤儿对话: 从未active或已离开vscdb活跃窗口超过90s
           // v10 根治: 不计入任何统计, 不检测卡住
@@ -1749,8 +1693,6 @@ function scan() {
         entry.stuckTicks = 0;
         entry.deadSince = 0; // v11.2: 清除死亡保护期，允许未来再次死亡检测
         entry._notifyCount = 0; // v12.4: 恢复 → 重置通知计数 (允许下次卡住重新通知)
-        entry._lastRecoverTs = t; // v16.0: 记录恢复时刻 · 防 recentlyKilled 在恢复后即刻重触
-        entry.errorTicks = 0; // v16.0: 恢复后彻底清零 errorTicks (防 B-recent 路径积累)
       }
     }
 
@@ -2825,7 +2767,7 @@ function main() {
   process.on("SIGINT", _cleanupPid);
   process.on("SIGTERM", _cleanupPid);
   log(
-    `START v16.0 warn=${CFG.warnThreshold}s crit=${CFG.critThreshold}s initial_grace=${INITIAL_SEND_GRACE / 1000}s awaiting_user_threshold=${AWAITING_USER_THRESHOLD}B ignore_age=${CFG.ignoreAge}s dead_expire=${DEAD_EXPIRE_MS / 60000}min poll=${CFG.poll}s port=${CFG.port} pid=${process.pid} user_prompt_idle=30s [WAL双保护+end_turn修复+RECOVER防循环+old可逆]`,
+    `START v13.0 warn=${CFG.warnThreshold}s crit=${CFG.critThreshold}s initial_grace=${INITIAL_SEND_GRACE / 1000}s awaiting_user_threshold=${AWAITING_USER_THRESHOLD}B ignore_age=${CFG.ignoreAge}s dead_expire=${DEAD_EXPIRE_MS / 60000}min poll=${CFG.poll}s port=${CFG.port} pid=${process.pid} user_prompt_idle=30s`,
   );
   log(`SOURCE1: ${VSCDB} (${Database ? "OK" : "NO better-sqlite3"})`);
   log(`SOURCE2: ${PB_DIR}`);

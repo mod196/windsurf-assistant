@@ -15,6 +15,38 @@ packages/wam/_vsix_archive/
 *.local
 *.psd1
 
+# ── 临时探测/计费/测试脚本 (道法自然 · 去芜存菁) ──
+packages/wam/_probe_*
+packages/wam/_billing_*
+packages/wam/_brute_*
+packages/wam/_deconstruct_*
+packages/wam/_extract_*
+packages/wam/_download_*
+packages/wam/_search_*
+packages/wam/_scan_*
+packages/wam/_snapshot_*
+packages/wam/_heavy_*
+packages/wam/_quick_*
+packages/wam/_chain_*
+packages/wam/_long_chain_*
+packages/wam/_patch_*
+packages/wam/_list_*
+packages/wam/_free_*
+packages/wam/_get_*
+packages/wam/_verify_quota_*
+packages/wam/_quota_*
+packages/wam/_subscription_*
+packages/wam/_final_*
+packages/wam/_dao_probe_*
+packages/wam/_dao_doctor*
+packages/wam/_vsix_*/
+packages/wam/_vscdb_inject*
+packages/wam/*.txt
+packages/wam/*.json
+!packages/wam/package.json
+!packages/wam/_dao_env.psd1
+_trigger*
+
 # ── OS / IDE ─────────────────────────────────────
 .DS_Store
 Thumbs.db
