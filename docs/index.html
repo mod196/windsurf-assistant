@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Windsurf Assistant · 道法自然 — 反代换示 + 多账号切换</title>
-<meta name="description" content="Windsurf Assistant：rt-flow 多账号切换 + dao-proxy-min 反向代理替换官方底层提示词，彻底解锁 agent 能力。视频介绍 + 下载。" />
+<meta name="description" content="Windsurf Assistant：rt-flow 多账号切换 + dao-proxy-min/pro 反向代理替换官方底层提示词，彻底解锁 agent 能力。三插同装互不干扰。视频介绍 + 下载。" />
 <style>
   :root{
     --bg0:#0a0e14; --bg1:#121821; --ink:#e8eef6; --muted:#9fb0c3;
@@ -98,17 +98,18 @@
 
   <section>
     <h2>📖 这是什么</h2>
-    <p>Windsurf Assistant 是一对同源插件，让你的 <b>Windsurf / VS Code</b> 彻底好用：</p>
+    <p>Windsurf Assistant 是三个同源插件，让你的 <b>Windsurf / VS Code</b> 彻底好用（三插分而治之、同装互不干扰）：</p>
     <ul>
-      <li><b>dao-proxy-min</b>（反代换示插）：反向代理 Windsurf / Devin 出站请求，<b>origin 反转</b>、就地替换官方底层系统提示词为道魂经文，预览与自检齐备，彻底解锁 agent 能力。</li>
+      <li><b>dao-proxy-min</b>（反代换示 · 精简示范版）：反向代理 Windsurf / Devin 出站请求，<b>origin 反转</b>、就地替换官方底层系统提示词为道魂经文，预览与自检齐备。命令 / 视图 / 端口 / 配置均独立命名空间（<code>daomin.*</code>），与 Pro 同装零干扰。</li>
+      <li><b>dao-proxy-pro</b>（反代换示 · 全功能版）：在 min 之上新增外接第三方 API —— 多 Key/多端点加权负载均衡 + 故障转移、按渠道/模型用量与成本可见、配置原子写+备份轮转、只填 API Key 自动全量识别模型。</li>
       <li><b>rt-flow</b>（WAM 切号插件）：多账号管理与一键切换 —— 添加账号 / 注入 token / 健康检查 / panic 切换。</li>
     </ul>
-    <p>核心理念：<b>水善利万物而有静，天之道利而不害</b>。只在通道中借力，不破坏本体、不强加任何模型、不破坏你正常的网络与使用体验。</p>
+    <p>核心理念：<b>水善利万物而有静，天之道利而不害</b>。只在通道中借力，不破坏本体、不强加任何模型、不破坏你正常的网络与使用体验。min 与 pro 同一时刻建议仅启用其一处于 invert 模式。</p>
   </section>
 
   <section>
     <h2>🚀 安装</h2>
-    <p>① 从 <a class="inline" href="https://github.com/zhouyoukang1234-spec/windsurf-assistant/releases" target="_blank" rel="noopener">Releases</a> 下载最新 <code>.vsix</code>（rt-flow / dao-proxy-min）。<br>
+    <p>① 从 <a class="inline" href="https://github.com/zhouyoukang1234-spec/windsurf-assistant/releases" target="_blank" rel="noopener">Releases</a> 下载最新 <code>.vsix</code>（rt-flow / dao-proxy-min / dao-proxy-pro）。<br>
        ② VS Code / Windsurf → 命令面板 → <code>Extensions: Install from VSIX...</code> 选中文件。<br>
        ③ 重启后命令面板 → <code>Origin Invert</code> / <code>WAM: Open Editor</code> 即可使用。</p>
   </section>
