@@ -22,11 +22,15 @@
 
 > GitHub 仓库页（本 README）受平台限制无法自动播放视频；上方"自动播放主页"是一个真正的网页，进入即自动播放 B 站视频，点击可跳转 B 站原页观看。
 
-| 插件 | 作用 | 最新版 | 下载 |
-| --- | --- | --- | --- |
-| **rt-flow**（WAM 切号插件） | 多账号管理与一键切换：添加账号 / 注入 token / 健康检查 / panic 切换 | `3.16.0` | [rt-flow-3.16.0.vsix](https://github.com/zhouyoukang1234-spec/windsurf-assistant/releases/download/v9.9.303/rt-flow-3.16.0.vsix) |
-| **dao-proxy-min**（反代替换提示词 · 精简示范版） | 反向代理 Windsurf / Devin，origin 反转与系统提示词替换、预览与自检。命令 / 视图 / 端口 / 配置均独立命名空间（`daomin.*` · 端口 8889..8988 per-user FNV `+:min`），与 Pro 同装零干扰 | `9.9.64` | [dao-proxy-min-9.9.64.vsix](https://github.com/zhouyoukang1234-spec/windsurf-assistant/releases/download/v9.9.303/dao-proxy-min-9.9.64.vsix) |
-| **dao-proxy-pro**（反代替换提示词 · 全功能版） | 在 min 反代/提示词隔离之上，新增外接第三方 API：多 Key/多端点加权负载均衡 + 故障转移、按渠道/模型用量与成本可见、配置原子写+备份轮转、三面板（本源观照 / 渠道配置 / 模型路由）、只填 API Key 自动全量识别模型。命令 / 视图保持规范 `dao.*` / `wam.*`，后端默认端口 8937 | `9.9.303` | [dao-proxy-pro-9.9.303.vsix](https://github.com/zhouyoukang1234-spec/windsurf-assistant/releases/download/v9.9.303/dao-proxy-pro-9.9.303.vsix) |
+> 下表由 [`tools/gen-readme-index.js`](tools/gen-readme-index.js) 据各插件 `package.json` 版本自动维护（去心发版，改谁刷谁）。每个插件各自发布到独立 Release tag `<key>-v<version>`。
+
+<!-- DAO-MODULE-INDEX:START -->
+| 插件 | 版本 | 扩展 id | 说明 | Release / 下载 |
+|---|---|---|---|---|
+| **rt-flow** | `3.16.0` | `devaid.rt-flow` | 多账号管理与一键切换：添加账号 / 注入 token / 健康检查 / panic 切换。命令/视图独立命名空间 `wam.*`。 | [Release](https://github.com/zhouyoukang1234-spec/windsurf-assistant/releases/tag/rt-flow-v3.16.0) · [⬇ VSIX](https://github.com/zhouyoukang1234-spec/windsurf-assistant/releases/download/rt-flow-v3.16.0/rt-flow-3.16.0.vsix) |
+| **dao-proxy-min** | `9.9.64` | `dao-agi.dao-proxy-min` | 反向代理 Windsurf / Devin，origin 反转与系统提示词替换、预览与自检。独立命名空间 `daomin.*`，与 Pro 同装零干扰。 | [Release](https://github.com/zhouyoukang1234-spec/windsurf-assistant/releases/tag/dao-proxy-min-v9.9.64) · [⬇ VSIX](https://github.com/zhouyoukang1234-spec/windsurf-assistant/releases/download/dao-proxy-min-v9.9.64/dao-proxy-min-9.9.64.vsix) |
+| **dao-proxy-pro** | `9.9.311` | `dao-agi.dao-proxy-pro` | 在 min 反代/提示词隔离之上新增外接第三方 API：多 Key/多端点加权负载均衡 + 故障转移、按渠道/模型用量与成本可见、三面板（本源观照 / 渠道配置 / 模型路由）、只填 API Key 自动全量识别模型。 | [Release](https://github.com/zhouyoukang1234-spec/windsurf-assistant/releases/tag/dao-proxy-pro-v9.9.311) · [⬇ VSIX](https://github.com/zhouyoukang1234-spec/windsurf-assistant/releases/download/dao-proxy-pro-v9.9.311/dao-proxy-pro-9.9.311.vsix) |
+<!-- DAO-MODULE-INDEX:END -->
 
 ## 仓库结构
 
@@ -39,6 +43,14 @@ plugins/
                     #   vendor/外api/ 多协议适配+路由+负载均衡; vendor/bundled-origin/ origin 后端
 scripts/
   build-vsix.mjs    # 一键把全部插件打包为 .vsix（自动发现 plugins/ 下每个含 package.json 的目录）
+tools/
+  modules.json      # 去心模块登记表（单一事实来源：detect/notes/index 三脚本均读它）
+  detect-modules.js # 据改动文件判定需发版的模块 key
+  release-notes.js  # 生成单模块 Release 说明（含安装指引 + changelog 摘要）
+  gen-readme-index.js # 据各插件版本自动维护上方「下载索引表」
+.github/workflows/
+  auto-merge.yml    # 无冲突 PR 自动合并进 main，并 dispatch 发版
+  release.yml       # 按模块版本去心发版：改谁构建谁，发到各自 tag <key>-v<version>
 ```
 
 ### 三插互不干扰（道并行而不相悖）
