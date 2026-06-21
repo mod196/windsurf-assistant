@@ -1139,6 +1139,115 @@ function _purgeDaoLsResidue() {
   } catch (e) {
     L.warn("purge", `cert/env 异步清理调度失败: ${e && e.message}`);
   }
+  // ⑤ 还原 IDE 内置 windsurf 扩展被就地打补丁的死端口 (dist/extension.js · 卸载扩展不碰此文件 → 卡死本源)
+  try {
+    n += _revertBundledExtensionPatch();
+  } catch (e) {
+    L.warn("purge", `内置扩展补丁还原调度失败: ${e && e.message}`);
+  }
+  return n;
+}
+
+// 还原 IDE 自带的 windsurf 扩展 (resources/app/extensions/windsurf/dist/extension.js) 被 dao 就地打的补丁.
+//   本源: dao 把死本地端口硬编码进 IDE 自带 dist/extension.js → 卸载本扩展根本不碰此文件 →
+//         重启后官方 LS 仍被 `--api_server_url http://127.0.0.1:<死端口>` 指向死端口 → 「Unable to connect」.
+//   注入签名 (端口任意 \d+) → 还原为官方云端:
+//     restart(A){A="http://127.0.0.1:P",this.apiServerUrl=A   → restart(A){this.apiServerUrl=A  (用调用方真实地址)
+//     getApiServerUrlFromContext=A=>{return"http://127.0.0.1:P"} → 返 https://server.codeium.com
+//     const i="http://127.0.0.1:P"  (inference)               → const i="https://inference.codeium.com"
+//   仅命中签名才改 · 改前备份 .dao_patched_backup · 改后下次启动生效. 返回所改文件数.
+function _revertBundledExtensionPatch() {
+  let n = 0;
+  try {
+    const rel = path.join("extensions", "windsurf", "dist", "extension.js");
+    const cands = new Set();
+    const push = (root) => {
+      if (!root) return;
+      const p = path.join(root, rel);
+      try {
+        if (fs.existsSync(p)) cands.add(p);
+      } catch {}
+    };
+    try {
+      push(vscode.env.appRoot);
+    } catch {}
+    if (process.env.VSCODE_APPROOT) push(process.env.VSCODE_APPROOT);
+    if (process.execPath)
+      push(path.join(path.dirname(process.execPath), "resources", "app"));
+    if (process.platform === "win32") {
+      push("E:\\Windsurf\\resources\\app");
+      push("C:\\Windsurf\\resources\\app");
+      push("D:\\Devin\\resources\\app");
+      if (process.env.LOCALAPPDATA) {
+        push(
+          path.join(
+            process.env.LOCALAPPDATA,
+            "Programs",
+            "Windsurf",
+            "resources",
+            "app",
+          ),
+        );
+        push(
+          path.join(
+            process.env.LOCALAPPDATA,
+            "Programs",
+            "devin",
+            "resources",
+            "app",
+          ),
+        );
+      }
+      if (process.env.PROGRAMFILES)
+        push(
+          path.join(process.env.PROGRAMFILES, "Windsurf", "resources", "app"),
+        );
+    } else {
+      for (const up of [
+        "/usr/share/windsurf/resources/app",
+        "/opt/windsurf/resources/app",
+        "/snap/windsurf/current/resources/app",
+        path.join(os.homedir(), ".windsurf", "resources", "app"),
+      ])
+        push(up);
+      if (process.platform === "darwin")
+        for (const a of [
+          "/Applications/Windsurf.app/Contents/Resources/app",
+          "/Applications/Devin.app/Contents/Resources/app",
+        ])
+          push(a);
+    }
+    const reApi =
+      /restart\(A\)\{A="http:\/\/127\.0\.0\.1:\d+",this\.apiServerUrl=A/g;
+    const reCtx =
+      /getApiServerUrlFromContext=A=>\{return"http:\/\/127\.0\.0\.1:\d+"\}/g;
+    const reInf = /const i="http:\/\/127\.0\.0\.1:\d+"/g;
+    for (const f of cands) {
+      try {
+        const raw = fs.readFileSync(f, "utf8");
+        let s = raw;
+        s = s.replace(reApi, "restart(A){this.apiServerUrl=A");
+        s = s.replace(
+          reCtx,
+          'getApiServerUrlFromContext=A=>{return"https://server.codeium.com"}',
+        );
+        s = s.replace(reInf, 'const i="https://inference.codeium.com"');
+        if (s !== raw) {
+          const bak = f + ".dao_patched_backup";
+          try {
+            if (!fs.existsSync(bak)) fs.writeFileSync(bak, raw);
+          } catch {}
+          fs.writeFileSync(f, s);
+          n++;
+          L.info("purge", `内置扩展补丁还原 → ${f}`);
+        }
+      } catch (e) {
+        L.warn("purge", `内置扩展还原失败 ${f}: ${e && e.message}`);
+      }
+    }
+  } catch (e) {
+    L.warn("purge", `内置扩展还原异常: ${e && e.message}`);
+  }
   return n;
 }
 
