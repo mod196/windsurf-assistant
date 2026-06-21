@@ -2809,6 +2809,8 @@ function getEssenceHtml(port, nonce, initialSP, webview, extensionUri) {
   var lastSig = '';
   var curMode = 'invert';
   var editMode = false;
+  // v9.9.307 · 真上游 · 路由第三方时面板优先显第三方实收全文 · 时戳防 host 推之经文覆盖
+  var _lastUpstreamAt = 0;
 
   // 反者道之动 · 编模式预填只取经文本源部分 · 截去 kept blocks (—之后)
   // TAO_TRAILER = "\\n\\n---\\n\\n" 是自然分界符 · 前为道魂(经文) · 后为辐(工具块)
@@ -2854,8 +2856,11 @@ function getEssenceHtml(port, nonce, initialSP, webview, extensionUri) {
     if (fieldCount > 0) {
       for (var i = 0; i < fieldCount; i++) {
         var f = entry.all_fields[i];
-        parts.push('\u2501\u2501\u2501 #' + (i + 1) + '/' + fieldCount +
-          ' \u00b7 ' + (f.chars || 0) + '\u5b57 \u2501\u2501\u2501');
+        var _h = '\u2501\u2501\u2501 #' + (i + 1) + '/' + fieldCount;
+        if (f.field_path) _h += ' \u00b7 ' + f.field_path;
+        else if (f.role) _h += ' \u00b7 ' + f.role;
+        _h += ' \u00b7 ' + (f.chars || 0) + '\u5b57 \u2501\u2501\u2501';
+        parts.push(_h);
         parts.push(f.text || '');
         parts.push('');
         totalChars += (f.chars || 0);
@@ -3005,17 +3010,10 @@ function getEssenceHtml(port, nonce, initialSP, webview, extensionUri) {
 
   function pull() {
     if (!_PORT) return;
-    // v9.9.303 · 本源观照取数归一 · 直取 /origin/preview 主 chat 槽 (含实时重算 all_fields)
-    //   旧取 /origin/tape 最近条 —— 外接API接通后最近条恒为 summary 子代理(英文)、
-    //   且其 after 捕获时定格不随经藏变, 故「只显经文/英文·切经无效」。
-    //   今取 preview: after 与 all_fields 皆随经藏 invertAnySP 当场重算 → 切经即变 + 全字段实时显。
-    fJson('/origin/preview').then(function(resp) {
-      if (resp && resp.ok && resp.has_captured_before) {
-        renderTapeEntry({
-          after: resp.after,
-          before: resp.before,
-          all_fields: resp.all_fields || []
-        }, new Date().toLocaleTimeString());
+    // v9.9.19 · 损之又损 · fields=0 去除all_fields全文(432项·767KB) · 仅保after/before元数据(~52KB)
+    fJson('/origin/tape?limit=1&fields=0').then(function(resp) {
+      if (resp && resp.ok && resp.tape && resp.tape.length > 0) {
+        renderTapeEntry(resp.tape[0], new Date().toLocaleTimeString());
       } else {
         if (!editMode) {
           $sp.classList.add('quiet');
@@ -3026,14 +3024,38 @@ function getEssenceHtml(port, nonce, initialSP, webview, extensionUri) {
     }).catch(function(){});
   }
 
+  // v9.9.307 · 真上游 · 路由第三方时拉第三方实收全文(system+messages+tools)并全显
+  //   有则优先显此(返 true) · 无则交回 tape 兜底 · 道法自然·观其真实所往
+  function pullUpstream() {
+    return fJson('/origin/upstream').then(function(resp){
+      if (resp && resp.ok && resp.upstream && resp.upstream.all_fields && resp.upstream.all_fields.length > 0) {
+        var e = resp.upstream;
+        _lastUpstreamAt = e.at || Date.now();
+        renderTapeEntry({ after: e.after, all_fields: e.all_fields }, new Date().toLocaleTimeString());
+        var _p = '\u771f\u4e0a\u6e38 \u00b7 ' + (e.all_fields_chars || 0) + '\u5b57';
+        if (e.provider) _p += ' \u00b7 ' + e.provider;
+        if (e.model) _p += ' / ' + e.model;
+        $stat.innerHTML = '<span class="pill">' + _p + '</span>';
+        $stat.classList.add('show');
+        return true;
+      }
+      return false;
+    }).catch(function(){ return false; });
+  }
+
+  // v9.9.307 · 统一刷 SP 显 · 先真上游(第三方实收全文) · 无则 tape 兜底
+  function refreshSP() {
+    return pullUpstream().then(function(shown){ if (!shown) pull(); });
+  }
+
   function sigTick() {
     fJson('/origin/sig').then(function(r){
       if (!r || !r.ok) return;
-      var cur = (r.injects_last_at || 0) + '|' + (r.injects_count || 0) + '|' + (r.tape_last_at || 0) + '|' + (r.mode_sig || '');
+      var cur = (r.injects_last_at || 0) + '|' + (r.injects_count || 0) + '|' + (r.tape_last_at || 0) + '|' + (r.upstream_last_at || 0) + '|' + (r.mode_sig || '');
       if (cur === lastSig) return;
       lastSig = cur;
       pingPull();
-      pull();
+      refreshSP();
     }).catch(function(){});
   }
 
@@ -3055,10 +3077,22 @@ function getEssenceHtml(port, nonce, initialSP, webview, extensionUri) {
       if (_d.ping && _d.ping.canon && $canonSelect.value !== _d.ping.canon) $canonSelect.value = _d.ping.canon;
       // 3. \u81ea\u5b9a\u4e49 badge
       if (_d.ping && _d.ping.custom_sp != null) updateCustomBadge(_d.ping.custom_sp, _d.ping.custom_sp_chars);
-      // 4. SP \u5185\u5bb9 (v9.9.303 · \u5185\u5bb9\u4ea4 pull() \u4e3b chat \u69fd all_fields \u5168\u6587\u72ec\u4e3b
-      //    \u00b7 data \u8def\u4ec5\u540c\u6b65 lastSP(\u4f9b\u7f16\u8f91\u521d\u503c) \u4e0e\u672a\u542f\u52a8\u65f6\u7f6e\u7a7a \u00b7 \u514d\u4e0e all_fields \u95ea\u70c1)
-      if (_d.proxy && _d.proxy.after) {
+      // 4. \u663e\u793a SP \u5185\u5bb9 (\u4f18\u5148 proxy.after · \u5df2\u8fd0\u884c\u624d\u6709)
+      //   v9.9.307 · 但真上游(第三方实收全文)若不旧于此 SP 注入 · 则不以经文覆盖之
+      var _proxyAt = (_d.proxy && _d.proxy.age_s != null) ? (Date.now() - _d.proxy.age_s * 1000) : 0;
+      var _upWins = _lastUpstreamAt && _lastUpstreamAt >= (_proxyAt - 2000);
+      if (_d.proxy && _d.proxy.after && !_upWins) {
         lastSP = _d.proxy.after;
+        if (!editMode) {
+          $sp.classList.remove('quiet');
+          $sp.textContent = _d.proxy.after;
+        }
+        var _ageS = (_d.proxy.age_s != null) ? Math.round(_d.proxy.age_s) : null;
+        var _pill = _d.proxy.after.length + '\u5b57';
+        if (_ageS != null) _pill += ' \u00b7 ' + _ageS + 's\u524d';
+        if (_d.ping && _d.ping.canon_name) _pill += ' \u00b7 ' + _d.ping.canon_name;
+        $stat.innerHTML = '<span class="pill">' + _pill + '</span>';
+        $stat.classList.add('show');
       } else if (_d.proxyUp === false) {
         // v9.9.19 对标v9.9.16本源: 只有代理真正宿机才重置显示
         // 去掉!_d.proxy分支: preview超时/gatherEssence失败导致proxy=null时不覆盖pull()展示内容
@@ -3094,8 +3128,6 @@ function getEssenceHtml(port, nonce, initialSP, webview, extensionUri) {
       if (_cc.default_source_name) _ccPill += ' \u00B7 ' + _cc.default_source_name;
       $stat.innerHTML = '<span class="pill">' + _ccPill + '</span>';
       $stat.classList.add('show');
-      // v9.9.303 · 切经即拉主 chat 槽全文 (all_fields 随新经藏重算) · 名变即随实显
-      pull();
       return;
     }
     if (e.data.type === 'customSP') {
@@ -3152,15 +3184,15 @@ function getEssenceHtml(port, nonce, initialSP, webview, extensionUri) {
 
   // boot · v9.7.6 · 执今之道 · boot 即拉 getCustomSP 预装 lastSP (帛书本源) · tape 空亦可编辑
   pingPull();
-  pull();
+  refreshSP();
   vsc.postMessage({ command: 'getCustomSP' });
   // v9.9.18 \u4fee\u590d \u00b7 boot \u5373\u8bf7\u6c42 extension host refresh \u63a8\u9001 {type:"data"} \u5305
   // \u8ba9\u4e09\u76cf/\u6309\u9215/SP\u663e\u793a\u5728\u65e0\u9700 portMapping \u7684\u60c5\u51b5\u4e0b\u4e5f\u80fd\u7acb\u5373\u66f4\u65b0
   vsc.postMessage({ command: 'refresh' });
-  setTimeout(function(){ pingPull(); pull(); vsc.postMessage({ command: 'refresh' }); }, 3000);
+  setTimeout(function(){ pingPull(); refreshSP(); vsc.postMessage({ command: 'refresh' }); }, 3000);
   setInterval(sigTick, 5000);
   setInterval(pingPull, 10000);
-  setInterval(pull, 30000);
+  setInterval(refreshSP, 30000);
   // v9.9.18+v9.9.36 \u00b7 \u5468\u671f refresh \u4fdd\u5e95 \u00b7 15s (\u539f 5s)
   setInterval(function() { vsc.postMessage({ command: 'refresh' }); }, 15000);
   // v9.9.20 jiqi · IIFE 全跑通 · 至此即活 · 上报 boot-done 标记
@@ -4185,11 +4217,12 @@ function getEaConfigHtml(port, nonce) {
     <!-- Provider 输入 -->
     <div class="provider-bar">
       <input id="provName" placeholder="名称 (如 deepseek)" style="flex:0.5;min-width:60px">
-      <input id="provUrl" placeholder="Base URL (逗号分隔多端点→负载均衡)" style="flex:2">
-      <input id="provKey" type="password" placeholder="API Key (逗号分隔多 Key→负载均衡)" style="flex:1">
-      <input id="provModels" placeholder="模型 (逗号分隔, 可空)" style="flex:1.2">
+      <input id="provUrl" placeholder="Base URL (如 https://api.deepseek.com)" style="flex:2">
+      <input id="provKey" type="password" placeholder="API Key" style="flex:1">
+      <input id="provModels" placeholder="模型 (留空=自动识别该渠道全部 · 也可逗号手填)" style="flex:1.2">
       <button class="btn add" id="btnAddProv" title="添加 Provider">+ 添加</button>
       <button class="btn probe" id="btnProbe" title="探测所有 Provider 健康">探测</button>
+      <button class="btn" id="btnOpenCfgJson" title="在编辑器中打开 配置.json 文件 · 直接查看/手改全部渠道与路由">📄 配置JSON</button>
     </div>
     <!-- 已配渠道列表 (cc-switch 风) -->
     <div id="channelList" style="flex:1;overflow-y:auto;margin-top:4px"></div>
@@ -4243,8 +4276,12 @@ function getEaConfigHtml(port, nonce) {
         <input id="routeExtModel" placeholder="如 deepseek-v4-flash">
       </div>
       <div>
-        <label style="font-size:10px;opacity:0.6">Max Output Tokens</label>
+        <label style="font-size:10px;opacity:0.6">最大输出 Token (max_tokens · 单次回复上限 · 越大越费)</label>
         <input id="routeMaxTokens" type="number" value="16384" placeholder="16384">
+      </div>
+      <div>
+        <label style="font-size:10px;opacity:0.6">采样温度 Temperature (0~2 · 留空=用模型默认)</label>
+        <input id="routeTemp" type="number" step="0.1" min="0" max="2" placeholder="留空=默认">
       </div>
       <div>
         <label style="font-size:10px;opacity:0.6">
@@ -4382,42 +4419,43 @@ function getEaConfigHtml(port, nonce) {
   var _families = [];         // official_families: [{familyUid,label,provider,members:[{modelUid,tier,isDefault}],isNew,isRecommended}]
   var _tierGroups = {};       // primaryUid -> [memberUids]  (一族多档共用一条路由作用域)
 
-  // ── cc-switch 预设库 (与悬浮面板 _EA_PRESETS 同步) ──
-  //   字段: n=名, t=协议(openai|anthropic), u=Base URL, m=候选模型, r=注册/官网(去拿 APIKey)
+  // ── cc-switch 预设库 (与悬浮面板 同源) ──
+  //   字段: n=名, t=协议(openai|anthropic), u=Base URL, r=注册/官网(去拿 APIKey)
+  //   ★ v9.9.311 · 预设不再内置具体模型: 填 Key 添加后自动 /v1/models 全量识别该渠道所有模型 (无为而无不为)
   //   太上下知有之: 用户只需「选渠道 → 点🌐去注册拿 Key → 填 Key」三步. 国内外主流尽收.
   var _PRESETS = [
     // ── 测试/聚合 ──
-    {n:'FreeModel(CC)',t:'anthropic',u:'https://cc.freemodel.dev',m:'claude-opus-4-8, claude-opus-4-7, claude-fable-5, claude-sonnet-4-6, claude-opus-4-6, claude-haiku-4-5-20251001',r:'https://cc.freemodel.dev'},
-    {n:'OpenRouter (聚合)',t:'openai',u:'https://openrouter.ai/api/v1',m:'anthropic/claude-sonnet-4.6, deepseek/deepseek-chat',r:'https://openrouter.ai/keys'},
-    {n:'AiHubMix (聚合)',t:'openai',u:'https://aihubmix.com/v1',m:'gpt-4o, claude-sonnet-4-6',r:'https://aihubmix.com/token'},
+    {n:'FreeModel(CC)',t:'anthropic',u:'https://cc.freemodel.dev',r:'https://cc.freemodel.dev'},
+    {n:'OpenRouter (聚合)',t:'openai',u:'https://openrouter.ai/api/v1',r:'https://openrouter.ai/keys'},
+    {n:'AiHubMix (聚合)',t:'openai',u:'https://aihubmix.com/v1',r:'https://aihubmix.com/token'},
     // ── 国内主流 ──
-    {n:'DeepSeek 深度求索',t:'openai',u:'https://api.deepseek.com/v1',m:'deepseek-chat, deepseek-reasoner',r:'https://platform.deepseek.com/api_keys'},
-    {n:'小米 MiMo (Xiaomi)',t:'openai',u:'https://api.xiaomimimo.com/v1',m:'mimo-v2-flash, mimo-v2.5-pro, mimo-v2-omni',r:'https://platform.xiaomimimo.com'},
-    {n:'智谱 GLM (Zhipu)',t:'openai',u:'https://open.bigmodel.cn/api/paas/v4',m:'glm-4.6, glm-4.5-air',r:'https://open.bigmodel.cn/usercenter/apikeys'},
-    {n:'Kimi 月之暗面 (Moonshot)',t:'openai',u:'https://api.moonshot.cn/v1',m:'kimi-k2-0905-preview, moonshot-v1-128k',r:'https://platform.moonshot.cn/console/api-keys'},
-    {n:'阿里云百炼 通义千问 (Bailian)',t:'openai',u:'https://dashscope.aliyuncs.com/compatible-mode/v1',m:'qwen3-coder-plus, qwen-max, qwen-plus',r:'https://bailian.console.aliyun.com/?apiKey=1'},
-    {n:'字节 豆包 火山方舟 (Doubao/Ark)',t:'openai',u:'https://ark.cn-beijing.volces.com/api/v3',m:'doubao-seed-1-6-250615, doubao-1-5-pro-32k-250115',r:'https://console.volcengine.com/ark'},
-    {n:'腾讯 混元 (Hunyuan)',t:'openai',u:'https://api.hunyuan.cloud.tencent.com/v1',m:'hunyuan-turbos-latest, hunyuan-t1-latest',r:'https://console.cloud.tencent.com/hunyuan/api-key'},
-    {n:'百度 文心千帆 (Qianfan)',t:'openai',u:'https://qianfan.baidubce.com/v2',m:'ernie-4.5-turbo-128k, ernie-x1-turbo-32k',r:'https://console.bce.baidu.com/iam/#/iam/apikey/list'},
-    {n:'硅基流动 (SiliconFlow)',t:'openai',u:'https://api.siliconflow.cn/v1',m:'deepseek-ai/DeepSeek-V3, Qwen/Qwen3-Coder-480B-A35B-Instruct',r:'https://cloud.siliconflow.cn/account/ak'},
-    {n:'魔搭 ModelScope',t:'openai',u:'https://api-inference.modelscope.cn/v1',m:'Qwen/Qwen3-Coder-480B-A35B-Instruct',r:'https://modelscope.cn/my/myaccesstoken'},
-    {n:'MiniMax 稀宇',t:'openai',u:'https://api.minimaxi.com/v1',m:'MiniMax-M2, abab6.5s-chat',r:'https://platform.minimaxi.com/user-center/basic-information/interface-key'},
-    {n:'讯飞星火 (iFlytek Spark)',t:'openai',u:'https://spark-api-open.xf-yun.com/v1',m:'4.0Ultra, generalv3.5',r:'https://console.xfyun.cn/services/cbm'},
-    {n:'阶跃星辰 (StepFun)',t:'openai',u:'https://api.stepfun.com/v1',m:'step-2-16k, step-2-mini',r:'https://platform.stepfun.com/interface-key'},
-    {n:'零一万物 (01.AI Yi)',t:'openai',u:'https://api.lingyiwanwu.com/v1',m:'yi-lightning',r:'https://platform.lingyiwanwu.com/apikeys'},
-    {n:'百川 (Baichuan)',t:'openai',u:'https://api.baichuan-ai.com/v1',m:'Baichuan4-Turbo, Baichuan4-Air',r:'https://platform.baichuan-ai.com/console/apikey'},
+    {n:'DeepSeek 深度求索',t:'openai',u:'https://api.deepseek.com/v1',r:'https://platform.deepseek.com/api_keys'},
+    {n:'小米 MiMo (Xiaomi)',t:'openai',u:'https://api.xiaomimimo.com/v1',r:'https://platform.xiaomimimo.com'},
+    {n:'智谱 GLM (Zhipu)',t:'openai',u:'https://open.bigmodel.cn/api/paas/v4',r:'https://open.bigmodel.cn/usercenter/apikeys'},
+    {n:'Kimi 月之暗面 (Moonshot)',t:'openai',u:'https://api.moonshot.cn/v1',r:'https://platform.moonshot.cn/console/api-keys'},
+    {n:'阿里云百炼 通义千问 (Bailian)',t:'openai',u:'https://dashscope.aliyuncs.com/compatible-mode/v1',r:'https://bailian.console.aliyun.com/?apiKey=1'},
+    {n:'字节 豆包 火山方舟 (Doubao/Ark)',t:'openai',u:'https://ark.cn-beijing.volces.com/api/v3',r:'https://console.volcengine.com/ark'},
+    {n:'腾讯 混元 (Hunyuan)',t:'openai',u:'https://api.hunyuan.cloud.tencent.com/v1',r:'https://console.cloud.tencent.com/hunyuan/api-key'},
+    {n:'百度 文心千帆 (Qianfan)',t:'openai',u:'https://qianfan.baidubce.com/v2',r:'https://console.bce.baidu.com/iam/#/iam/apikey/list'},
+    {n:'硅基流动 (SiliconFlow)',t:'openai',u:'https://api.siliconflow.cn/v1',r:'https://cloud.siliconflow.cn/account/ak'},
+    {n:'魔搭 ModelScope',t:'openai',u:'https://api-inference.modelscope.cn/v1',r:'https://modelscope.cn/my/myaccesstoken'},
+    {n:'MiniMax 稀宇',t:'openai',u:'https://api.minimaxi.com/v1',r:'https://platform.minimaxi.com/user-center/basic-information/interface-key'},
+    {n:'讯飞星火 (iFlytek Spark)',t:'openai',u:'https://spark-api-open.xf-yun.com/v1',r:'https://console.xfyun.cn/services/cbm'},
+    {n:'阶跃星辰 (StepFun)',t:'openai',u:'https://api.stepfun.com/v1',r:'https://platform.stepfun.com/interface-key'},
+    {n:'零一万物 (01.AI Yi)',t:'openai',u:'https://api.lingyiwanwu.com/v1',r:'https://platform.lingyiwanwu.com/apikeys'},
+    {n:'百川 (Baichuan)',t:'openai',u:'https://api.baichuan-ai.com/v1',r:'https://platform.baichuan-ai.com/console/apikey'},
     // ── 国际主流 ──
-    {n:'OpenAI',t:'openai',u:'https://api.openai.com/v1',m:'gpt-4o, gpt-4o-mini, o4-mini',r:'https://platform.openai.com/api-keys'},
-    {n:'Anthropic Claude',t:'anthropic',u:'https://api.anthropic.com',m:'claude-sonnet-4-6, claude-opus-4-6',r:'https://console.anthropic.com/settings/keys'},
-    {n:'Google Gemini',t:'openai',u:'https://generativelanguage.googleapis.com/v1beta/openai',m:'gemini-2.5-pro, gemini-2.5-flash',r:'https://aistudio.google.com/apikey'},
-    {n:'xAI Grok',t:'openai',u:'https://api.x.ai/v1',m:'grok-4, grok-3, grok-code-fast-1',r:'https://console.x.ai'},
-    {n:'Groq (极速)',t:'openai',u:'https://api.groq.com/openai/v1',m:'llama-3.3-70b-versatile, moonshotai/kimi-k2-instruct',r:'https://console.groq.com/keys'},
-    {n:'Mistral',t:'openai',u:'https://api.mistral.ai/v1',m:'mistral-large-latest, codestral-latest',r:'https://console.mistral.ai/api-keys'},
-    {n:'Together AI',t:'openai',u:'https://api.together.xyz/v1',m:'deepseek-ai/DeepSeek-V3, Qwen/Qwen2.5-Coder-32B-Instruct',r:'https://api.together.xyz/settings/api-keys'},
-    {n:'Fireworks AI',t:'openai',u:'https://api.fireworks.ai/inference/v1',m:'accounts/fireworks/models/deepseek-v3',r:'https://fireworks.ai/account/api-keys'},
-    {n:'Perplexity',t:'openai',u:'https://api.perplexity.ai',m:'sonar-pro, sonar',r:'https://www.perplexity.ai/settings/api'},
+    {n:'OpenAI',t:'openai',u:'https://api.openai.com/v1',r:'https://platform.openai.com/api-keys'},
+    {n:'Anthropic Claude',t:'anthropic',u:'https://api.anthropic.com',r:'https://console.anthropic.com/settings/keys'},
+    {n:'Google Gemini',t:'openai',u:'https://generativelanguage.googleapis.com/v1beta/openai',r:'https://aistudio.google.com/apikey'},
+    {n:'xAI Grok',t:'openai',u:'https://api.x.ai/v1',r:'https://console.x.ai'},
+    {n:'Groq (极速)',t:'openai',u:'https://api.groq.com/openai/v1',r:'https://console.groq.com/keys'},
+    {n:'Mistral',t:'openai',u:'https://api.mistral.ai/v1',r:'https://console.mistral.ai/api-keys'},
+    {n:'Together AI',t:'openai',u:'https://api.together.xyz/v1',r:'https://api.together.xyz/settings/api-keys'},
+    {n:'Fireworks AI',t:'openai',u:'https://api.fireworks.ai/inference/v1',r:'https://fireworks.ai/account/api-keys'},
+    {n:'Perplexity',t:'openai',u:'https://api.perplexity.ai',r:'https://www.perplexity.ai/settings/api'},
     // ── 本地 ──
-    {n:'Ollama (本地)',t:'openai',u:'http://localhost:11434/v1',m:'qwen2.5-coder, llama3.1',r:'https://ollama.com/download'},
+    {n:'Ollama (本地)',t:'openai',u:'http://localhost:11434/v1',r:'https://ollama.com/download'},
   ];
 
   // ── provider 名 → 友好显示 (与 eaRender _provLabel 同) ──
@@ -4525,9 +4563,6 @@ function getEaConfigHtml(port, nonce) {
       var mods = (p.models || p._models || []).join(', ');
       // ★ v9.9.301 · 用量行 (overview 注入 p.usage) · 最核心信息: 次数 + token + 估算成本
       var usageLine = '';
-      var pk = (Array.isArray(p.apiKeys) && p.apiKeys.length) ? p.apiKeys.length : ((p.apiKey ? 1 : 0));
-      var pe = (Array.isArray(p.endpoints) && p.endpoints.length) ? p.endpoints.length : 1;
-      var lbLine = (pk > 1 || pe > 1) ? ('<div style="font-size:9px;opacity:0.5">⇄ 负载均衡 · ' + pk + ' key' + (pe > 1 ? ' · ' + pe + ' 端点' : '') + '</div>') : '';
       var us = p.usage;
       if (us && us.calls) {
         var costStr = (us.cost != null) ? (' · ≈' + (us.currency === 'USD' ? '$' : '') + us.cost + (us.currency && us.currency !== 'USD' ? (' ' + us.currency) : '')) : '';
@@ -4541,7 +4576,6 @@ function getEaConfigHtml(port, nonce) {
           '<span style="font-weight:600">' + disp + (builtin ? ' <span style="opacity:0.5;font-weight:400">· 内置</span>' : '') + '</span>' +
           '<div style="font-size:9px;opacity:0.55;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + (p.baseUrl || '') + '</div>' +
           (mods ? '<div style="font-size:9px;opacity:0.5">' + mods + '</div>' : '') +
-          lbLine +
           usageLine +
         '</span>';
       if (!builtin) {
@@ -4567,17 +4601,13 @@ function getEaConfigHtml(port, nonce) {
         var n = this.getAttribute('data-edit');
         var p = _providers[n] || {};
         document.getElementById('provName').value = n;
-        // ★ v9.9.301 · 多端点回填: 有 endpoints[] 则逗号拼接展示
-        var _eps = (Array.isArray(p.endpoints) && p.endpoints.length)
-          ? p.endpoints.map(function(e){ return (typeof e === 'string') ? e : (e.url || e.baseUrl || ''); }).filter(Boolean)
-          : null;
-        document.getElementById('provUrl').value = _eps ? _eps.join(', ') : (p.baseUrl || '');
+        document.getElementById('provUrl').value = (p.baseUrl || '');
         // ★ 修「编辑渠道→Key 看不见/疑似丢失」: 不把脱敏 key 写回输入框(回传会覆盖真实key),
         //   而是用占位提示已配置 · 留空提交=后端保留原 Key (见 hotAddProvider apiKey 保全)
         var _kInput = document.getElementById('provKey');
         _kInput.value = '';
-        var _nk = (Array.isArray(p.apiKeys) && p.apiKeys.length) ? p.apiKeys.length : ((p.apiKey && String(p.apiKey).length > 0) ? 1 : 0);
-        _kInput.placeholder = _nk ? ('已配置 ' + _nk + ' 个 Key · 留空=保留, 或逗号分隔多 Key 覆盖') : 'API Key (逗号分隔可多个→负载均衡)';
+        var _hasKey = !!(p.apiKey && String(p.apiKey).length > 0);
+        _kInput.placeholder = _hasKey ? '已配置 Key · 留空=保留原 Key, 或输入新 Key 覆盖' : 'API Key';
         document.getElementById('provModels').value = (p.models || p._models || []).join(', ');
       });
     });
@@ -4914,7 +4944,9 @@ function getEaConfigHtml(port, nonce) {
       if (!p) return;
       document.getElementById('provName').value = _presetSlug(p.n);
       document.getElementById('provUrl').value = p.u;
-      document.getElementById('provModels').value = p.m;
+      document.getElementById('provModels').value = ''; // 预设不带具体模型 · 填 Key 添加后自动识别该渠道全部模型
+      var _pm = document.getElementById('provModels');
+      if (_pm) _pm.placeholder = '留空即可 · 添加后自动识别 ' + p.n + ' 全部模型';
       document.getElementById('provKey').focus();
     });
     // ★ 🌐 注册/官网: 打开所选预设渠道的官网/注册页 (去拿 APIKey) · 最小化用户操作
@@ -4938,16 +4970,9 @@ function getEaConfigHtml(port, nonce) {
     var key = document.getElementById('provKey').value.trim();
     var modelsRaw = document.getElementById('provModels').value.trim();
     if (!name || !url) { _daoToast('名称和 URL 必填'); return; }
-    // ★ v9.9.301 · 多端点/多 Key 负载均衡: URL/Key 用逗号或空白分隔多个即自动启用
-    var urls = url.split(/[\s,]+/).map(function(s){ return s.trim(); }).filter(Boolean);
-    var cfg = { baseUrl: urls[0] };
-    if (urls.length > 1) cfg.endpoints = urls.map(function(u2){ return { url: u2, weight: 1 }; });
+    var cfg = { baseUrl: url };
     // ★ Key 留空 → 不下发 apiKey 字段 → 后端保留原 Key (编辑已有渠道时不会清空)
-    if (key) {
-      var keys = key.split(/[\s,]+/).map(function(s){ return s.trim(); }).filter(Boolean);
-      cfg.apiKey = keys[0];
-      if (keys.length > 1) cfg.apiKeys = keys;
-    }
+    if (key) cfg.apiKey = key;
     if (modelsRaw) cfg.models = modelsRaw.split(',').map(function(s){ return s.trim(); }).filter(Boolean);
     var btnAdd = this;
     btnAdd.textContent = '添加中…';
@@ -4958,21 +4983,22 @@ function getEaConfigHtml(port, nonce) {
           document.getElementById('provUrl').value = '';
           document.getElementById('provKey').value = '';
           document.getElementById('provModels').value = '';
-          // ★ 加 key 即自动探活 + 自动全量解模型 (cc-switch 风 /v1/models) → 通则变绿+模型自现
-          btnAdd.textContent = '探活中…';
-          _autoProbe().then(function() {
-            btnAdd.textContent = '解模型…';
-            // refresh=1 强制全量探测; 失败不阻断流程
-            return fJson('/origin/ea/models/' + encodeURIComponent(name) + '?refresh=1').catch(function(){ return null; });
-          }).then(function(mr) {
-            if (mr && mr.ok && mr.models && mr.models.length) _daoToast('渠道 ' + name + ' 解出 ' + mr.models.length + ' 个模型');
-            return loadConfig();
-          }).then(function() {
-            btnAdd.textContent = '+ 添加';
-            var hh = _health[name];
-            if (hh && hh.alive === true) _daoToast('渠道 ' + name + ' 已连通 · 绿');
-            else if (hh && hh.alive === false) _daoToast('渠道 ' + name + ' 探活失败 · 检查 apiKey/URL');
-          });
+          // ★ 加 key 即「先全量解模型(cc-switch 风 /v1/models) → 再探活」: 新渠道首次添加即有模型可探, 无需重启窗口
+          btnAdd.textContent = '解模型…';
+          // refresh=1 强制全量探测; 失败不阻断流程
+          fJson('/origin/ea/models/' + encodeURIComponent(name) + '?refresh=1').catch(function(){ return null; })
+            .then(function(mr) {
+              if (mr && mr.ok && mr.models && mr.models.length) _daoToast('渠道 ' + name + ' 解出 ' + mr.models.length + ' 个模型');
+              btnAdd.textContent = '探活中…';
+              return _autoProbe();
+            }).then(function() {
+              return loadConfig();
+            }).then(function() {
+              btnAdd.textContent = '+ 添加';
+              var hh = _health[name];
+              if (hh && hh.alive === true) _daoToast('渠道 ' + name + ' 已连通 · 绿');
+              else if (hh && hh.alive === false) _daoToast('渠道 ' + name + ' 探活失败 · 检查 apiKey/URL');
+            });
         } else {
           btnAdd.textContent = '+ 添加';
           _daoToast('添加失败: ' + (r.error || 'unknown'));
@@ -5070,6 +5096,7 @@ function getEaConfigHtml(port, nonce) {
     document.getElementById('routeModelUid').value = uid || '';
     document.getElementById('routeExtModel').value = extModel || '';
     document.getElementById('routeMaxTokens').value = '16384';
+    document.getElementById('routeTemp').value = '';
     document.getElementById('routeThinking').checked = false;
 
     // 填充 provider 下拉
@@ -5088,6 +5115,7 @@ function getEaConfigHtml(port, nonce) {
       document.getElementById('routeModalTitle').textContent = '编辑路由: ' + uid;
       document.getElementById('routeExtModel').value = route.model || '';
       document.getElementById('routeMaxTokens').value = route.maxOutputTokens || 16384;
+      document.getElementById('routeTemp').value = (route.temperature != null ? route.temperature : '');
       document.getElementById('routeThinking').checked = !!route.thinkingEnabled;
       for (var i = 0; i < sel.options.length; i++) {
         if (sel.options[i].value === route.provider) sel.options[i].selected = true;
@@ -5104,11 +5132,14 @@ function getEaConfigHtml(port, nonce) {
     var prov = document.getElementById('routeProvider').value;
     var model = document.getElementById('routeExtModel').value.trim();
     var maxTokens = parseInt(document.getElementById('routeMaxTokens').value) || 16384;
+    var tempRaw = (document.getElementById('routeTemp').value || '').trim();
     var thinking = document.getElementById('routeThinking').checked;
     if (!uid || !prov || !model) { _daoToast('所有字段必填'); return; }
+    var _route = { provider: prov, model: model, maxOutputTokens: maxTokens, thinkingEnabled: thinking };
+    if (tempRaw !== '') { var _tv = parseFloat(tempRaw); if (!isNaN(_tv)) _route.temperature = _tv; }
     fPost('/origin/ea/route', {
       modelUid: uid,
-      route: { provider: prov, model: model, maxOutputTokens: maxTokens, thinkingEnabled: thinking }
+      route: _route
     }).then(function(r) {
       if (r.ok) {
         document.getElementById('routeModal').classList.remove('show');
@@ -5252,6 +5283,8 @@ function getEaConfigHtml(port, nonce) {
     return fetch(_BASE + '/origin/ea/handoff.md', { cache: 'no-store' })
       .then(function(r) { if (!r.ok) throw new Error('http ' + r.status); return r.text(); });
   }
+  var _ocj = _e1El('btnOpenCfgJson');
+  if (_ocj) _ocj.addEventListener('click', function() { postMsg('openConfigJson'); });
   var _dh = _e1El('btnDownloadHandoff'), _ph = _e1El('btnPreviewHandoff');
   if (_dh) _dh.addEventListener('click', function() {
     _fetchHandoff().then(function(md) {
@@ -5309,6 +5342,48 @@ async function _saveHandoffDoc(content) {
   }
 }
 
+// ★ v9.9.309 · 解析活跃配置文件路径 · 与 runtime._resolveConfigPath 同序:
+//   1) 用户级 ~/.codeium/dao-byok/配置.json (跨升级持久·含真凭据)
+//   2) 退 · 当前 VSIX 内 vendor/外接api/core/配置.json
+function _resolveDaoConfigPath() {
+  try {
+    const home = process.env.USERPROFILE || process.env.HOME || os.homedir();
+    if (home) {
+      const userCfg = path.join(home, ".codeium", "dao-byok", "配置.json");
+      if (fs.existsSync(userCfg)) return userCfg;
+    }
+  } catch {}
+  try {
+    const bundled = path.join(
+      __dirname,
+      "vendor",
+      "外接api",
+      "core",
+      "配置.json",
+    );
+    if (fs.existsSync(bundled)) return bundled;
+  } catch {}
+  return null;
+}
+
+// ★ v9.9.309 · 渠道配置面板「📄 配置JSON」按钮 · 直接在编辑器打开配置文件
+//   方便用户一眼查看/手改全部渠道与路由 · 排查问题
+async function _openConfigJson() {
+  try {
+    const p = _resolveDaoConfigPath();
+    if (!p) {
+      vscode.window.showWarningMessage("未找到配置文件 配置.json");
+      return;
+    }
+    const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(p));
+    await vscode.window.showTextDocument(doc, { preview: false });
+  } catch (e) {
+    vscode.window.showErrorMessage(
+      "打开配置JSON失败: " + (e && e.message ? e.message : e),
+    );
+  }
+}
+
 // ★ 渠道注册/官网跳转 · 仅放行 http(s) · 渠道配置面板「🌐 注册/官网」按钮用
 //   太上下知有之: 用户无账号时一键跳官网注册拿 APIKey, 回来填 Key 即用。
 function _openExternalUrl(url) {
@@ -5344,6 +5419,7 @@ class EaRouterProvider {
         else if (msg.type === "openPreview") cmdOpenPreview();
         else if (msg.type === "modelStatus") cmdModelUnlockStatus();
         else if (msg.type === "saveHandoff") _saveHandoffDoc(msg.content || "");
+        else if (msg.type === "openConfigJson") _openConfigJson();
         else if (msg.type === "openExternal" && msg.url) _openExternalUrl(msg.url);
       } catch (e) { L.warn("router", `msg handle fail: ${e && e.message}`); }
     });
@@ -5382,6 +5458,8 @@ async function cmdEaConfig() {
           cmdModelUnlockStatus();
         } else if (msg.type === "saveHandoff") {
           _saveHandoffDoc(msg.content || "");
+        } else if (msg.type === "openConfigJson") {
+          _openConfigJson();
         } else if (msg.type === "openExternal" && msg.url) {
           _openExternalUrl(msg.url);
         }

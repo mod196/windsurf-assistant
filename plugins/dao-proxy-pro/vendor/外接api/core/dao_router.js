@@ -243,6 +243,12 @@ function _deOfficialDescDeep(obj) {
 function _getDaoEnhanceText() {
   try {
     if (!_spInvert) return null;
+    // ★ 经藏热切真生效 · 以持久化 _origin_canon.txt 为准 · 不滞启动值
+    if (typeof _spInvert.hotReloadCanon === "function") {
+      try {
+        _spInvert.hotReloadCanon();
+      } catch {}
+    }
     // 从 sp_invert.js 获取经藏文本
     const canonText = _spInvert.getActiveCanonText
       ? _spInvert.getActiveCanonText()
@@ -798,90 +804,6 @@ const _stats = {
   errors: 0, // 致命错误
 };
 
-// ════════════════════════════════════════════════════════════════
-// §0.5  多 Key/多端点 负载均衡 + 故障转移 (v9.9.301)
-//   道义: 三十九章「天得一以清」· 一渠不通则取其次 · 万邦皆通方为得一
-//   渠道可配 apiKeys:[] / endpoints:[{url,weight}] · 单 key 限额/被封不致中断
-// ════════════════════════════════════════════════════════════════
-const _rrState = {}; // providerName → 轮转计数 (不落盘 · 不污染配置.json)
-
-// 加权随机全序: 按 weight 抽样不放回 → 既负载均衡又可作故障转移顺序
-function _weightedShuffle(items) {
-  const pool = items.slice();
-  const out = [];
-  while (pool.length) {
-    let total = 0;
-    for (const it of pool) total += it.weight > 0 ? it.weight : 1;
-    let r = Math.random() * total;
-    let idx = 0;
-    for (let i = 0; i < pool.length; i++) {
-      r -= pool[i].weight > 0 ? pool[i].weight : 1;
-      if (r <= 0) {
-        idx = i;
-        break;
-      }
-    }
-    out.push(pool.splice(idx, 1)[0]);
-  }
-  return out;
-}
-
-// 可重试状态: 0(网络)/401/403/408/409/429/5xx → 换下一个候选; 4xx(如400请求非法)不换
-function _isLbRetryable(status) {
-  return (
-    status === 0 ||
-    status === 401 ||
-    status === 403 ||
-    status === 408 ||
-    status === 409 ||
-    status === 429 ||
-    status >= 500
-  );
-}
-
-// 生成 (apiKey, baseUrl) 候选序列 · 首项即负载均衡选择 · 其后为故障转移顺序
-function _lbCandidates(providerName, provCfg) {
-  // ── keys ──
-  let keys = null;
-  if (Array.isArray(provCfg.apiKeys) && provCfg.apiKeys.length) {
-    keys = provCfg.apiKeys.filter(
-      (k) => typeof k === "string" && k && !/\*{4,}/.test(k),
-    );
-  }
-  if (!keys || !keys.length)
-    keys = [provCfg.apiKey != null ? provCfg.apiKey : null];
-  // ── endpoints ──
-  let eps = null;
-  if (Array.isArray(provCfg.endpoints) && provCfg.endpoints.length) {
-    eps = provCfg.endpoints
-      .map((e) =>
-        typeof e === "string"
-          ? { url: e, weight: 1 }
-          : { url: e.url || e.baseUrl, weight: Number(e.weight) > 0 ? Number(e.weight) : 1 },
-      )
-      .filter((e) => e.url);
-  }
-  if (!eps || !eps.length) eps = [{ url: provCfg.baseUrl, weight: 1 }];
-  // 单 key 单端点 → 退化为原行为 (零开销)
-  if (keys.length === 1 && eps.length === 1)
-    return [{ apiKey: keys[0], baseUrl: eps[0].url }];
-  // 端点加权随机全序 · key 轮转起点 (跨请求均摊)
-  const epOrder = _weightedShuffle(eps);
-  const start = (_rrState[providerName] = (_rrState[providerName] || 0) + 1);
-  const off = start % keys.length;
-  const keyOrder = keys.slice(off).concat(keys.slice(0, off));
-  const out = [];
-  const seen = new Set();
-  for (const ep of epOrder)
-    for (const k of keyOrder) {
-      const sig = (k || "") + "@@" + (ep.url || "");
-      if (seen.has(sig)) continue;
-      seen.add(sig);
-      out.push({ apiKey: k, baseUrl: ep.url });
-    }
-  return out;
-}
-
 // ── 用量聚合 (v9.9.301) · 内存态 · 供「外接API」面板查看 ──
 //   道义: 四十四章「知足不辱 知止不殆」· 知其所耗 · 方知所止
 const _usage = {}; // providerName → {input,output,calls,since,models:{model:{input,output,calls}}}
@@ -1285,33 +1207,7 @@ function init({ log, configPath }) {
     //   道义: 二十八章「复归于朴」· 去其华饰 复其本根 · 名实相符方能通。
     for (const _pn of Object.keys(_providers)) {
       const _pc = _providers[_pn];
-      if (!_pc) continue;
-      // ★ 道法自然 · 先修「按字母 s 拆碎」的历史脏配置 (复原 baseUrl/endpoints)
-      //   实证根因: 旧版「添加渠道」分隔符正则退化 /[\s,]+/ → /[s,]+/ ·
-      //     把 URL 按字母 s 切碎 "https://api.deepseek.com/v1"
-      //     → endpoints=["http","://api.deep","eek.com/v1"], baseUrl="http" · 整渠道不可用。
-      //   归一: s 为唯一被吃分隔符(URL 无逗号空白) · 顺序碎片以 "s" 重接即复原。
-      if (_reassembleSplitUrl(_pc)) {
-        _log(
-          `[dao-router] [载] provider ${_pn}: 拆碎URL自愈 → baseUrl=${_pc.baseUrl} (修历史 /[s,]+/ 误拆)`,
-        );
-        // 复原后按含/不含 /vN 重判 completionPath · 清旧的错值(防双重 /v1)
-        if (
-          !_pc.completionPath ||
-          /^\/v\d+\/(?:chat\/completions|messages)$/i.test(_pc.completionPath)
-        ) {
-          const _hasVer = /\/v\d+\/?$/i.test(_pc.baseUrl);
-          _pc.completionPath =
-            _pc.type === "anthropic"
-              ? _hasVer
-                ? "/messages"
-                : "/v1/messages"
-              : _hasVer
-                ? "/chat/completions"
-                : "/v1/chat/completions";
-        }
-      }
-      if (_pc.baseUrl) {
+      if (_pc && _pc.baseUrl) {
         const _nb = _stripCompletionSuffix(_pc.baseUrl);
         if (_nb && _nb !== String(_pc.baseUrl).replace(/\/+$/, "")) {
           _log(
@@ -2035,6 +1931,44 @@ async function route(req, res, rawBody, isJSON, modelUid) {
   return false;
 }
 
+// ★ v9.9.308 · 首字守望 · 冷启/长空闲后首请的「吞言」根治
+//   现象: 空闲后第一条消息上游返回 200，但响应体迟迟无字节(半开/冷连 socket 静默卡死)，
+//        Cascade 端死等 → 用户感觉「首条被吞」，重发第二条(新连接)即成功。
+//   守望: 上游 200 后在 _TTFB_FIRSTBYTE_MS 内若无首字节，则判为卡死，透明重试一次。
+let _TTFB_FIRSTBYTE_MS = parseInt(process.env.DAO_TTFB_MS || "18000", 10);
+if (!(_TTFB_FIRSTBYTE_MS > 0)) _TTFB_FIRSTBYTE_MS = 18000;
+
+/**
+ * 等上游响应体「首字节」到达，不消费数据(用 readable+read+unshift 把首块还回去)。
+ * @returns {Promise<"data"|"end"|"error"|"timeout">}
+ */
+function _awaitFirstByte(stream, ms) {
+  return new Promise((resolve) => {
+    let done = false;
+    const fin = (v) => {
+      if (done) return;
+      done = true;
+      clearTimeout(t);
+      stream.removeListener("readable", onR);
+      stream.removeListener("end", onE);
+      stream.removeListener("error", onErr);
+      resolve(v);
+    };
+    const onR = () => {
+      const chunk = stream.read();
+      if (chunk === null) return; // readable 误触(无实数据) → 继续等
+      stream.unshift(chunk); // 首块还回缓冲，交由 _streamOaToCascade 正常消费
+      fin("data");
+    };
+    const onE = () => fin("end");
+    const onErr = () => fin("error");
+    const t = setTimeout(() => fin("timeout"), ms);
+    stream.on("readable", onR);
+    stream.once("end", onE);
+    stream.once("error", onErr);
+  });
+}
+
 /** 尝试单条路由 */
 async function _tryRoute({
   target,
@@ -2104,79 +2038,67 @@ async function _tryRoute({
 
   _log(`[dao-router] ${tag}[→] ${modelUid} → ${target.provider}/${sendModel}`);
   try {
-    // ★ v9.9.301 · 多 Key/多端点 负载均衡 + 故障转移
-    //   候选首项即负载均衡选择 · 上游可重试错误(429/5xx/401/403/0)自动切下一候选
-    //   仅在响应头未发出前转移 · 流已开始则不再切 (大制无割)
-    const _cands = _lbCandidates(target.provider, provCfg);
-    let agRes = null;
-    let _activeCfg = provCfg;
-    for (let _ci = 0; _ci < _cands.length; _ci++) {
-      const _c = _cands[_ci];
-      const _pc =
-        _cands.length > 1
-          ? Object.assign({}, provCfg, {
-              apiKey: _c.apiKey != null ? _c.apiKey : provCfg.apiKey,
-              baseUrl: _c.baseUrl || provCfg.baseUrl,
-            })
-          : provCfg;
-      let _r;
-      try {
-        _r = await _callProvider(
-          _pc,
-          target.provider,
-          sendModel,
-          callOpts.messages,
-          callOpts.tools,
-          callOpts.toolChoice,
-          callOpts.maxOutputTokens,
-          target, // ★ v9.9.80 · 传入路由配置 (含 thinkingEnabled)
-          callOpts._lspToolNames, // ★ v9.9.83 · LSP 原始工具名集合
-          callOpts, // ★ v9.9.92 · 修法⑦ · 回填 _toolAliasMap
+    // ★ v9.9.308 · 首字守望重试环 · 主路/流式/未下发头时，上游200但体无流则透明重试一次
+    let agRes;
+    let _ttfbRetried = false;
+    while (true) {
+      agRes = await _callProvider(
+        provCfg,
+        target.provider,
+        sendModel,
+        callOpts.messages,
+        callOpts.tools,
+        callOpts.toolChoice,
+        callOpts.maxOutputTokens,
+        target, // ★ v9.9.80 · 传入路由配置 (含 thinkingEnabled)
+        callOpts._lspToolNames, // ★ v9.9.83 · LSP 原始工具名集合
+        callOpts, // ★ v9.9.92 · 修法⑦ · 回填 _toolAliasMap
+      );
+
+      if (agRes.statusCode !== 200) {
+        const errBody = await _readAll(agRes);
+        _log(
+          `[dao-router] ${tag}[✗] HTTP ${agRes.statusCode}: ${errBody.slice(0, 180)}`,
         );
-      } catch (e) {
-        if (callOpts)
-          callOpts._lastErr = {
-            status: 0,
-            provider: target.provider,
-            body: "exception:" + e.message,
-          };
         _routeDiag(
-          `_tryRoute ${tag} call EXCEPTION cand#${_ci + 1}/${_cands.length}: ${e.message}`,
+          `_tryRoute ${tag} HTTP ${agRes.statusCode}: ${errBody.slice(0, 200)} model=${sendModel}`,
         );
-        continue; // 网络异常 → 换下一候选
+        if (isPrimary && agRes.statusCode >= 500) {
+          _healthCache[target.provider] = { alive: false, ts: Date.now() };
+        }
+        // ★ v9.9.288 · 记录上游错误 · 供 route() ALL-FAIL 时可读回传 Cascade
+        if (callOpts) {
+          callOpts._lastErr = {
+            status: agRes.statusCode,
+            provider: target.provider,
+            body: errBody.slice(0, 300),
+          };
+        }
+        return false;
       }
-      if (_r.statusCode === 200) {
-        agRes = _r;
-        _activeCfg = _pc;
-        if (_ci > 0)
-          _log(
-            `[dao-router] ${tag}[↻] ${target.provider} 故障转移命中候选#${_ci + 1}/${_cands.length}`,
+
+      // ★ v9.9.308 · 首字守望: 上游已200但响应体在 _TTFB_FIRSTBYTE_MS 内无首字
+      //   → 判为冷连/半开 socket 静默卡死 → 销毁本连、透明重试一次(新连接)，
+      //   仅主路·仅流式·仅未下发下游头时生效，避免「首条被吞、需重发」。
+      if (
+        isPrimary &&
+        !res.headersSent &&
+        provCfg.streamMode !== "unary" &&
+        !_ttfbRetried
+      ) {
+        const _fb = await _awaitFirstByte(agRes, _TTFB_FIRSTBYTE_MS);
+        if (_fb === "timeout") {
+          _ttfbRetried = true;
+          _routeDiag(
+            `_tryRoute ${tag} TTFB stall ${_TTFB_FIRSTBYTE_MS}ms 无首字 → 透明重试 ${target.provider}/${sendModel}`,
           );
-        break;
+          try {
+            agRes.destroy();
+          } catch {}
+          continue;
+        }
       }
-      // 非 200 → 记录上游错误 · 视情况换下一候选
-      const errBody = await _readAll(_r);
-      _log(
-        `[dao-router] ${tag}[✗] HTTP ${_r.statusCode} (cand#${_ci + 1}/${_cands.length}): ${errBody.slice(0, 180)}`,
-      );
-      _routeDiag(
-        `_tryRoute ${tag} HTTP ${_r.statusCode} cand#${_ci + 1}/${_cands.length}: ${errBody.slice(0, 200)} model=${sendModel}`,
-      );
-      if (isPrimary && _r.statusCode >= 500) {
-        _healthCache[target.provider] = { alive: false, ts: Date.now() };
-      }
-      // ★ v9.9.288 · 记录上游错误 · 供 route() ALL-FAIL 时可读回传 Cascade
-      if (callOpts) {
-        callOpts._lastErr = {
-          status: _r.statusCode,
-          provider: target.provider,
-          body: errBody.slice(0, 300),
-        };
-      }
-      if (!_isLbRetryable(_r.statusCode)) break; // 4xx 非限流 → 换 key/端点无益
-    }
-    if (!agRes) {
-      return false;
+      break;
     }
 
     if (!res.headersSent) {
@@ -2342,7 +2264,7 @@ async function _tryRoute({
         let retryRes;
         try {
           retryRes = await _callProvider(
-            _activeCfg, // ★ v9.9.301 · 沿用命中候选的 key/端点 · 流内重试一致
+            provCfg,
             target.provider,
             sendModel,
             _currentMessages,
@@ -2890,6 +2812,20 @@ async function _callProvider(
       }
     }
 
+    // ★ v9.9.307 · 本源观照·真上游 · 回传第三方实发之全文(system+messages+tools)给面板
+    //   道义: 十四章「执今之道·以御今之有」· 观其真实所往 · 不滞 devin 侧经文
+    //   仅观察 · 不改 body · 失败静默 · 不扰路由
+    try {
+      if (typeof global.__DAO_RECORD_UPSTREAM === "function") {
+        global.__DAO_RECORD_UPSTREAM({
+          provider: providerName,
+          model: model,
+          messages: messages,
+          tools: toolsField,
+        });
+      }
+    } catch {}
+
     const bodyObj = { messages, stream: provCfg.streamMode !== "unary" };
     if (toolsField) {
       bodyObj.tools = toolsField;
@@ -2904,6 +2840,15 @@ async function _callProvider(
       }
     }
     if (maxOutputTokens) bodyObj.max_tokens = maxOutputTokens;
+
+    // ★ v9.9.309 · 采样温度 · 路由可配 · 留空则不发(用模型默认) · 参照通用 OpenAI 兼容配置
+    if (
+      target &&
+      typeof target.temperature === "number" &&
+      !Number.isNaN(target.temperature)
+    ) {
+      bodyObj.temperature = target.temperature;
+    }
 
     // ★ v9.9.80 · 思考模式: DeepSeek V3.2 支持 thinking + tools
     //   配置中 thinkingEnabled=true → 请求体加 thinking:{type:"enabled"}
@@ -4228,49 +4173,7 @@ function _joinCompletionUrl(base, completionPath) {
   const root = _stripCompletionSuffix(base);
   let p = completionPath || "/v1/chat/completions";
   if (!p.startsWith("/")) p = "/" + p;
-  // ★ 防双重版本段: root 已以 /vN 结尾且 path 又以 /vM/ 开头 → 去 path 的版本段
-  //   (如 deepseek root=.../v1 + path=/v1/chat/completions → .../v1/chat/completions)
-  if (/\/v\d+$/i.test(root) && /^\/v\d+\//i.test(p)) {
-    p = p.replace(/^\/v\d+/i, "");
-  }
   return root + p;
-}
-
-// ★ 道法自然 · 复原被「按字母 s 拆碎」的 URL (修历史 /[s,]+/ 误拆 bug)
-//   s 为唯一被吃分隔符(URL 无逗号/空白) → 顺序碎片以 "s" 重接即原样复原:
-//     ["http","://api.deep","eek.com/v1"].join("s") = "https://api.deepseek.com/v1"
-//   守常: 仅当 baseUrl 是裸协议碎片(^https?$)或 endpoints 首段为裸协议碎片,
-//     且重接后为合法 http(s) URL(含点分主机)方施治 · 不误伤正常的多端点配置。
-function _looksLikeBareScheme(s) {
-  return /^https?$/i.test(String(s == null ? "" : s).trim());
-}
-function _reassembleSplitUrl(provCfg) {
-  if (!provCfg) return false;
-  const eps = Array.isArray(provCfg.endpoints) ? provCfg.endpoints : [];
-  const frags = eps
-    .map((e) => (typeof e === "string" ? e : e && (e.url || e.baseUrl)) || "")
-    .filter((x) => x !== "");
-  const baseBare = _looksLikeBareScheme(provCfg.baseUrl);
-  const epsFragmented = frags.length >= 2 && _looksLikeBareScheme(frags[0]);
-  if (!baseBare && !epsFragmented) return false;
-  const joined = (frags.length ? frags : [String(provCfg.baseUrl || "")]).join(
-    "s",
-  );
-  let ok = false;
-  try {
-    const u = new URL(joined);
-    ok =
-      /^https?:$/.test(u.protocol) &&
-      !!u.hostname &&
-      u.hostname.indexOf(".") > 0;
-  } catch {
-    ok = false;
-  }
-  if (!ok) return false;
-  provCfg.baseUrl = joined.replace(/\/+$/, "");
-  // 复原后 endpoints 收敛为单端点 · 去碎片 · 防负载均衡再打碎片主机
-  provCfg.endpoints = [{ url: provCfg.baseUrl, weight: 1 }];
-  return true;
 }
 
 // ★ cc-switch build_models_url_candidates 移植 · 多候选顺序探测 /models
@@ -4332,7 +4235,7 @@ function _modelsUrlFor(cfg) {
 // ★ 非对话模型名特征 (语音/向量/重排/图像/审核) · 自动发现时剔除
 //   道义: 二十七章「善行无辙迹」· 自动回填只取可对话之模 · 不把 tts/asr/embedding 当对话模型路由 (必失败)
 const _NON_CHAT_RE =
-  /(^|[-_/.])(tts|asr|stt|whisper|voice|voiceclone|voicedesign|audio|speech|realtime|embed|embedding|embeddings|rerank|reranker|image|images|dall-?e|vision-ocr|ocr|moderation|guard|guardrail)([-_/.]|$)/i;
+  /(^|[-_/.])(tts|asr|stt|whisper|voice|voiceclone|voicedesign|audio|speech|realtime|embed|embedding|embeddings|rerank|reranker|image|images|dall-?e|vision-ocr|ocr|moderation|guard|guardrail|t2v|i2v|t2i|i2i|t2a|seedance|seedream|seededit|seedance-?lite|video|sora|cogvideo|cogview|wanx|kolors|flux|midjourney|mj)([-_/.]|$)/i;
 function _isChatModel(id) {
   if (!id || typeof id !== "string") return false;
   return !_NON_CHAT_RE.test(id);
@@ -4390,22 +4293,66 @@ const _CHANNEL_ERR_PATTERNS = [
   /violation of the terms/i,
 ];
 
+// ★ v9.9.308 · 渠道失败之「可读中文提因」· 名实相符 · 让用户一眼知该如何处置
+//   实证(火山方舟): key 有效但账号未开通模型 → 404 ModelNotOpen → 原仅显笼统 "HTTP 404"
+//   道义: 七十一章「知不知 尚矣」· 不止报不通 · 更明言因何不通、当往何处治
+const _CHANNEL_HINTS = [
+  {
+    re: /ModelNotOpen|has not activated the model|model service is not (?:open|activated)|未开通|请开通|activate the model/i,
+    hint: "模型未开通 · 请去服务商控制台开通(激活)该模型后重试(如火山方舟:开通管理)",
+  },
+  {
+    re: /InvalidEndpointOrModel\.NotFound|does not exist or you do not have|model_not_found|no such model|model not found|unknown model|未找到模型|模型不存在/i,
+    hint: "模型名/接入点不存在 · 请核对模型名(火山方舟需用模型名或接入点 ep-xxx)",
+  },
+  {
+    re: /invalid api key|incorrect api key|authentication[^.]{0,20}fail|invalid[^.]{0,12}(?:token|credential)|api key not valid|unauthorized/i,
+    hint: "Key 无效或鉴权失败 · 请核对 API Key(及是否选对协议/请求头)",
+  },
+  {
+    re: /insufficient (?:quota|balance|credit|funds)|quota[^.]{0,20}exceed|balance|余额不足|额度不足|欠费/i,
+    hint: "余额/配额不足 · 请充值或检查配额",
+  },
+  {
+    re: /access denied|official[^.]{0,40}client only|restricted to authorized|unauthorized (?:client|tooling)/i,
+    hint: "渠道拒绝(HTTP 200 伪成功) · 该中转仅限官方客户端/已授权访问",
+  },
+  {
+    re: /rate limit|too many requests|requests per|限流|频率/i,
+    hint: "触发限流 · 稍后重试或降低并发",
+  },
+  {
+    re: /service (?:temporarily )?unavailable|temporarily unavailable|upstream|bad gateway|gateway time|暂不可用|服务不可用/i,
+    hint: "中转/上游暂不可用(常为 503/502) · 多为该中转后端临时故障 · 稍后重试或换渠道",
+  },
+];
+function _channelHint(text) {
+  const raw = typeof text === "string" ? text : "";
+  for (const h of _CHANNEL_HINTS) {
+    if (h.re.test(raw)) return h.hint;
+  }
+  return "";
+}
+
 /**
  * 渠道响应分类 · 实证渠道是否真通 (不止看 HTTP 码 · 还看响应体伪成功/拒绝文案)
  *   返回 { ok, reason } · ok=false 时 reason 简述不通之因 (供前端展示给用户)
  *   道义: 七十一章「知不知 尚矣」· 知其不通方能明言其不通
  */
 function classifyChannelResponse(status, text) {
-  const snippet = (typeof text === "string" ? text : "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 160);
+  const raw = typeof text === "string" ? text : "";
+  const snippet = raw.replace(/\s+/g, " ").trim().slice(0, 160);
+  const hint = _channelHint(raw);
   if (typeof status === "number" && status >= 400) {
-    return { ok: false, reason: `HTTP ${status}` + (snippet ? ` · ${snippet}` : "") };
+    const base = `HTTP ${status}` + (snippet ? ` · ${snippet}` : "");
+    return { ok: false, reason: hint ? `${hint} · ${base}` : base };
   }
   for (const p of _CHANNEL_ERR_PATTERNS) {
-    if (p.test(text || "")) {
-      return { ok: false, reason: `渠道拒绝/伪成功 · ${snippet}` };
+    if (p.test(raw)) {
+      return {
+        ok: false,
+        reason: (hint ? hint + " · " : "") + `渠道拒绝/伪成功 · ${snippet}`,
+      };
     }
   }
   return { ok: true, reason: "" };
@@ -4602,6 +4549,8 @@ function hotAddProvider(name, cfg) {
   // ★ cc-switch 风 · baseUrl 归一: 剥去误含的补全后缀(/chat/completions 等) · 防双重路径 404
   //   实证: 小米渠道用户把完整端点贴进 baseUrl → 拼 completionPath 双重 → 完全不可用 · 此处根治
   if (cfg.baseUrl) {
+    // ★ baseUrl 去内部空白 · 根治「http s://…」被切成 "http" 的渠道不可用 (URL 不含空格)
+    cfg.baseUrl = String(cfg.baseUrl).trim().replace(/\s+/g, "");
     const _normBase = _stripCompletionSuffix(cfg.baseUrl);
     if (_normBase && _normBase !== String(cfg.baseUrl).replace(/\/+$/, "")) {
       _log(
@@ -4660,18 +4609,9 @@ function hotAddProvider(name, cfg) {
       `[dao-router] [热] provider ${name}: ${_keyMasked ? "脱敏" : "空"}apiKey → 保留原key (${existing.apiKey.length}B)`,
     );
   }
-  // ★ v9.9.301 · apiKeys[] 保全: 传入数组含脱敏项 → 保留原数组 (同 apiKey 逻辑)
-  if (Array.isArray(cfg.apiKeys)) {
-    const _anyMasked = cfg.apiKeys.some((k) =>
-      /\*{2,}|\.{3}$/.test(String(k || "")),
-    );
-    if (_anyMasked && Array.isArray(existing.apiKeys)) {
-      merged.apiKeys = existing.apiKeys;
-      _log(
-        `[dao-router] [热] provider ${name}: 脱敏apiKeys → 保留原数组 (${existing.apiKeys.length}项)`,
-      );
-    }
-  }
+  // 单渠道单 key · 清理历史遗留的 apiKeys[]/endpoints[] · 重新保存即净化配置
+  delete merged.apiKeys;
+  delete merged.endpoints;
   _providers[name] = merged;
   _log(
     `[dao-router] [热] 添加provider: ${name} type=${cfg.type} url=${cfg.baseUrl || "?"}`,
