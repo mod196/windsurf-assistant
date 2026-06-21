@@ -31,7 +31,7 @@ for (const name of plugins) {
   console.log(`packaging ${pkg.name}@${pkg.version} -> ${out}`);
   execFileSync(
     process.platform === "win32" ? "npx.cmd" : "npx",
-    ["--yes", "@vscode/vsce", "package", "--no-dependencies", "--allow-missing-repository", "-o", out],
+    ["--yes", "@vscode/vsce", "package", "--no-dependencies", "--allow-missing-repository", "--allow-star-activation", "-o", out],
     { cwd: dir, stdio: "inherit", shell: true }
   );
 }
