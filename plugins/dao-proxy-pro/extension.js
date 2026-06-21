@@ -4231,7 +4231,8 @@ function getEaConfigHtml(port, nonce) {
       <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
         <span style="font-weight:600;font-size:11px">📄 Agent 交接指挥文档</span>
         <span style="font-size:10px;opacity:0.55">实时反映当前渠道/路由状态 · 交给官方/任意 Agent 即可热配置一切</span>
-        <button class="btn add" id="btnDownloadHandoff" style="margin-left:auto" title="下载 dao-proxy-pro-handoff.md">⬇ 下载 MD</button>
+        <button class="btn add" id="btnCopyHandoff" style="margin-left:auto" title="一键复制最新交接文档到剪贴板 · 直接粘给本地任意 Agent 即可接管配置">📋 复制最新状态</button>
+        <button class="btn" id="btnDownloadHandoff" title="下载 dao-proxy-pro-handoff.md">⬇ 下载 MD</button>
         <button class="btn" id="btnPreviewHandoff" title="预览/刷新文档">预览</button>
       </div>
       <pre id="handoffPreview" style="display:none;max-height:200px;overflow:auto;margin:6px 0 0;padding:8px;font-size:10px;line-height:1.45;white-space:pre-wrap;word-break:break-word;background:var(--vscode-textCodeBlock-background,rgba(0,0,0,0.18));border-radius:4px"></pre>
@@ -5285,6 +5286,20 @@ function getEaConfigHtml(port, nonce) {
   }
   var _ocj = _e1El('btnOpenCfgJson');
   if (_ocj) _ocj.addEventListener('click', function() { postMsg('openConfigJson'); });
+  var _ch = _e1El('btnCopyHandoff');
+  if (_ch) _ch.addEventListener('click', function() {
+    var self = this; var _orig = self.textContent; self.textContent = '取最新…';
+    _fetchHandoff().then(function(md) {
+      // 优先浏览器剪贴板 API · 不可用(webview 权限/非安全上下文)则交宿主 vscode.env.clipboard
+      function _viaHost() { if (_vscode) _vscode.postMessage({ type: 'copyHandoff', content: md }); }
+      var done = function() { self.textContent = '✓ 已复制'; setTimeout(function() { self.textContent = _orig; }, 1800); };
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(md).then(done, function() { _viaHost(); done(); });
+        } else { _viaHost(); done(); }
+      } catch (_e) { _viaHost(); done(); }
+    }).catch(function(e) { self.textContent = _orig; try { _daoToast('复制失败: ' + e.message); } catch (_) {} });
+  });
   var _dh = _e1El('btnDownloadHandoff'), _ph = _e1El('btnPreviewHandoff');
   if (_dh) _dh.addEventListener('click', function() {
     _fetchHandoff().then(function(md) {
@@ -5339,6 +5354,19 @@ async function _saveHandoffDoc(content) {
     );
   } catch (e) {
     vscode.window.showErrorMessage(`交接文档保存失败: ${e && e.message}`);
+  }
+}
+
+// ★ 一键复制 Agent 交接指挥文档到系统剪贴板 (webview 复制按钮 · 浏览器剪贴板不可用时的宿主兜底)
+//   道义: 用户一点即得最新状态 · 直接粘给本地任意 Agent 即可接管热配置一切
+async function _copyHandoffDoc(content) {
+  try {
+    await vscode.env.clipboard.writeText(String(content || ""));
+    vscode.window.showInformationMessage(
+      "交接文档已复制到剪贴板 · 直接粘给本地任意 Agent 即可接管配置",
+    );
+  } catch (e) {
+    vscode.window.showErrorMessage(`交接文档复制失败: ${e && e.message}`);
   }
 }
 
@@ -5419,6 +5447,7 @@ class EaRouterProvider {
         else if (msg.type === "openPreview") cmdOpenPreview();
         else if (msg.type === "modelStatus") cmdModelUnlockStatus();
         else if (msg.type === "saveHandoff") _saveHandoffDoc(msg.content || "");
+        else if (msg.type === "copyHandoff") _copyHandoffDoc(msg.content || "");
         else if (msg.type === "openConfigJson") _openConfigJson();
         else if (msg.type === "openExternal" && msg.url) _openExternalUrl(msg.url);
       } catch (e) { L.warn("router", `msg handle fail: ${e && e.message}`); }
@@ -5458,6 +5487,8 @@ async function cmdEaConfig() {
           cmdModelUnlockStatus();
         } else if (msg.type === "saveHandoff") {
           _saveHandoffDoc(msg.content || "");
+        } else if (msg.type === "copyHandoff") {
+          _copyHandoffDoc(msg.content || "");
         } else if (msg.type === "openConfigJson") {
           _openConfigJson();
         } else if (msg.type === "openExternal" && msg.url) {

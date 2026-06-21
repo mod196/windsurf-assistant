@@ -681,6 +681,12 @@ async function _errorToCascade(res, w, modelUid, isJSON, errText) {
 const _healthCache = {}; // providerName → { alive: bool, ts: timestamp }
 const HEALTH_TTL = 30000; // 30秒缓存
 let _cfgWatcher = null; // 配置.json fs.watch 句柄
+// ★ 自写抑制: 记录最近一次本进程写盘的内容 · 监听回调据此区分「自写」与「外部手改」
+//   根因: 每次热保存(加渠道/解模型)都改写配置.json → 触发 fs.watch → init() 全量重载 →
+//         _providers 被替换为新对象 · 与正在进行的「解模型→探活」内存改写打架 →
+//         解出的 models 不落、探活退化用渠道名当模型 → 首次添加必失败、须重启+手点探测。
+//   修正: 自写内容与磁盘一致时跳过热重载 · 仅外部手改方重载 (道法自然·不扰己流)。
+let _lastSelfWriteData = null;
 
 // ★ v9.9.81 · 服务端工具补充 · init() 中填充
 //   LSP 不发这些工具但官方后端知道 → DeepSeek 需要才能调用
@@ -1289,7 +1295,15 @@ function init({ log, configPath }) {
           if (_cfgDebounce) clearTimeout(_cfgDebounce);
           _cfgDebounce = setTimeout(() => {
             _cfgDebounce = null;
-            _log("[dao-router] 配置.json 变化检测 · 自动热重载...");
+            // ★ 自写抑制: 若磁盘内容与本进程刚写入的内容一致 → 是自写 · 跳过热重载
+            //   根除「加渠道/解模型 → 触发 watch → init() 重载 → 内存改写被冲掉」的竞态
+            try {
+              const _cur = fs.readFileSync(configPath, "utf8");
+              if (_lastSelfWriteData !== null && _cur === _lastSelfWriteData) {
+                return;
+              }
+            } catch {}
+            _log("[dao-router] 配置.json 外部变化检测 · 自动热重载...");
             try {
               const reResult = init({ log: _log, configPath });
               if (reResult.ready) {
@@ -4366,8 +4380,22 @@ function classifyChannelResponse(status, text) {
  */
 function _verifyProviderChat(name, cfg) {
   return new Promise((resolve) => {
+    // ★ 探活用模型必须是渠道「真实模型」· 绝不退化用渠道名当模型
+    //   旧法 `|| name`: 无 models 时把渠道名(如 deepseek)当模型发 → 上游 400
+    //   「The supported API model names are ... but you passed <渠道名>」→ 误判探活失败。
+    //   今: 无真实模型则明确返回「需先拉取模型」· 名实相符 (调用方 probeAllProviders 已先解模型)。
     const model =
-      (Array.isArray(cfg.models) && cfg.models[0]) || cfg.model || name;
+      (Array.isArray(cfg.models) && cfg.models[0]) ||
+      cfg.model ||
+      cfg.defaultModel ||
+      null;
+    if (!model) {
+      return resolve({
+        alive: false,
+        reason: "无可用模型 · 请先拉取模型(↻全部模型)",
+        model: null,
+      });
+    }
     const proto =
       cfg.protocol ||
       (cfg.type === "anthropic" ? "anthropic" : "") ||
@@ -4481,7 +4509,19 @@ async function probeAllProviders() {
       _healthCache[name] = { alive: false, reason: "disabled", ts: Date.now() };
       continue;
     }
-    const v = await _verifyProviderChat(name, cfg);
+    // ★ 探活前先确保有「真实模型」可发 · 无则先拉取一次 (refresh)
+    //   根因: 首次添加渠道时 models 尚空 → 直接探活会无模型可用 → 误判失败 · 须重启+手点。
+    //   今: 探活统一入口先解模型再验 → 首次添加即可一步到位 (含启动自动探活·无需手点)。
+    let probeCfg = cfg;
+    if (!(Array.isArray(cfg.models) && cfg.models.length > 0)) {
+      try {
+        const pm = await hotListProviderModels(name, { refresh: true });
+        if (pm && pm.ok && Array.isArray(pm.models) && pm.models.length > 0) {
+          probeCfg = { ...(_providers[name] || cfg), models: pm.models };
+        }
+      } catch {}
+    }
+    const v = await _verifyProviderChat(name, probeCfg);
     results[name] = {
       alive: v.alive,
       reason: v.reason || (v.alive ? "通" : "不通"),
@@ -4869,6 +4909,8 @@ function _hotSaveConfig() {
       if (!k.startsWith("_")) clean[k] = v;
     }
     const data = JSON.stringify(clean, null, 2);
+    // ★ 记录自写内容 · 供 fs.watch 回调区分「自写」(跳过热重载) 与「外部手改」(重载)
+    _lastSelfWriteData = data;
     // ★ v9.9.301 · 原子写 + 备份轮转 · 防写入中途被杀损坏配置.json
     //   道义: 六十四章「为之于未有 治之于未乱」· 临时文件+rename 原子落盘 · 旧本留痕
     _atomicSaveWithBackup(configPath, data);
