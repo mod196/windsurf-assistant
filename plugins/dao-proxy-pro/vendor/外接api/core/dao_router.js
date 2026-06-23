@@ -1143,12 +1143,6 @@ function init({ log, configPath }) {
           _说明:
             "只路由SWE 1.6 Fast → deepseek · 不在表中→官方透传 · 填apiKey后启用provider",
           routes: {
-            MODEL_SWE_1_6: {
-              provider: "builtin-stub",
-              model: "stub-transport-test",
-              _label: "SWE 1.6 标准版 → 测试通道(固定返回·验证通路)",
-              maxOutputTokens: 4096,
-            },
             MODEL_SWE_1_6_FAST: {
               provider: "deepseek",
               model: "deepseek-reasoner",
@@ -1189,20 +1183,13 @@ function init({ log, configPath }) {
       _routes[uid] = t;
     }
 
-    // ★ v9.9.270 · 两条基础默认连线 · 幂等补全(不覆盖用户已有)
-    //   线1: SWE 1.6 基础版 → 测试通道(builtin-stub) · 默认即通·验证通路
-    //   线2: SWE 1.6 Fast → 外接首项(deepseek) · 已在配置中
-    //   道法自然: 用户首见即有两线 · 无为而无不为
-    if (!_routes["MODEL_SWE_1_6"]) {
-      _routes["MODEL_SWE_1_6"] = {
-        provider: "builtin-stub",
-        model: "stub-transport-test",
-        _label: "SWE 1.6 基础版 → 测试通道(固定返回·验证通路)",
-        maxOutputTokens: 4096,
-        _seeded: true,
-      };
-      _log("[dao-router] 补默认基础连线: MODEL_SWE_1_6 → 测试通道(builtin-stub)");
-    }
+    // ★ v9.9.316 · 免费模型并存修复 · 不再播种 MODEL_SWE_1_6 → builtin-stub
+    //   道义: 二章「为而弗恃」· 四十八章「损之又损 以至于无为」· 损去多余之桩
+    //   实证(VM): 播种基础档 → builtin-stub 后 · 用户选免费 SWE-1.6 收到固定桩文本
+    //     (「stub响应正常」) 而非官方真实回复 → 免费模型无法与 Proxy Pro 并存
+    //   根因: 基础档被桩占据 → shouldRoute 命中桩路由 → 官方透传被劫持
+    //   修复: 基础档不入路由表 → shouldRoute 返回 false → 回落官方上游(免费原生)
+    //     仅 SWE 1.6 Fast 按配置路由(deepseek) · 未填 apiKey 时亦回落官方
 
     // 加载 providers
     _providers = _cfg.providers || {};
