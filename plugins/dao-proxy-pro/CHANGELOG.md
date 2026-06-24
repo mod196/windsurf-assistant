@@ -2,6 +2,14 @@
 
 > 完整版本历史。详情页（README）保持精简，本文件单列于扩展的 Changelog 标签页。
 
+v9.9.318 · 根治「外接 API 的 ask_user_question 不弹窗」+「对话无征兆中断」两症(用户旨意·逆官方 Pro 路径到底层): 与官方模型完美并存、20 个快速选工具全可用之上，补齐两处外接 API 与官方路径的核心差异。
+
+① ask_user_question 弹窗 — 逆向实证(zhoumac Pro 机 windsurf/dist/extension.js): 官方弹窗由 LSP 把 chat 层 ask_user_question 工具调用转为 cortex 层 RequestedInteraction{ask_user_question: CascadeAskUserQuestionInteractionSpec}(CortexStep field no:56 requested_interaction)→ 渲染阻塞式弹窗。官方模型问问题时*单发* ask_user_question 即停(终止性，问完等用户)；外接模型常把它与 multi_edit/read_file 等同轮打包发出(实证 _router_diag: "names=ask_user_question,multi_edit")→ LSP 把整批当普通工具执行，永不触发弹窗，对话无感继续。修复: 流式 `_flushTools` 与缓冲 `tool_calls` 两条发射路径均隔离——本轮一旦含 ask_user_question 且有兄弟工具，即只保留 ask_user_question、丢弃同轮兄弟(用户应答后模型自会重规划)，复刻官方「单发即停」形状 → 弹窗正常弹出。仅在 ask_user_question 与他者同轮时触发隔离，单发或无 ask 的批量工具不受影响 → 20 个快速选工具照常并发。
+
+② 对话无征兆中断 — 逆向实证: 主流式 `_streamOaToCascade` 仅在收到上游数据时写帧。外接模型中途静默 >~10s(慢推理/token 间隙/网络抖动但 socket 未报错)时无帧可写，agRes 'error' 不触发，LSP 客户端约 10s 无新数据即 abort →「对话毫无征兆中断」。上游*报错*已由 agRes.on('error') 优雅 STOP_END 兜底；此处补的是上游*静默不报错*的缺口。修复: 与重试路径同法，主流式加空闲保活——`setInterval` 每 ~2s 检查(阈值半值，钳于 200~2000ms)，空闲达阈值(默认 5000ms，可经 `DAO_IDLE_KEEPALIVE_MS` 调)即补发一帧 DELTA_THINKING 保活，收到真实数据即复位，流结束/出错即 clearInterval；`.unref()` 不阻进程退出。道义: 五十二章「守柔曰强」· 守流不绝则不断。
+
+线协议级回归测试: lsp_sim_run.js §5.5b(同轮打包→只剩 ask_user_question·不污染最终 stopReason/工具) + §5.5c(静默 stall 下保活启用/禁用对照·帧数与 thinking 变化·两遍工具结果一致)。全量绿: dao-test 318/0、lsp_sim 288/0。与 v9.9.317 官方聊天钉主机修复正交，三第三方路由/模型解锁/官方并存均不受影响。
+
 v9.9.317 · 根治「装插件后官方免费模型报错·官方聊天被错路到 inference」(用户旨意): Pro 账号不装插件时语言服务器(LS)原生直连 server.codeium.com 一切正常；装插件(invert 拦截)后, 代理按方法名将官方聊天 GetChatMessage/GetChatMessageV2/RawGetChatMessage 路由到 UPSTREAM_INFER(inference.codeium.com), 而该账号在 inference 主机上对这些聊天方法确定性返回「third-party model provider unavailable」→ IDE 报 Model provider unreachable。故「不装插件正常·一装就报错」。实证(直连 replay·同一请求同字节): → server.codeium.com 得 HTTP 200 真实聊天流响应; → inference.codeium.com 得错误 JSON。修复: 官方 chat 方法的回传主机 UPSTREAM_INFER → UPSTREAM_API(server.codeium.com), 与 LS 原生 --api_server_url 一致; 被路由的第三方/BYOK 模型在更早的 _eaRouter.route()(按 kind 分流)即拦截转发, 不走此 host 选择, 故第三方路由/模型解锁不受影响。实证(VM·拦截全程开启): 装着插件连续 4 条免费 SWE-1.6 全部正确(56/81/42/12), 无 Model provider unreachable, 状态栏干净; 代理日志确认 GetChatMessage → server.codeium.com st=200(真实流帧)。
 
 v9.9.316 · 根治「免费模型无法与 Proxy Pro 并存」(用户旨意): 有用户反馈 Pro 账号(premium 额度用尽·仅免费档可用)装上 Proxy Pro 后, 选免费 SWE-1.6 收到的是固定桩文本(「道可道也…stub响应正常」)而非官方真实回复, 免费模型无法与第三方路由并存。根因: `init()` 无条件将基础档 `MODEL_SWE_1_6` 播种到 `builtin-stub`(路由表`_routes`), 使 `shouldRoute(swe-1-6)=true` → 命中桩路由 → 官方透传被劫持。修复: 移除两处播种(默认模板 routes + 幂等补线块), 基础档不入路由表 → `shouldRoute(swe-1-6)=false` → 回落官方上游(免费原生)。仅 SWE 1.6 Fast 按用户配置路由(deepseek), 未填 apiKey 时亦回落官方。实证(VM): 修复后免费 SWE-1.6 发「Reply with exactly this and nothing else: COEXISTFREEOK」得官方真实回复「COEXISTFREEOK」(非桩文)。测试: dao-test.js L2.6 断言同步更新为修复后行为, 全量 npm test 307 通过 0 失败。
