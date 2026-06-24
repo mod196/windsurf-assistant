@@ -851,6 +851,76 @@ async function main() {
     }
   }
 
+  // ── 5.5c · 主流式空闲保活 idle-keepalive 行为级验证 (v10.2 · 修法⑱) ──
+  //   上游中途静默 (慢推理/网络抖动但 socket 未报错) 时, 主流式 _streamOaToCascade
+  //   原先无任何帧写出 → LSP 约 10s 无新数据即 abort → "对话毫无征兆中断".
+  //   修法: 空闲达阈值即补发 DELTA_THINKING 保活帧, 收数据复位, 流结束/出错清除.
+  //   本节用 keepalive_stall 场景 (上游发首块后 stall 500ms) 跑两遍:
+  //   ① 保活启用 (阈值 100ms) → 静默期应补发 ≥1 保活帧 (帧数 / thinking 变多)
+  //   ② 保活近似禁用 (阈值 999999ms) → 静默期不补帧 (基线)
+  //   两遍最终 stopReason / 工具结果须一致 (保活不污染内容).
+  console.log("\n── 5.5c 主流式空闲保活 idle-keepalive ──");
+  {
+    const runStall = async () => {
+      const reqBody = buildReq({
+        modelUid: MODEL_UID,
+        system: "You are helpful.",
+        messages: [
+          { role: "user", content: "keepalive stall test: read a file" },
+        ],
+        tools: TOOLS,
+        toolChoice: "auto",
+      });
+      const res = mockRes();
+      const routed = await Router.route(
+        { on: () => {} },
+        res,
+        reqBody,
+        false,
+        MODEL_UID,
+      );
+      return { routed, parsed: parseResp(res.getBody()) };
+    };
+    const prevEnv = process.env.DAO_IDLE_KEEPALIVE_MS;
+    try {
+      // ① 保活启用 (低阈值 → 500ms 静默期内必触发)
+      process.env.DAO_IDLE_KEEPALIVE_MS = "100";
+      const on = await runStall();
+      // ② 保活近似禁用 (阈值远大于 stall → 不触发, 作基线)
+      process.env.DAO_IDLE_KEEPALIVE_MS = "999999";
+      const off = await runStall();
+
+      ok("保活: 两遍均成功路由", on.routed && off.routed, "route() returned false");
+      ok(
+        "保活启用: 静默期补发帧 (帧数 > 基线)",
+        on.parsed.frameCount > off.parsed.frameCount,
+        `on=${on.parsed.frameCount} off=${off.parsed.frameCount}`,
+      );
+      ok(
+        "保活启用: 补发 thinking 内容 (长度 > 基线)",
+        on.parsed.thinking.length > off.parsed.thinking.length,
+        `on=${on.parsed.thinking.length} off=${off.parsed.thinking.length}`,
+      );
+      ok(
+        "保活不污染: 两遍 stopReason 一致",
+        on.parsed.stopReason === off.parsed.stopReason,
+        `on=${on.parsed.stopReason} off=${off.parsed.stopReason}`,
+      );
+      ok(
+        "保活不污染: 两遍工具调用一致 (read_file)",
+        on.parsed.toolCalls.length === off.parsed.toolCalls.length &&
+          on.parsed.toolCalls.length === 1 &&
+          on.parsed.toolCalls[0].name === off.parsed.toolCalls[0].name,
+        `on=[${on.parsed.toolCalls.map((t) => t.name)}] off=[${off.parsed.toolCalls.map((t) => t.name)}]`,
+      );
+    } catch (e) {
+      ok("保活: 异常", false, e.message);
+    } finally {
+      if (prevEnv === undefined) delete process.env.DAO_IDLE_KEEPALIVE_MS;
+      else process.env.DAO_IDLE_KEEPALIVE_MS = prevEnv;
+    }
+  }
+
   // ── 5.6 多工具并行调用验证 ──
   console.log("\n── 5.6 多工具并行调用验证 ──");
   {
