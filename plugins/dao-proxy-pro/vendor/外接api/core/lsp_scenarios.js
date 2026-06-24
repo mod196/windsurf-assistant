@@ -184,6 +184,20 @@ const SC = {
     ],
     finishReason: "tool_calls",
   },
+  // ★ v10.2 · 修法⑱ 实证场景: 上游中途静默 (慢推理/网络抖动但 socket 未报错)
+  //   → 验证主流式空闲保活 (idle-keepalive) 在静默期补发 thinking 帧, 防 LSP 超时断开
+  keepalive_stall: {
+    text: "thinking before the stall...",
+    stallMs: 500,
+    toolCalls: [
+      {
+        id: "c_ka1",
+        name: "read_file",
+        arguments: JSON.stringify({ file_path: "/home/user/after-stall.js" }),
+      },
+    ],
+    finishReason: "tool_calls",
+  },
   thinking: {
     thinking:
       "Complex question. Let me analyze step by step. First, understand the architecture. Then, consider trade-offs. Finally, recommend.",

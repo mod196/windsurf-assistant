@@ -3576,7 +3576,52 @@ function _streamOaToCascade(
   let _sseEventType = ""; // ★ Anthropic/Responses SSE event type 追踪
 
   return new Promise((resolve, reject) => {
+    // ★ v10.2 · 修法⑧ · 主流式空闲保活 (对齐重试路径 keepalive · 防"无征兆中断")
+    //   逆向实证 (zhoumac Pro 机): 主流式 _streamOaToCascade 仅在收到上游数据时写帧.
+    //   若外接模型中途静默 >~10s (慢推理 / token 间隙 / 网络抖动但 socket 未报错),
+    //   则无帧可写, agRes 'error' 不触发, LSP 客户端约 10s 无新数据即 abort →
+    //   "对话毫无征兆中断" (他用户反馈) 之潜在根因. 上游 *报错* 已由 agRes.on('error')
+    //   优雅 STOP_END 兜底; 此处补的是上游 *静默不报错* 的缺口. 与重试路径
+    //   (setInterval 5s DELTA_THINKING) 同法: 空闲达阈值即补发一帧 thinking 保活,
+    //   收到真实数据即复位; 流结束/出错即清除. unref 不阻进程退出.
+    //   道义: 五十二章「守柔曰强」· 守流不绝则不断.
+    let _lastUpstreamTs = Date.now();
+    const _IDLE_KEEPALIVE_MS = Number(process.env.DAO_IDLE_KEEPALIVE_MS) || 5000;
+    const _IDLE_CHECK_MS = Math.max(
+      200,
+      Math.min(2000, Math.floor(_IDLE_KEEPALIVE_MS / 2)),
+    );
+    const _idleKeepalive = setInterval(() => {
+      try {
+        if (res.writableEnded) return;
+        if (Date.now() - _lastUpstreamTs < _IDLE_KEEPALIVE_MS) return;
+        const kaParts = [_hdr()];
+        if (!_sentMetadata) {
+          _sentMetadata = true;
+          kaParts.push(w.encodeString(w.RSP.ACTUAL_MODEL_UID, _actualModelUid));
+          kaParts.push(w.encodeString(w.RSP.OUTPUT_ID, _outputId));
+          kaParts.push(w.encodeString(w.RSP.REQUEST_ID, _requestId));
+        }
+        kaParts.push(w.encodeString(w.RSP.DELTA_THINKING, " "));
+        const kaFr = w.buildFrame(0, Buffer.concat(kaParts));
+        if (kaFr && kaFr.length && !res.writableEnded) res.write(kaFr);
+        _lastUpstreamTs = Date.now();
+        _routeDiag("_streamOaToCascade idle-keepalive: thinking frame sent");
+      } catch (_kaErr) {
+        _routeDiag(
+          "_streamOaToCascade idle-keepalive FAILED: " + _kaErr.message,
+        );
+      }
+    }, _IDLE_CHECK_MS);
+    if (_idleKeepalive.unref) _idleKeepalive.unref();
+    const _clearIdleKeepalive = () => {
+      try {
+        clearInterval(_idleKeepalive);
+      } catch {}
+    };
+
     agRes.on("data", (chunk) => {
+      _lastUpstreamTs = Date.now(); // ★ v10.2 · 收到上游数据 → 复位空闲计时
       buf += chunk.toString("utf8");
       const lines = buf.split("\n");
       buf = lines.pop();
@@ -3835,6 +3880,7 @@ function _streamOaToCascade(
     });
 
     agRes.on("end", () => {
+      _clearIdleKeepalive(); // ★ v10.2 · 流结束 → 停保活
       // 兜底: 未发 finish_reason 时冲工具
       _flushTools();
 
@@ -3960,6 +4006,7 @@ function _streamOaToCascade(
     });
 
     agRes.on("error", (e) => {
+      _clearIdleKeepalive(); // ★ v10.2 · 出错 → 停保活
       _flushTools();
       // ★ 道法自然 · 优雅中断恢复 (修「对话对一半就断、无法继续」核心)
       //   上游 socket 中途断流(ECONNRESET/代理超时/proxy premature close)时,
