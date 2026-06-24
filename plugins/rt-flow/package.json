@@ -9,9 +9,9 @@
 		"url": "https://github.com/zhouyoukang1234-spec/windsurf-assistant.git",
 		"directory": "plugins/rt-flow"
 	},
-	"homepage": "https://github.com/zhouyoukang/windsurf-assistant",
+	"homepage": "https://github.com/zhouyoukang1234-spec/windsurf-assistant",
 	"bugs": {
-		"url": "https://github.com/zhouyoukang/windsurf-assistant/issues"
+		"url": "https://github.com/zhouyoukang1234-spec/windsurf-assistant/issues"
 	},
 	"keywords": [
 		"runtime",

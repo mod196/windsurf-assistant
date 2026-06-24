@@ -1,8 +1,10 @@
-# CHANGELOG · packages/wam (rt-flow 道极版)
+# CHANGELOG · rt-flow (道极版)
 
 > 反者道之动 · 弱者道之用 · 天下之物生于有 · 有生于无. —— 帛书《老子》德经
 
-## v3.13.0 (2026-06-28) · Devin Desktop 自适应 · 万法归宗 · 当前
+> 当前发布版本 `3.16.0`（以 `package.json` 与 git tag `rt-flow-v3.16.0` 为准）。下列为各里程碑要点。
+
+## v3.13.0 (2026-06-28) · Devin Desktop 自适应 · 万法归宗
 
 > *道常无为而无不为 · 侯王若能守之 · 万物将自化* —— 币书《老子》道经
 
@@ -1754,7 +1756,7 @@ _test_v372_bidir.cjs · 25/25 全通
 
 ## 历史: v17.42.x 系满载版
 
-v17.42.20 (2026-04-末) 及 v17.42.x 全系**满载本体**已归档于 [`_archive/wam-v17.42.20/`](https://github.com/zhouyoukang/windsurf-assistant/blob/HEAD/../../_archive/wam-v17.42.20/):
+v17.42.20 (2026-04-末) 及 v17.42.x 全系**满载本体**为旧 monorepo 时期归档（`_archive/wam-v17.42.20/`，不随本仓分发）:
 
 - 完整 `extension.js` 437 KB / 10913 行
 - 387 E2E 断言
