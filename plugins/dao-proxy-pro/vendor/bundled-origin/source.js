@@ -3086,6 +3086,9 @@ function handleControl(req, res) {
           last_unlock4: _unlockStats.last_unlock4,
           last_at: _unlockStats.last_at,
           last_bytes: _unlockStats.last_bytes,
+          last_total: _unlockStats.last_total,
+          last_available: _unlockStats.last_available,
+          schema: _unlockStats.schema,
         },
         // v9.9.21 · 唯变所适 · 让位标志 · ext-host 见 quitted=true 不再 require 起
         quitted: _quitSignaled,
@@ -4895,13 +4898,59 @@ function _buildStaticFamilies() {
   return order.map((k) => fams.get(k));
 }
 
+// ★ 救生索恒显 (利而不害·只增不减): swe-1-6-slow 是 Windsurf 在官方不可达时
+//   仍保留的唯一可选档(救生索), 但官方 catalog 无其独立项 → ③左侧从不显示它,
+//   用户便无从把它连到第三方 → 官方一挂即彻底卡死。
+//   治: 左侧官方家族恒补一项「SWE-1.6 Slow」(familyUid=swe-1.6-slow·member=swe-1-6-slow),
+//       与已有「SWE-1.6 Fast」对称 → 始终可见·始终可连第三方 (连族即覆盖全档·见 dao_router familyTierExtend)
+//   道义: 二十七章「善救物·故无弃物」· 四十章「反者道之动」· 万物并育而不相害
+function _ensureLifelineFamilies(fams) {
+  try {
+    const list = Array.isArray(fams) ? fams : [];
+    const hasSlow = list.some(
+      (f) =>
+        f &&
+        (String(f.familyUid || "").toLowerCase() === "swe-1.6-slow" ||
+          (f.members || []).some((m) => m && m.modelUid === "swe-1-6-slow")),
+    );
+    if (hasSlow) return list;
+    const slowFam = {
+      familyUid: "swe-1.6-slow",
+      label: "SWE-1.6 Slow",
+      provider: "MODEL_PROVIDER_WINDSURF",
+      isRecommended: true,
+      isNew: true,
+      members: [
+        {
+          modelUid: "swe-1-6-slow",
+          label: "SWE-1.6 Slow",
+          tier: "base",
+          isDefault: false,
+        },
+      ],
+      _lifeline: true,
+    };
+    // 紧随 swe-1.6-fast / swe-1.6 之后插入 · 视觉成组 (无锚则末尾追加)
+    let anchor = -1;
+    for (let i = 0; i < list.length; i++) {
+      const fu = String((list[i] && list[i].familyUid) || "").toLowerCase();
+      if (fu === "swe-1.6-fast" || fu === "swe-1.6") anchor = i;
+    }
+    if (anchor >= 0) list.splice(anchor + 1, 0, slowFam);
+    else list.push(slowFam);
+    return list;
+  } catch {
+    return Array.isArray(fams) ? fams : [];
+  }
+}
+
 // ★ v9.9.275 · 利而不害·只增不减: 左侧官方模型恒以全量静态目录为底,
 //   活捕新鲜时并入实捕(命中则标记 live·补全档位; 实捕独有则追加),
 //   绝不因活捕而令左侧官方模型变少 · 万物并育而不相害
 function _getOfficialFamilies() {
   const staticFams = _buildStaticFamilies();
   const live = _liveFresh() ? _liveModelCapture.families || [] : [];
-  if (!live.length) return staticFams;
+  if (!live.length) return _ensureLifelineFamilies(staticFams);
   const norm = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
   const out = staticFams.map((f) =>
     Object.assign({}, f, { members: f.members.slice() }),
@@ -4929,7 +4978,7 @@ function _getOfficialFamilies() {
       if (nf.label) idx.set(norm(nf.label), at);
     }
   }
-  return out;
+  return _ensureLifelineFamilies(out);
 }
 
 function _isModelUnlockEnabled() {
@@ -4949,7 +4998,7 @@ function _isModelUnlockEnabled() {
 //   零依赖 protobuf 改写: 仅丢弃含徽标之 field 33 · 余皆原样回灌
 // ═══════════════════════════════════════════════════════════
 const _PRO_BADGE = Buffer.from("Upgrade to Pro");
-const _unlockStats = { calls: 0, dropped_total: 0, last_dropped: 0, unlock4_total: 0, last_unlock4: 0, last_at: 0, last_bytes: "" };
+const _unlockStats = { calls: 0, dropped_total: 0, last_dropped: 0, unlock4_total: 0, last_unlock4: 0, last_at: 0, last_bytes: "", last_total: 0, last_available: 0, schema: "" };
 function _pbReadVarint(buf, i) {
   let shift = 0,
     result = 0;
@@ -5463,6 +5512,88 @@ function _pbCloneSwapStrings(buf, map) {
   return Buffer.concat(out);
 }
 
+// ═══════════════════════════════════════════════════════════
+// ★ v9.9.319 · 新架构解锁 · 反者道之动 · 损之又损以至无为
+//   新版 Windsurf GetUserStatus 已弃 "Upgrade to Pro" 徽标
+//   模型可用性改由每模型 field 20 (varint=1) 标记: 免费层仅 SWE 系有之
+//   → 旧徽标解锁在新架构下无锁可去 (calls=0) · 只剩 SWE 系可选
+//   治法 (利而不害·只增不改): 沿 top.f1.f33.f1[] 为每个真模型项补 field20=1
+//   → 全模型与免费 SWE 同标 · picker 全可选 · 不删任何字段·不破坏原结构
+// ═══════════════════════════════════════════════════════════
+function _pbRebuildField(buf, targetField, fn) {
+  const out = [];
+  let i = 0;
+  const n = buf.length;
+  while (i < n) {
+    let tag;
+    [tag, i] = _pbReadVarint(buf, i);
+    const field = tag >> 3;
+    const wt = tag & 7;
+    if (wt === 0) {
+      let v;
+      [v, i] = _pbReadVarint(buf, i);
+      out.push(_pbTag(field, 0), _pbEncVarint(v));
+    } else if (wt === 2) {
+      let ln;
+      [ln, i] = _pbReadVarint(buf, i);
+      let sub = buf.slice(i, i + ln);
+      i += ln;
+      if (field === targetField) sub = fn(sub);
+      out.push(_pbTag(field, 2), _pbEncVarint(sub.length), sub);
+    } else if (wt === 5) {
+      out.push(_pbTag(field, 5), buf.slice(i, i + 4));
+      i += 4;
+    } else if (wt === 1) {
+      out.push(_pbTag(field, 1), buf.slice(i, i + 8));
+      i += 8;
+    } else {
+      return buf;
+    }
+  }
+  return Buffer.concat(out);
+}
+function _pbHasField(buf, targetField) {
+  let i = 0;
+  const n = buf.length;
+  try {
+    while (i < n) {
+      let tag;
+      [tag, i] = _pbReadVarint(buf, i);
+      const field = tag >> 3;
+      const wt = tag & 7;
+      if (field === targetField) return true;
+      if (wt === 0) {
+        let v;
+        [v, i] = _pbReadVarint(buf, i);
+      } else if (wt === 2) {
+        let ln;
+        [ln, i] = _pbReadVarint(buf, i);
+        i += ln;
+      } else if (wt === 5) i += 4;
+      else if (wt === 1) i += 8;
+      else return false;
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}
+// 沿 top.f1(用户记录).f33(模型容器).f1[](模型项) 为缺 field20 之真模型项补 field20=1
+function _pbEnsureModelsAvailable(data, stats) {
+  return _pbRebuildField(data, 1, (userRec) =>
+    _pbRebuildField(userRec, 33, (container) =>
+      _pbRebuildField(container, 1, (entry) => {
+        // 仅认含 field22(modelUid 串)+field23(详情子消息) 之真模型项
+        if (!_pbHasField(entry, 22) || !_pbHasField(entry, 23)) return entry;
+        stats.total = (stats.total || 0) + 1;
+        if (_pbHasField(entry, 20)) { stats.already = (stats.already || 0) + 1; return entry; }
+        stats.added += 1;
+        return Buffer.concat([entry, _pbTag(20, 0), _pbEncVarint(1)]);
+      }),
+    ),
+  );
+}
+
 // 入口: 对 gzip(proto) GetUserStatus body 做真解锁 · 失败则原样返回 (利而不害)
 function _unlockUserStatusBody(bodyBuf, contentEncoding, rid) {
   try {
@@ -5476,7 +5607,27 @@ function _unlockUserStatusBody(bodyBuf, contentEncoding, rid) {
         log(`#${rid} [dump] GetUserStatus proto 落盘 ${data.length}B`);
       }
     } catch {}
-    if (data.indexOf(_PRO_BADGE) < 0) return null; // 无锁可解
+    if (data.indexOf(_PRO_BADGE) < 0) {
+      // ★ v9.9.319 · 新架构 (无 "Upgrade to Pro" 徽标): 补 field20 可用标记解锁
+      const ns = { added: 0 };
+      const nsOut = _pbEnsureModelsAvailable(data, ns);
+      if (ns.added > 0 && _pbParseOk(nsOut) && nsOut.length >= data.length) {
+        const finalBuf = isGz ? zlib.gzipSync(nsOut) : nsOut;
+        _unlockStats.calls += 1;
+        _unlockStats.dropped_total += ns.added;
+        _unlockStats.last_dropped = ns.added;
+        _unlockStats.last_at = Date.now();
+        _unlockStats.last_bytes = `NS ${data.length}->${nsOut.length} gz ${bodyBuf.length}->${finalBuf.length}`;
+        _unlockStats.last_total = ns.total || 0;
+        _unlockStats.last_available = (ns.already || 0) + ns.added;
+        _unlockStats.schema = "new(field20)";
+        log(
+          `#${rid} [真解锁·新架构] GetUserStatus 补 field20 可用标记 ${ns.added} 项 · ${data.length}→${nsOut.length}B (gz ${bodyBuf.length}→${finalBuf.length})`,
+        );
+        return finalBuf;
+      }
+      return null; // 无锁可解 (新架构亦无模型项)
+    }
     // 一遍·基线解锁(去徽标+去field4) · 不注入 · 必有效则用之
     const stats = { dropped: 0, unlock4: 0, models: [] };
     const out1 = _pbDropProBadge(data, stats);
@@ -5530,6 +5681,9 @@ function _unlockUserStatusBody(bodyBuf, contentEncoding, rid) {
     _unlockStats.last_injected = injectedCount;
     _unlockStats.last_at = Date.now();
     _unlockStats.last_bytes = `${data.length}->${out.length} gz ${bodyBuf.length}->${finalBuf.length}`;
+    _unlockStats.last_total = stats.models ? stats.models.length : 0;
+    _unlockStats.last_available = _unlockStats.last_total;
+    _unlockStats.schema = "old(badge)";
     log(
       `#${rid} [真解锁] GetUserStatus 去 Pro锁(field4) ${stats.unlock4} 项 + 去徽标 ${stats.dropped} 项 + 注入全量 ${injectedCount} 项 · ${data.length}→${out.length}B (gz ${bodyBuf.length}→${finalBuf.length})`,
     );

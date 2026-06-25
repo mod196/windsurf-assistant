@@ -2,6 +2,18 @@
 
 > 完整版本历史。详情页（README）保持精简，本文件单列于扩展的 Changelog 标签页。
 
+v9.9.319 · 模型解锁根治(新架构+自愈+结果自检) + ③面板救生索(道法自然·反者道之动): 根治「新用户只剩 SWE-1.6 Slow / 其他全灰」以及「一重启 IDE 插件就没了」两大核心问题。
+
+① 新架构解锁 — 新版 Windsurf/Devin GetUserStatus 已弃「Upgrade to Pro」徽标, 改用每模型 field20 可用标记(varint=1)控制: 免费层仅 SWE 系 4 个模型带 field20, 其余 65+ 个模型无 field20 → picker 全灰。旧徽标剥离在新架构下无锁可去(calls=0), 只剩 SWE 系可选。治法(利而不害·只增不改): 新增 proto 工具链(_pbReadVarint/_pbEncVarint/_pbTag/_pbHasField/_pbRebuildField), 沿 top.f1.f33.f1[] 为每个缺 field20 之真模型项(含 field22+field23)补 field20=1, 不删任何字段·不破坏原结构。老架构(有徽标)走原有剥离路径不变, 新架构(无徽标)走新分支 _pbEnsureModelsAvailable。离线验证: 真实抓包 33285→33480B, 69/69 全可用。
+
+② 解锁自愈(ensureUnlockFlowing) — 根因: LS 由 IDE 开机即刻 spawn, 反代异步启动(≈8s 健康·≈15s 锚定); spawn hook 失败安全门「反代没就绪就不改写 LS 端口」→ LS 直连官方 → GetUserStatus 不经反代 → 全锁。LS 一旦直连就保持到下次重启。修复: activate 后 22s 核查 LS 是否真经反代(改写计数 + GetUserStatus 计数), 反代健康却两者皆 0 = LS 漏改写直连 → 一次性重启 LS, 重生即经反代解锁。幂等, 不连环杀·不扰正常设备。
+
+③ ③面板 SWE-1.6 Slow 救生索(_ensureLifelineFamilies) — _getOfficialFamilies 返回的官方家族目录无 swe-1-6-slow 独立项 → ③左侧永不显示 → 用户无法连线第三方。修复: 在家族列表末恒补「SWE-1.6 Slow」(lifeline=true), 与 SWE-1.6 Fast 对称, 始终可见·始终可连第三方, 作最后兜底。
+
+④ 结果级自检(可观测·零回归) — 以前解锁成功与否无人知(静默失败)。新增 _unlockStats 三字段: last_total(总模型数)·last_available(可用模型数)·schema(old-badge/new-field20), 每次 GetUserStatus 拦截后自动统计并暴露在 GET /origin/status real_unlock 里。一看即知「解锁了几个/总共几个/走的哪条路径」, 静默失败→可观测。
+
+实证: xiaogao(老架构) GetUserStatus.calls=4, dropped_total=256(剥掉 256 处 Pro 锁), schema=old(badge), 全模型解锁; 1h8(新架构) 离线验证补 65 项 → 69/69 全可用, schema=new(field20)。familyTierExtend 保持默认关(道法自然·最小化操作)。
+
 v9.9.318 · 根治「外接 API 的 ask_user_question 不弹窗」+「对话无征兆中断」两症(用户旨意·逆官方 Pro 路径到底层): 与官方模型完美并存、20 个快速选工具全可用之上，补齐两处外接 API 与官方路径的核心差异。
 
 ① ask_user_question 弹窗 — 逆向实证(zhoumac Pro 机 windsurf/dist/extension.js): 官方弹窗由 LSP 把 chat 层 ask_user_question 工具调用转为 cortex 层 RequestedInteraction{ask_user_question: CascadeAskUserQuestionInteractionSpec}(CortexStep field no:56 requested_interaction)→ 渲染阻塞式弹窗。官方模型问问题时*单发* ask_user_question 即停(终止性，问完等用户)；外接模型常把它与 multi_edit/read_file 等同轮打包发出(实证 _router_diag: "names=ask_user_question,multi_edit")→ LSP 把整批当普通工具执行，永不触发弹窗，对话无感继续。修复: 流式 `_flushTools` 与缓冲 `tool_calls` 两条发射路径均隔离——本轮一旦含 ask_user_question 且有兄弟工具，即只保留 ask_user_question、丢弃同轮兄弟(用户应答后模型自会重规划)，复刻官方「单发即停」形状 → 弹窗正常弹出。仅在 ask_user_question 与他者同轮时触发隔离，单发或无 ask 的批量工具不受影响 → 20 个快速选工具照常并发。

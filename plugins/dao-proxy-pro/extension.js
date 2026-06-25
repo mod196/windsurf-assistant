@@ -173,6 +173,10 @@ let _proxyHealthy = false; // 仅当本地/远端 dao 反代确认存活时为 t
 let _livePort = null; // 实际绑定端口 (软编码 · 可能为 OS 分配的空闲端口)
 let _extContext = null; // 扩展上下文 · 用于推导本实例 settings.json 路径 (跨产品名)
 let _lastLsRestart = 0; // LS 重启去抖时间戳 · 防多实例重启风暴
+// ★ 解锁自愈追踪 · 治"新用户只剩 SWE-1.6 Slow·其余全灰"之莫名顽疾
+let _lsSpawnSeen = false; // 本会话是否见过 language_server spawn
+let _lsRewroteCount = 0; // spawn hook 成功改写 LS 端口的次数 (>0 即 LS 经反代)
+let _unlockHealDone = false; // 解锁自愈仅一次 · 不连环杀 LS
 
 // ═══════════════════════════ ACP 模式 (印222) ═══════════════════════════
 // v9.9.200 · 道法自然 · 反者道之动 · 新版 Devin Desktop 架构适配
@@ -274,6 +278,7 @@ function maybeRewriteLsArgs(command, args) {
     !Array.isArray(args)
   )
     return false;
+  _lsSpawnSeen = true; // ★ 见到 LS spawn (无论反代健康与否) · 供解锁自愈判据
   // ★ v9.9.261 · ACP 模式下也重写 LS args · 反者道之动
   // 印222原判: Chat 走 ACP/stdio → HTTP MITM 无用 → 不重写 LS
   // 实证推翻: session/new + session/prompt 走 gRPC CascadeService
@@ -310,6 +315,7 @@ function maybeRewriteLsArgs(command, args) {
       rewrote++;
     }
   }
+  if (rewrote > 0) _lsRewroteCount += 1; // ★ LS 已经反代 · 解锁链路通
   return rewrote > 0;
 }
 
@@ -3628,6 +3634,71 @@ async function autoModelUnlock(port, attempt) {
   }
 }
 
+// ★ 解锁自愈 · 反者道之动 · 治"新用户只剩 SWE-1.6 Slow·其余全灰"之莫名顽疾
+//   真因: LS 常在 proxy 就绪/锚定(15s)之前被 Windsurf spawn → 直连官方服务器
+//         → GetUserStatus 不经反代 → Pro 锁(proto field 4/33)未剥 → picker 仅
+//         免费 SWE-1.6 Slow 可选·其余全灰。旧法靠用户"重启几次"撞上 proxy 先就绪
+//         方愈 → 故时灵时不灵·有的设备装上从不犯·有的永久卡死。
+//   真治: proxy 健康(失败安全门已过)后, 查"LS 是否真经反代":
+//         判据 = spawn hook 改写计数 _lsRewroteCount + 反代 GetUserStatus 拦截
+//         计数 real_unlock.calls。二者皆 0 且确有 LS spawn → LS 必为直连 →
+//         一次性 forceRestartLS, 令 LS 重生。此时 proxy 健康+锚定已就位 →
+//         新 LS 经反代 → GetUserStatus 被拦 → 全模型解锁自现。
+//   守度: 仅"有据可证未解锁"且"proxy 健康"时触发且只一次 · 不扰已正常者 · 不连环杀
+//   道义: 三十七章「侯王若能守之 万物将自化」· 六十四章「其安易持·为之于未有」
+let _unlockHealStartTs = 0;
+async function ensureUnlockFlowing(attempt) {
+  attempt = attempt || 0;
+  if (_unlockHealDone) return;
+  if (!_unlockHealStartTs) _unlockHealStartTs = Date.now();
+  const port = _cachedPort;
+  // proxy 未健康 → 失败安全门未过 · 不能重生 LS (否则指向死端口) · 等
+  if (!_proxyHealthy || !port) {
+    if (attempt < 12) setTimeout(() => ensureUnlockFlowing(attempt + 1), 5000);
+    return;
+  }
+  // LS 已被 spawn hook 改写过 → 必经反代 · 解锁链路通 · 不必自愈
+  if (_lsRewroteCount > 0) {
+    _unlockHealDone = true;
+    L.info("unlock-heal", `LS 经反代 (改写 ${_lsRewroteCount} 次) · 解锁链路通 · 不复行`);
+    return;
+  }
+  try {
+    const ping = await httpGetJson(
+      `http://127.0.0.1:${port}/origin/ping`,
+      2000,
+    ).catch(() => null);
+    const calls =
+      ping && ping.real_unlock ? ping.real_unlock.calls || 0 : 0;
+    if (calls > 0) {
+      // 反代已见 GetUserStatus (经锚定路由) · 解锁在行 · 不必重生 LS
+      _unlockHealDone = true;
+      L.info("unlock-heal", `GetUserStatus 经反代 calls=${calls} · 解锁在行 · 不复行`);
+      return;
+    }
+    // 尚未见 LS spawn 且开机未久 → 再等 (LS 可能稍后才起)
+    if (!_lsSpawnSeen && Date.now() - _unlockHealStartTs < 45000) {
+      if (attempt < 12) setTimeout(() => ensureUnlockFlowing(attempt + 1), 5000);
+      return;
+    }
+    // proxy 健康 · 但改写=0 且 GetUserStatus=0 → LS 必为直连(漏改写) → 一次性重生
+    _unlockHealDone = true;
+    L.warn(
+      "unlock-heal",
+      `proxy 健康但 LS 未经反代 (改写=0·GetUserStatus=0) → forceRestartLS 一次 · 令其重生经反代解锁`,
+    );
+    await forceRestartLS();
+    _lastLsRestart = Date.now();
+    L.info("unlock-heal", `forceRestartLS 毕 · LS 将经反代重连 · 全模型解锁自现`);
+  } catch (e) {
+    if (attempt < 12) {
+      setTimeout(() => ensureUnlockFlowing(attempt + 1), 5000);
+    } else {
+      L.warn("unlock-heal", `自愈探测未成 (${attempt}): ${e && e.message}`);
+    }
+  }
+}
+
 // ★ 状态栏入口刷新 · 显模式/端口 · 点击开三模块中央面板
 function refreshStatusBar() {
   if (!_statusBarItem) return;
@@ -3855,6 +3926,12 @@ function activate(ctx) {
       autoModelUnlock(_cachedPort);
       refreshStatusBar();
     }, 8000);
+
+    // ★ 解锁自愈 · 渡过 proxy 就绪(8s)+ 文件锚定(15s)+ LS 首发 GetUserStatus 之窗后
+    //   核查 LS 是否真经反代 · 未经则一次性重生 LS · 根治"装后仅 SWE-1.6 Slow"
+    setTimeout(() => {
+      ensureUnlockFlowing();
+    }, 22000);
 
     // v9.4.2 · 自 focus dao-container · 强制 resolveWebviewView 触发 · SSR 帛书立现
     // 三十七章: 道恒无名 · 侯王若能守之 · 万物将自化
